@@ -1,6 +1,7 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
-import { Bars } from './Bars'
+import { Bars, type BarRow } from './Bars'
+import { opening, opens } from './charts/Open'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
 import { PercentileStrip } from './charts/PercentileStrip'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
@@ -13,7 +14,10 @@ import bars from './Bars.module.css'
 import base from './Insights.module.css'
 import styles from './TimeSplit.module.css'
 
-function Visual(props: { body: TimeBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+/** Rows that are coding tools (keyed by the tool), each narrowing the page to its tool. */
+type Product = (rows: BarRow[]) => BarRow[]
+
+function Visual(props: { body: TimeBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void; product: Product }) {
   const split = () => timeSplit(props.body)
   const repo = () => split() && props.mode === 'repo'
   return <>
@@ -25,7 +29,7 @@ function Visual(props: { body: TimeBody; label: Label; mode: ColourMode; setMode
     </Show>
     <div class={styles.grid}>
       <div class={styles.wide}>
-        <Bars name="time-tools" title="Summed time per tool (hours)" rows={repo() ? repoTimeRows(props.body, props.label) : timeRows(props.body, props.label)}
+        <Bars name="time-tools" title="Summed time per tool (hours)" rows={props.product(repo() ? repoTimeRows(props.body, props.label) : timeRows(props.body, props.label))}
           axis={repo() ? 'Length: hours of model requests and tool calls, one linear scale from 0.'
             : 'Length: hours, one linear scale from 0; thinking is part of the model time.'} />
       </div>
@@ -37,7 +41,7 @@ function Visual(props: { body: TimeBody; label: Label; mode: ColourMode; setMode
           <Bars name="time-reasoning" title="Reasoning tokens in their requests' output tokens" scale="whole"
             legend={[{ label: 'Reasoning tokens', tone: 3 }, { label: 'Other output tokens', tone: 6 }]}
             axis="Each bar: output tokens of the requests that report reasoning tokens (100%). Tokens, not time."
-            rows={reasoningRows(props.body, props.label)} />
+            rows={props.product(reasoningRows(props.body, props.label))} />
         </div>
       </Show>
     </div>
@@ -50,11 +54,13 @@ type Row = Record<string, unknown>
 export default function TimeSplit(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const open = opens(ctx)
+  const product: Product = rows => opening(rows, row => open.product(row.key, row.label))
   const [mode, setMode] = useColourBy()
   return <InsightCard<TimeBody> {...props} card="time" tab="tools"
     hero={timeHero}
     finding={timeLine}
-    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} />}
+    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} product={product} />}
     note={'Hours are summed durations of calls, not wall-clock time: parallel calls overlap, so the sums can exceed the time ' +
       'that passed. A request or call with no recorded duration is not counted, nor is one recorded as over 24 hours. A call ' +
       'that starts a subagent is left out; the subagent\'s own requests and calls hold that time. Thinking is the part of a ' +
@@ -67,7 +73,7 @@ export default function TimeSplit(props: CardProps) {
       label: 'Where the time goes by tool and program',
       rows: body => [
         ...body.tools.map((tool): Row => ({
-          id: `tool:${tool.tool}`, name: label(tool.tool), kind: 'Tool', count: tool.requests + tool.calls,
+          id: `tool:${tool.tool}`, tool: tool.tool, name: label(tool.tool), kind: 'Tool', count: tool.requests + tool.calls,
           model_ms: tool.model_ms ?? undefined, thinking_ms: tool.thinking_ms ?? undefined, tool_ms: tool.tool_ms ?? undefined,
           untimed: tool.untimed_requests + tool.untimed_calls, reasoning: tool.reasoning_tokens ?? undefined,
           reasoning_output: tool.reasoning_output_tokens ?? undefined, reasoning_requests: tool.reasoning_requests || undefined,
@@ -78,7 +84,10 @@ export default function TimeSplit(props: CardProps) {
           failure_share: row.failure_share ?? undefined, untimed: row.untimed,
         })),
       ],
-      fields: [textField('kind', 'Row'), textField('name', 'Tool or program'),
+      fields: [textField('kind', 'Row'), { ...textField('name', 'Tool or program'),
+        // A tool row narrows the page to its tool; a program is a shell program and opens nothing.
+        action: { label: row => open.product(String(row.tool ?? ''), String(row.name))?.label,
+          run: row => open.product(String(row.tool ?? ''), String(row.name))?.run() } },
         numberField('count', 'Requests and calls', fmtNum),
         numberField('model_ms', 'Model time', value => hours(value)), numberField('thinking_ms', 'Of it thinking', value => hours(value)),
         numberField('tool_ms', 'Tool-call time', value => hours(value)), numberField('p50_ms', 'Median call', value => millis(value)),

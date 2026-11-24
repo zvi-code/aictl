@@ -1,9 +1,10 @@
 import { untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import {
-  failedRows, failureMeasured, failureSplit, failureTotal, nextLegend, nextRepoRows, nextRows, runLegend, runRows,
+  failedRows, failureMeasured, failureSplit, failureTotal, nextLegend, nextRepoRows, nextRows, runLegend, runRows, type ToolBar,
 } from './afterFailureModel'
 import { Bars } from './Bars'
+import { opening, opens } from './charts/Open'
 import { ColourBy, useColourBy, drawnBy } from './charts/ColourBy'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { failureFinding, OUTCOME_LABELS, OUTCOMES, toolLabel, type FailureBody, type Label } from './insightsModel'
@@ -14,6 +15,9 @@ import styles from './CallsViews.module.css'
 export default function AfterFailure(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const open = opens(ctx)
+  /** A bar of one coding tool narrows the page to it; the bar of all tools names no one tool. */
+  const product = (rows: ToolBar[]) => opening(rows, row => row.tool ? open.product(row.tool, label(row.tool)) : undefined)
   const [by, setBy] = useColourBy()
   return <InsightCard<FailureBody> {...props} card="failures" tab="errors"
     hero={failureTotal}
@@ -24,14 +28,14 @@ export default function AfterFailure(props: CardProps) {
         <ColourBy parts="Next call" split={failureSplit(body)} value={by()} onChange={setBy} />
         {repo() ? <RepoLegend split={body} other={hasOther(body.tools)} /> : null}
         {repo()
-          ? <Bars name="failure-next-repos" title="Next call after a failed call, by repository" rows={nextRepoRows(body, label)}
+          ? <Bars name="failure-next-repos" title="Next call after a failed call, by repository" rows={product(nextRepoRows(body, label))}
             axis="Length: failed calls, one scale for every row; a segment per repository." />
-          : <Bars name="failure-next" title="Next call after a failed call" scale="whole" legend={nextLegend} rows={nextRows(body, label)}
+          : <Bars name="failure-next" title="Next call after a failed call" scale="whole" legend={nextLegend} rows={product(nextRows(body, label))}
             axis="Bar: a tool's failed calls = 100%; a segment per next call of the same agent." />}
         <div class={styles.columns}>
-          <Bars name="failure-calls" title="Failed calls per tool" rows={failedRows(body, label, repo())} legend={repo() ? undefined : runLegend}
+          <Bars name="failure-calls" title="Failed calls per tool" rows={product(failedRows(body, label, repo()))} legend={repo() ? undefined : runLegend}
             axis={`Length: failed calls, one scale${repo() ? '; a segment per repository' : ''}. Beside: share of the tool's calls.`} />
-          <Bars name="failure-runs" title="Runs of 3 or more failed calls in a row" rows={runRows(body, label, repo())}
+          <Bars name="failure-runs" title="Runs of 3 or more failed calls in a row" rows={product(runRows(body, label, repo()))}
             axis={`Length: runs, one scale${repo() ? '; a segment per repository' : ''}. Beside: the longest run, in calls.`} />
         </div>
         <details class={styles.totals} data-totals><summary>Totals of the period</summary><p>{failureFinding(body, label)}</p></details>
@@ -48,7 +52,8 @@ export default function AfterFailure(props: CardProps) {
         id: tool.tool, tool: label(tool.tool), calls: tool.calls, failures: tool.failures, ...tool.outcomes, last: tool.last_failures,
         streaks: tool.streaks, streak_calls: tool.streak_calls, longest: tool.longest ?? undefined,
       })),
-      fields: [textField('tool', 'Tool'), numberField('calls', 'Calls', fmtNum), numberField('failures', 'Failed calls', fmtNum),
+      fields: [{ ...textField('tool', 'Tool'), action: { label: row => open.product(String(row.id), String(row.tool))?.label,
+        run: row => open.product(String(row.id), String(row.tool))?.run() } }, numberField('calls', 'Calls', fmtNum), numberField('failures', 'Failed calls', fmtNum),
         ...OUTCOMES.map(outcome => numberField(outcome, OUTCOME_LABELS[outcome], fmtNum)),
         numberField('last', 'Last call of its agent', fmtNum), numberField('streaks', 'Runs of 3 or more', fmtNum),
         numberField('streak_calls', 'Calls in runs', fmtNum), numberField('longest', 'Longest run', fmtNum)],

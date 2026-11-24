@@ -21,6 +21,8 @@ export const RUN_TONE = { runs: 3, other: 6 }
 export const runLegend = [{ label: 'In a run of 3 or more failed calls', tone: RUN_TONE.runs }, { label: 'Not in a run', tone: RUN_TONE.other }]
 
 const ratio = (part: number, whole: number) => whole > 0 ? part / whole : null
+/** A bar of one coding tool: `tool` is its id (what narrowing the page to it takes); absent on the bar of all tools. */
+export type ToolBar = BarRow & { tool?: string }
 const lower = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
 const calls = (tool: { outcomes: Record<Outcome, number>; last_failures: number }, next: Next) =>
   next === 'last' ? tool.last_failures : tool.outcomes[next] ?? 0
@@ -46,7 +48,7 @@ export function failureAllHover(body: FailureBody, next: Next) {
 }
 
 /** Per tool, and first for every tool together: its failed calls as 100%, a segment per next-call outcome. */
-export function nextRows(body: FailureBody, label: Label): BarRow[] {
+export function nextRows(body: FailureBody, label: Label): ToolBar[] {
   const s = body.summary
   const all: BarRow[] = body.tools.length > 1 && s.failures ? [{
     key: 'all', label: 'All tools', sub: plural(s.failures, 'failed call'), total: `${fmtNum(s.failures)} failed`,
@@ -56,7 +58,7 @@ export function nextRows(body: FailureBody, label: Label): BarRow[] {
     }),
   }] : []
   return [...all, ...body.tools.map(tool => ({
-    key: tool.tool, label: label(tool.tool), sub: plural(tool.failures, 'failed call'), total: `${fmtNum(tool.failures)} failed`,
+    key: tool.tool, tool: tool.tool, label: label(tool.tool), sub: plural(tool.failures, 'failed call'), total: `${fmtNum(tool.failures)} failed`,
     parts: NEXT.map(next => ({
       key: next, label: NEXT_LABELS[next], value: calls(tool, next), tone: NEXT_TONE[next], text: fmtNum(calls(tool, next)),
       hover: failureOutcomeHover(tool, next, label),
@@ -68,9 +70,9 @@ export function nextRows(body: FailureBody, label: Label): BarRow[] {
 const nextRepoMore = (segment: RepoSegment) => `Of ${plural(segmentValue(segment, 'failures') ?? 0, 'failed call')} of this tool in this repository.`
 
 /** Per tool and next-call outcome: its failed calls, a segment per repository, one scale for every row. */
-export function nextRepoRows(body: FailureBody, label: Label): BarRow[] {
+export function nextRepoRows(body: FailureBody, label: Label): ToolBar[] {
   return body.tools.filter(tool => tool.repos?.length).flatMap(tool => NEXT.map(next => ({
-    key: `${tool.tool}:${next}`, label: `${label(tool.tool)}: ${NEXT_LABELS[next]}`, total: plural(calls(tool, next), 'failed call'),
+    key: `${tool.tool}:${next}`, tool: tool.tool, label: `${label(tool.tool)}: ${NEXT_LABELS[next]}`, total: plural(calls(tool, next), 'failed call'),
     parts: repoPartsWith(tool.repos, next === 'last' ? 'last_failures' : next, body.repo_order, fmtNum,
       `${label(tool.tool)}, ${lower(NEXT_LABELS[next])}`, 'failed calls with this outcome', failureOutcomeHover(tool, next, label), nextRepoMore),
   })).filter(row => row.parts.length))
@@ -88,7 +90,7 @@ const failedRepoMore = (segment: RepoSegment) => `${plural(segmentValue(segment,
   `${fmtNum(segmentValue(segment, 'streak_calls') ?? 0)} of the failed ones in runs of 3 or more.`
 
 /** Per tool: its failed calls, split into those in runs of 3 or more and the others, or by repository. */
-export function failedRows(body: FailureBody, label: Label, repo: boolean): BarRow[] {
+export function failedRows(body: FailureBody, label: Label, repo: boolean): ToolBar[] {
   return body.tools.map(tool => {
     const parts: BarPart[] = repo && tool.repos?.length
       ? repoPartsWith(tool.repos, 'failures', body.repo_order, fmtNum, `${label(tool.tool)}, failed calls`, 'failed calls',
@@ -97,7 +99,7 @@ export function failedRows(body: FailureBody, label: Label, repo: boolean): BarR
         hover: failureStreakHover(tool, label) },
       { key: 'other', label: 'not in a run', value: Math.max(0, tool.failures - tool.streak_calls), tone: RUN_TONE.other,
         text: fmtNum(Math.max(0, tool.failures - tool.streak_calls)), hover: notInRunHover(tool, label) }]
-    return { key: tool.tool, label: label(tool.tool), sub: plural(tool.calls, 'call'),
+    return { key: tool.tool, tool: tool.tool, label: label(tool.tool), sub: plural(tool.calls, 'call'),
       total: `${fmtNum(tool.failures)} · ${share(ratio(tool.failures, tool.calls))} of calls`, parts }
   })
 }
@@ -106,9 +108,9 @@ export function failedRows(body: FailureBody, label: Label, repo: boolean): BarR
 const runRepoMore = (segment: RepoSegment) => `${plural(segmentValue(segment, 'streak_calls') ?? 0, 'call')} in them in this repository.`
 
 /** Per tool: its runs of 3 or more failed calls in a row, whole or by repository; the longest run is not split. */
-export function runRows(body: FailureBody, label: Label, repo: boolean): BarRow[] {
+export function runRows(body: FailureBody, label: Label, repo: boolean): ToolBar[] {
   return body.tools.map(tool => ({
-    key: tool.tool, label: label(tool.tool), sub: `${plural(tool.streak_calls, 'call')} in them`,
+    key: tool.tool, tool: tool.tool, label: label(tool.tool), sub: `${plural(tool.streak_calls, 'call')} in them`,
     total: `${plural(tool.streaks, 'run')} · longest ${count(tool.longest)}`,
     parts: repo && tool.repos?.length
       ? repoPartsWith(tool.repos, 'streaks', body.repo_order, fmtNum, `${label(tool.tool)}, runs of 3 or more`, 'runs of 3 or more',

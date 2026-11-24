@@ -1,17 +1,21 @@
 import { Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { Bars } from './Bars'
+import { opening, opens } from './charts/Open'
 import { ColourBy, useColourBy, drawnBy } from './charts/ColourBy'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { bytes, plural, rereadFinding, share, toolLabel, type Label, type RereadBody } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
 import { hasOther } from './repoSplit'
-import { bytesRows, filesRows, readLegend, readRepoRows, readRows, rereadMeasured, rereadSplit, rereadTotal } from './rereadsModel'
+import { bytesRows, filesRows, readLegend, readRepoRows, readRows, rereadMeasured, rereadSplit, rereadTotal, type ToolBar } from './rereadsModel'
 import styles from './CallsViews.module.css'
 
 export default function Rereads(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const open = opens(ctx)
+  /** A bar of one coding tool narrows the page to it; the bar of all tools names no one tool. */
+  const product = (rows: ToolBar[]) => opening(rows, row => row.tool ? open.product(row.tool, label(row.tool)) : undefined)
   const [by, setBy] = useColourBy()
   return <InsightCard<RereadBody> {...props} card="rereads" tab="tools"
     hero={rereadTotal}
@@ -23,14 +27,14 @@ export default function Rereads(props: CardProps) {
         <ColourBy parts="First read / again" split={rereadSplit(body)} value={by()} onChange={setBy} />
         {repo() ? <RepoLegend split={body} other={hasOther(body.tools)} /> : null}
         {repo()
-          ? <Bars name="reread-reads-repos" title="File reads and reads again, by repository" rows={readRepoRows(body, label)}
+          ? <Bars name="reread-reads-repos" title="File reads and reads again, by repository" rows={product(readRepoRows(body, label))}
             axis="Length: file reads with a recorded path, one scale for every row; a segment per repository." />
-          : <Bars name="reread-reads" title="File reads: first read and read again" scale="whole" legend={readLegend} rows={readRows(body, label)}
+          : <Bars name="reread-reads" title="File reads: first read and read again" scale="whole" legend={readLegend} rows={product(readRows(body, label))}
             axis="Bar: a tool's file reads with a recorded path = 100%." />}
         <div class={styles.columns}>
-          <Bars name="reread-bytes" title="Bytes returned by reads again" rows={bytesRows(body, label, repo())}
+          <Bars name="reread-bytes" title="Bytes returned by reads again" rows={product(bytesRows(body, label, repo()))}
             axis={`Length: bytes, one scale${along()}; estimated at the average result size per file.`} />
-          <Bars name="reread-files" title="Files read 5 times or more by one agent" rows={filesRows(body, label, repo())}
+          <Bars name="reread-files" title="Files read 5 times or more by one agent" rows={product(filesRows(body, label, repo()))}
             axis={`Length: files, one scale${along()}. Beside: of all files the tool read.`} />
         </div>
         <Show when={body.summary.unmatched}>
@@ -51,7 +55,8 @@ export default function Rereads(props: CardProps) {
         files: tool.files, files_5plus: tool.files_5plus, most_reads: tool.most_reads, repeat_bytes: tool.repeat_bytes ?? undefined,
         unmatched: tool.unmatched,
       })),
-      fields: [textField('tool', 'Tool'), numberField('reads', 'Reads', fmtNum), numberField('repeat_reads', 'Repeated reads', fmtNum),
+      fields: [{ ...textField('tool', 'Tool'), action: { label: row => open.product(String(row.id), String(row.tool))?.label,
+        run: row => open.product(String(row.id), String(row.tool))?.run() } }, numberField('reads', 'Reads', fmtNum), numberField('repeat_reads', 'Repeated reads', fmtNum),
         numberField('share', 'Share repeated', value => share(value)), numberField('files', 'Files', fmtNum),
         numberField('files_5plus', 'Files read 5+ times', fmtNum), numberField('most_reads', 'Most reads of one file', fmtNum),
         numberField('repeat_bytes', 'Bytes read again', value => bytes(value)), numberField('unmatched', 'Reads without a path', fmtNum)],

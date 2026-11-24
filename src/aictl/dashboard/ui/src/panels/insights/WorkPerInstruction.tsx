@@ -9,6 +9,7 @@ import {
 } from './autonomyModel'
 import { Bars } from './Bars'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { Name, opening, opens, type Open } from './charts/Open'
 import { PercentileStrip } from './charts/PercentileStrip'
 import { NOT_REPORTED, toolLabel, type Label } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
@@ -20,11 +21,11 @@ const pct = (share: number) => `${(Math.max(0, Math.min(1, share)) * 100).toFixe
 
 /** One tool's median longest run per bin, from the bins with enough sessions only, across the full width: a line through
  * every bin, a dot with its hover on each, the value written above the dots the model marks, the bins named under it. */
-function TrendRow(props: { body: AutonomyBody; tool: AutonomyTool; label: Label }) {
+function TrendRow(props: { body: AutonomyBody; tool: AutonomyTool; label: Label; product: Product }) {
   const unit = () => props.body.bin_unit ?? 'bin'
   const trend = () => trendPoints(props.body, props.tool.tool)
   return <li class={styles.trendRow} data-trend={props.tool.tool}>
-    <span class={base.barName}>{props.label(props.tool.tool)}</span>
+    <span class={base.barName}><Name text={props.label(props.tool.tool)} open={props.product(props.tool.tool)} /></span>
     <Show when={canTrend(props.body, props.tool.tool)} fallback={<span class={base.note} data-no-trend>
       Too few sessions per {unit()} to draw a trend ({MIN_TREND_BINS} {unit()}s with {MIN_TREND_SESSIONS} or more sessions of 2 or more
       {' '}instructions are needed).</span>}>
@@ -51,7 +52,15 @@ function TrendRow(props: { body: AutonomyBody; tool: AutonomyTool; label: Label 
   </li>
 }
 
-function Visual(props: { body: AutonomyBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+/** What a coding tool's name opens: the page narrowed to that tool. */
+type Product = (tool: string) => Open | undefined
+/** Chart rows keyed by a coding tool, each with what its name opens. */
+const productRows = (product: Product) => <R extends { key: string }>(rows: R[]) => opening(rows, row => product(row.key))
+type Products = ReturnType<typeof productRows>
+
+function Visual(props: {
+  body: AutonomyBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void; product: Product; products: Products
+}) {
   const measured = () => measuredTools(props.body)
   const silent = () => props.body.tools.filter(tool => !tool.sessions)
   const start = () => Math.max(props.body.range.since, props.body.prompts_from ?? 0)
@@ -64,7 +73,7 @@ function Visual(props: { body: AutonomyBody; label: Label; mode: ColourMode; set
     </Show>
     <Show when={measured().length}>
       <div class={styles.grid}>
-        <PercentileStrip chart={runStrip(props.body, props.label)} />
+        <PercentileStrip chart={{ ...runStrip(props.body, props.label), rows: props.products(runStrip(props.body, props.label).rows) }} />
         <div class={styles.waits}>
           <ColourBy parts="Answer time" value={mode()} onChange={props.setMode} split={split()} />
           <Show when={mode() === 'repo'}><RepoLegend split={props.body} other={hasOther(props.body.tools)} /></Show>
@@ -72,20 +81,20 @@ function Visual(props: { body: AutonomyBody; label: Label; mode: ColourMode; set
             legend={mode() === 'repo' ? undefined : [{ label: 'Within 5 minutes', tone: 2 }, { label: 'After more than 5 minutes', tone: 1 }]}
             axis={mode() === 'repo' ? 'Length: answered waits, one linear scale from 0; a segment per repository.'
               : 'Each bar: the tool\'s answered waits (100%). Beside it: the median wait.'}
-            rows={waitRows(props.body, props.label, mode())} />
+            rows={props.products(waitRows(props.body, props.label, mode()))} />
         </div>
         <section class={styles.wide} aria-labelledby="autonomy-trend-title">
           <h3 class={base.subhead} id="autonomy-trend-title">Median longest run per {unit()} (tool calls)</h3>
           <p class={base.note}>Sessions with 2 or more instructions, in the {unit()} of their first instruction; a {unit()} is drawn
             {' '}with {MIN_TREND_SESSIONS} or more such sessions. Each tool on its own scale from 0.</p>
           <ol class={styles.trends} aria-label={`Median longest run of tool calls per ${unit()}, per tool`}>
-            <For each={measured()}>{tool => <TrendRow body={props.body} tool={tool} label={props.label} />}</For>
+            <For each={measured()}>{tool => <TrendRow body={props.body} tool={tool} label={props.label} product={props.product} />}</For>
           </ol>
           <Show when={start() > 0}><p class={base.note}>From {stamp(start(), true)}.</p></Show>
         </section>
       </div>
     </Show>
-    <For each={silent()}>{tool => <p class={styles.silent} data-silent={tool.tool}>{props.label(tool.tool)}: {silence(tool)}</p>}</For>
+    <For each={silent()}>{tool => <p class={styles.silent} data-silent={tool.tool}><Name text={props.label(tool.tool)} open={props.product(tool.tool)} />: {silence(tool)}</p>}</For>
   </>
 }
 
@@ -100,10 +109,12 @@ function figure(id: string, label: string, format: (value: number) => string): F
 export default function WorkPerInstruction(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const open = opens(ctx)
+  const product: Product = tool => open.product(tool, label(tool))
   const [mode, setMode] = useColourBy()
   return <InsightCard<AutonomyBody> {...props} card="autonomy" tab="flow"
     finding={body => autonomyLine(body, label)}
-    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} />}
+    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} product={product} products={productRows(product)} />}
     note={'A person\'s turn is a prompt of the main agent, or the answer to a question the agent asked: a call named ask_user, ' +
       'askuser, ask_question, askuserquestion or vscode_askquestions (a fixed list; ask tools served by an MCP server are ordinary ' +
       'calls). An answer starts a new run but is not an instruction. Session-control commands (/compact, /autocompact, /model, ' +
@@ -149,7 +160,8 @@ export default function WorkPerInstruction(props: CardProps) {
         store_only: row.store_only, unread: row.unread, unread_sessions: row.unread_sessions, no_calls: row.no_calls,
         start_unread: row.start_unread,
       } }),
-      fields: [textField('tool', 'Tool'), textField('status', 'Status'), figure('sessions', 'Sessions', fmtNum),
+      fields: [{ ...textField('tool', 'Tool'), action: { label: row => product(String(row.id))?.label, run: row => product(String(row.id))?.run() } },
+        textField('status', 'Status'), figure('sessions', 'Sessions', fmtNum),
         figure('multi', 'With 2 or more instructions', fmtNum), figure('instructions', 'Instructions', fmtNum),
         figure('single', 'Single-instruction sessions', fmtNum),
         figure('p50', 'Longest run, median', fmtNum), figure('p90', 'Longest run, 90th percentile', fmtNum),

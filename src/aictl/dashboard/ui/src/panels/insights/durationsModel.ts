@@ -37,7 +37,7 @@ const ownColour = (repo: DurationRepo, body: DurationBody) => repo.repos?.length
 function pairRows(body: DurationBody, mode: ColourMode, pick: (repo: DurationRepo) => {
   sub: string; parts: [{ key: string; label: string; value: number | null; tone: number; hover: string },
     { key: string; label: string; value: number | null; tone: number; hover: string }]
-}): BarRow[] {
+}): RootRow<BarRow>[] {
   return body.repos.slice(0, SHOWN).map(repo => {
     const pair = pick(repo)
     const colour = ownColour(repo, body)
@@ -47,14 +47,30 @@ function pairRows(body: DurationBody, mode: ColourMode, pick: (repo: DurationRep
       tone: repo.small ? 7 : part.tone, ...(mode === 'repo' ? { repo: colour, light: i === 1 } : {}),
     }))
     const sum = pair.parts.reduce((total, part) => total + (part.value ?? 0), 0)
-    return { key: repo.name, label: repo.name, sub: pair.sub, total: hours(sum), parts }
+    return { key: repo.name, label: repo.name, sub: pair.sub, total: hours(sum), parts, root: repo.repo }
   })
 }
+
+// ─── What the names of the charts open ───
+/** A row that is one repository, with its root (the key a repository filter takes). */
+export type RootRow<R> = R & { root?: string }
+/** A row that is one tool or program: `tool` is the tool's stored name, absent for a program or a call with no name. */
+export type ToolRow<R> = R & { tool?: string }
+export type RootStrip = StripChart & { rows: RootRow<StripRow>[] }
+export type ToolStrip = StripChart & { rows: ToolRow<StripRow>[] }
+/** Row i of a repository chart is `body.repos[i]` (the first SHOWN). */
+const withRoots = (chart: StripChart, body: DurationBody): RootStrip =>
+  ({ ...chart, rows: chart.rows.map((row, i) => ({ ...row, root: body.repos[i]?.repo })) })
+/** Row i of a tool chart is `body.tools[i]` (the first TOOLS_SHOWN); a program is not a tool and names none. */
+const withTools = <R extends object>(rows: R[], body: DurationBody): ToolRow<R>[] => rows.map((row, i) => {
+  const tool = body.tools[i]
+  return tool?.name && !tool.program ? { ...row, tool: tool.name } : row
+})
 
 const workTotal = (body: DurationBody) => body.repos.reduce((sum, repo) => sum + (repo.agent_ms ?? 0), 0)
 
 /** Working and waiting time per repository. */
-export function sessionTimeRows(body: DurationBody, mode: ColourMode): BarRow[] {
+export function sessionTimeRows(body: DurationBody, mode: ColourMode): RootRow<BarRow>[] {
   const all = workTotal(body)
   return pairRows(body, mode, repo => {
     const small = repo.small ? ' Too few to compare (fewer than 5 sessions with turn times): drawn grey.' : ''
@@ -73,7 +89,7 @@ export function sessionTimeRows(body: DurationBody, mode: ColourMode): BarRow[] 
 }
 
 /** Summed model request time and tool-call time per repository. */
-export function modelToolRows(body: DurationBody, mode: ColourMode): BarRow[] {
+export function modelToolRows(body: DurationBody, mode: ColourMode): RootRow<BarRow>[] {
   return pairRows(body, mode, repo => ({
     sub: `${fmtNum(repo.requests)} requests · ${fmtNum(repo.calls)} calls`,
     parts: [
@@ -98,7 +114,8 @@ export function rankRows(chart: BarChart, items: DurationBody['tools'] | Duratio
   }))
 }
 
-export const toolRankRows = (body: DurationBody, mode: ColourMode) => rankRows(toolTimeChart(body), body.tools.slice(0, TOOLS_SHOWN), body, mode, 3)
+export const toolRankRows = (body: DurationBody, mode: ColourMode) =>
+  withTools(rankRows(toolTimeChart(body), body.tools.slice(0, TOOLS_SHOWN), body, mode, 3), body)
 export const modelRankRows = (body: DurationBody, mode: ColourMode) => rankRows(modelTimeChart(body), body.models, body, mode, 0)
 
 /**
@@ -124,14 +141,17 @@ export function rangeStrip(chart: RangeChart, upper: string, note: string, repos
 }
 
 /** The per-repository strips: working time per session, and time to the first file change. */
-export function sessionStrip(body: DurationBody, mode: ColourMode): StripChart {
+export function sessionStrip(body: DurationBody, mode: ColourMode): RootStrip {
   const repos = mode === 'repo' ? body.repos.slice(0, SHOWN).map(repo => repo.repos?.length ? ownColour(repo, body) : undefined) : undefined
-  return rangeStrip(durationSessionRange(body), 'p90', '', repos)
+  return withRoots(rangeStrip(durationSessionRange(body), 'p90', '', repos), body)
 }
-export function firstChangeStrip(body: DurationBody, mode: ColourMode): StripChart {
+export function firstChangeStrip(body: DurationBody, mode: ColourMode): RootStrip {
   const repos = mode === 'repo' ? body.repos.slice(0, SHOWN).map(repo => repo.repos?.length ? ownColour(repo, body) : undefined) : undefined
-  return rangeStrip(durationFirstChangeRange(body), 'p90', '', repos)
+  return withRoots(rangeStrip(durationFirstChangeRange(body), 'p90', '', repos), body)
 }
 const splitNote = (body: DurationBody) => body.repo_order?.length ? ` ${notSplitNote('median')}` : ''
-export const toolStrip = (body: DurationBody) => rangeStrip(toolRange(body), 'p95', splitNote(body))
+export const toolStrip = (body: DurationBody): ToolStrip => {
+  const chart = rangeStrip(toolRange(body), 'p95', splitNote(body))
+  return { ...chart, rows: withTools(chart.rows, body) }
+}
 export const modelStrip = (body: DurationBody) => rangeStrip(modelRange(body), 'p95', splitNote(body))

@@ -14,6 +14,8 @@ export const readLegend = [{ label: 'First read of a file by its agent', tone: R
   { label: 'Read again by the same agent', tone: READ_TONE.again }]
 
 const ratio = (part: number, whole: number) => whole > 0 ? part / whole : null
+/** A bar of one coding tool: `tool` is its id (what narrowing the page to it takes); absent on the bar of all tools. */
+export type ToolBar = BarRow & { tool?: string }
 
 /** The line under the title: what is measured, in technical terms. */
 export const rereadMeasured = 'File reads with a recorded path, per tool; read again: a file the same session and agent had already read in the period.'
@@ -39,26 +41,26 @@ const readParts = (first: number, again: number, hover: (part: 'first' | 'again'
 ]
 
 /** Per tool, and first for every tool together: its reads as 100%, first reads and reads again. */
-export function readRows(body: RereadBody, label: Label): BarRow[] {
+export function readRows(body: RereadBody, label: Label): ToolBar[] {
   const s = body.summary
   const all: BarRow[] = body.tools.length > 1 && s.reads ? [{
     key: 'all', label: 'All tools', sub: plural(s.reads, 'read'), total: `${fmtNum(s.repeat_reads)} again · ${share(s.repeat_share)}`,
     parts: readParts(s.reads - s.repeat_reads, s.repeat_reads, part => rereadAllHover(body, part)),
   }] : []
   return [...all, ...body.tools.map(tool => ({
-    key: tool.tool, label: label(tool.tool), sub: `${plural(tool.reads, 'read')} · ${plural(tool.files, 'file')}`,
+    key: tool.tool, tool: tool.tool, label: label(tool.tool), sub: `${plural(tool.reads, 'read')} · ${plural(tool.files, 'file')}`,
     total: `${fmtNum(tool.repeat_reads)} again · ${share(tool.repeat_share)}`,
     parts: readParts(tool.reads - tool.repeat_reads, tool.repeat_reads, part => rereadHover(tool, part, label)),
   }))]
 }
 
 /** Per tool: its reads, and its reads of a file already read, each a row of segments per repository on one scale. */
-export function readRepoRows(body: RereadBody, label: Label): BarRow[] {
+export function readRepoRows(body: RereadBody, label: Label): ToolBar[] {
   return body.tools.filter(tool => tool.repos?.length).flatMap(tool => [
-    { key: `${tool.tool}:reads`, label: `${label(tool.tool)}: all reads`, total: plural(tool.reads, 'read'),
+    { key: `${tool.tool}:reads`, tool: tool.tool, label: `${label(tool.tool)}: all reads`, total: plural(tool.reads, 'read'),
       parts: repoPartsWith(tool.repos, 'reads', body.repo_order, value => plural(value, 'read'), `${label(tool.tool)}, file reads`,
         'file reads', rereadToolHover(tool, label), rereadRepoMore) },
-    { key: `${tool.tool}:again`, label: `${label(tool.tool)}: read again`, total: `${plural(tool.repeat_reads, 'read')} again`,
+    { key: `${tool.tool}:again`, tool: tool.tool, label: `${label(tool.tool)}: read again`, total: `${plural(tool.repeat_reads, 'read')} again`,
       parts: repoPartsWith(tool.repos, 'repeat_reads', body.repo_order, value => plural(value, 'read'),
         `${label(tool.tool)}, reads of a file already read`, 'reads again', rereadHover(tool, 'again', label), rereadRepoMore) },
   ].filter(row => row.parts.length))
@@ -72,9 +74,9 @@ export function rereadBytesHover(tool: RereadTool, label: Label) {
 const bytesRepoMore = (segment: RepoSegment) => `${plural(segmentValue(segment, 'repeat_reads') ?? 0, 'read')} again in this repository.`
 
 /** Per tool: the bytes its reads of a file already read returned, whole or by repository. */
-export function bytesRows(body: RereadBody, label: Label, repo: boolean): BarRow[] {
+export function bytesRows(body: RereadBody, label: Label, repo: boolean): ToolBar[] {
   return body.tools.filter(tool => tool.repeat_reads).map(tool => ({
-    key: tool.tool, label: label(tool.tool), sub: `${plural(tool.repeat_reads, 'read')} again`, total: bytes(tool.repeat_bytes),
+    key: tool.tool, tool: tool.tool, label: label(tool.tool), sub: `${plural(tool.repeat_reads, 'read')} again`, total: bytes(tool.repeat_bytes),
     parts: repo && tool.repos?.length
       ? repoPartsWith(tool.repos, 'repeat_bytes', body.repo_order, value => bytes(value), `${label(tool.tool)}, bytes returned again`,
         'bytes returned again', rereadBytesHover(tool, label), bytesRepoMore)
@@ -84,9 +86,9 @@ export function bytesRows(body: RereadBody, label: Label, repo: boolean): BarRow
 }
 
 /** Per tool: its files read 5 times or more by one agent, whole or by repository; the most reads of one file is not split. */
-export function filesRows(body: RereadBody, label: Label, repo: boolean): BarRow[] {
+export function filesRows(body: RereadBody, label: Label, repo: boolean): ToolBar[] {
   return body.tools.map(tool => ({
-    key: tool.tool, label: label(tool.tool), sub: `most reads of one file: ${fmtNum(tool.most_reads)}`,
+    key: tool.tool, tool: tool.tool, label: label(tool.tool), sub: `most reads of one file: ${fmtNum(tool.most_reads)}`,
     total: `${fmtNum(tool.files_5plus)} of ${plural(tool.files, 'file')}`,
     parts: repo && tool.repos?.length
       ? repoPartsWith(tool.repos, 'files_5plus', body.repo_order, value => plural(value, 'file'), `${label(tool.tool)}, files read 5 times or more`,

@@ -2,11 +2,12 @@ import { For, Show, untrack } from 'solid-js'
 import { fmtHours, fmtNum, fmtShare } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { Bars } from './Bars'
+import { Name, opening, opens, type Opens } from './charts/Open'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
-import { PercentileStrip } from './charts/PercentileStrip'
+import { PercentileStrip, type StripChart } from './charts/PercentileStrip'
 import {
   durationLine, durationSplit, firstChangeStrip, MODEL_TOOL_LEGEND, modelRankRows, modelStrip, modelToolRows, SESSION_LEGEND,
-  sessionStrip, sessionTimeRows, toolRankRows, toolStrip,
+  sessionStrip, sessionTimeRows, toolRankRows, toolStrip, type RootRow, type ToolRow,
 } from './durationsModel'
 import { share, toolLabel } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
@@ -41,7 +42,19 @@ function RepoFacts(props: { repo: DurationRepo }) {
   </div>
 }
 
-function Visual(props: { body: DurationBody; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+/** What the names of the charts open: a repository narrows the page, a tool opens its detail, a model narrows the page. */
+const links = (open: Opens) => ({
+  repo: <R extends object>(rows: RootRow<R>[]) => opening(rows, row => open.repo(row.root ?? '')),
+  tool: <R extends object>(rows: ToolRow<R>[]) => opening(rows, row => open.tool(row.tool ?? '')),
+  model: <R extends { key: string }>(rows: R[]) => opening(rows, row => open.model(row.key)),
+  /** The repository of one row of the list of every time figure. */
+  root: (root: string) => open.repo(root),
+})
+type Links = ReturnType<typeof links>
+/** A strip with its rows passed through `rows` (what their names open). */
+const strip = <C extends StripChart>(chart: C, rows: (rows: C['rows']) => StripChart['rows']): StripChart => ({ ...chart, rows: rows(chart.rows) })
+
+function Visual(props: { body: DurationBody; mode: ColourMode; setMode: (mode: ColourMode) => void; link: Links }) {
   const split = () => durationSplit(props.body)
   const mode = (): ColourMode => split() && props.mode === 'repo' ? 'repo' : 'parts'
   const repo = () => mode() === 'repo'
@@ -54,21 +67,21 @@ function Visual(props: { body: DurationBody; mode: ColourMode; setMode: (mode: C
     <div class={view.grid}>
       <Bars name="work" title="Working and waiting time per repository (hours)" legend={repo() ? undefined : SESSION_LEGEND}
         axis={`Length: hours, one linear scale from 0 for every bar.${repo() ? `${shade} First: working; second: waiting.` : ''}`}
-        rows={sessionTimeRows(props.body, mode())} />
+        rows={props.link.repo(sessionTimeRows(props.body, mode()))} />
       <Bars name="model-tool" title="Model and tool-call time per repository (hours)" legend={repo() ? undefined : MODEL_TOOL_LEGEND}
         axis={`Length: summed hours, one linear scale from 0.${repo() ? `${shade} First: model requests; second: tool calls.` : ''}`}
-        rows={modelToolRows(props.body, mode())} />
-      <PercentileStrip chart={sessionStrip(props.body, mode())} />
-      <PercentileStrip chart={firstChangeStrip(props.body, mode())} />
+        rows={props.link.repo(modelToolRows(props.body, mode()))} />
+      <PercentileStrip chart={strip(sessionStrip(props.body, mode()), props.link.repo)} />
+      <PercentileStrip chart={strip(firstChangeStrip(props.body, mode()), props.link.repo)} />
       <Show when={props.body.tools.length}>
-        <Bars name="tools" title="Tools and programs by summed call time (hours)" rows={toolRankRows(props.body, mode())}
+        <Bars name="tools" title="Tools and programs by summed call time (hours)" rows={props.link.tool(toolRankRows(props.body, mode()))}
           axis={`Length: hours, linear from 0.${repo() ? ' A segment per repository.' : ''}`} />
-        <PercentileStrip chart={toolStrip(props.body)} />
+        <PercentileStrip chart={strip(toolStrip(props.body), props.link.tool)} />
       </Show>
       <Show when={props.body.models.length}>
-        <Bars name="models" title="Models by summed request time (hours)" rows={modelRankRows(props.body, mode())}
+        <Bars name="models" title="Models by summed request time (hours)" rows={props.link.model(modelRankRows(props.body, mode()))}
           axis={`Length: hours, linear from 0.${repo() ? ' A segment per repository.' : ''}`} />
-        <PercentileStrip chart={modelStrip(props.body)} />
+        <PercentileStrip chart={strip(modelStrip(props.body), props.link.model)} />
       </Show>
     </div>
     <Show when={smallText(props.body.summary.small, `fewer than ${MIN_TIMED_SESSIONS} sessions with turn times`)}>{text =>
@@ -81,7 +94,7 @@ function Visual(props: { body: DurationBody; mode: ColourMode; setMode: (mode: C
       <For each={props.body.repos.slice(0, SHOWN)}>{repo => <li><details class={own.row} data-repo={repo.name}
         data-small={repo.small ? '' : undefined}>
         <summary>
-          <span class={own.name}>{repo.name}</span><span class={own.kind}>{repo.kind}</span>
+          <span class={own.name}><Name text={repo.name} open={props.link.root(repo.repo)} /></span><span class={own.kind}>{repo.kind}</span>
           <span class={own.rowText}>worked {hours(repo.agent_ms)} · waited {hours(repo.wait_ms)} · {fmtNum(repo.sessions)} sessions</span>
         </summary>
         <RepoFacts repo={repo} />
@@ -112,25 +125,28 @@ const NOTE = 'Agent working time is the sum of a session\'s turns that start in 
   'project, tool and model filters apply. Percentiles are of the whole row; they are not split by repository.'
 
 export default function Durations(props: CardProps) {
-  untrack(() => props.ctx)
+  const ctx = untrack(() => props.ctx)
+  const open = opens(ctx)
+  const link = links(open)
   const [mode, setMode] = useColourBy()
   return <InsightCard<DurationBody> {...props} card="durations" tab="flow" filtered
     hero={durationHero}
     finding={durationLine}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>
-      <Visual body={body} mode={mode()} setMode={setMode} />
+      <Visual body={body} mode={mode()} setMode={setMode} link={link} />
     </Show>}
     note={NOTE}
     table={{
       label: 'Where session time goes by repository',
       rows: body => body.repos.map((repo): Row => ({
-        id: repo.repo, name: repo.name, sessions: repo.sessions, agent_ms: repo.agent_ms ?? undefined,
+        id: repo.repo, root: repo.repo, name: repo.name, sessions: repo.sessions, agent_ms: repo.agent_ms ?? undefined,
         agent_share: repo.agent_share ?? undefined, wait_ms: repo.wait_ms ?? undefined, model_ms: repo.model_ms ?? undefined,
         tool_ms: repo.tool_ms ?? undefined, p50_agent_ms: repo.p50_agent_ms ?? undefined, p90_agent_ms: repo.p90_agent_ms ?? undefined,
         p50_first_change_ms: repo.p50_first_change_ms ?? undefined, p50_wall_ms: repo.p50_wall_ms ?? undefined,
         small: repo.small ? 'too few sessions' : '',
       })),
-      fields: [textField('name', 'Repository or folder'), numberField('sessions', 'Sessions', fmtNum),
+      fields: [{ ...textField('name', 'Repository or folder'), action: { label: row => open.repo(String(row.root ?? ''))?.label,
+        run: row => open.repo(String(row.root ?? ''))?.run() } }, numberField('sessions', 'Sessions', fmtNum),
         numberField('agent_ms', 'Working time', fmtHours), numberField('agent_share', 'Share', fmtShare),
         numberField('wait_ms', 'Waiting for a person', fmtHours), numberField('model_ms', 'Model time', fmtHours),
         numberField('tool_ms', 'Tool-call time', fmtHours), numberField('p50_agent_ms', 'Median session at work', span),
