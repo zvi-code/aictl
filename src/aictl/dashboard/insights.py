@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .board_filters import Filters
@@ -32,7 +33,9 @@ CARDS = {
     "verified": "insights.verified_commits",
     "models": "insights.model_report",
 }
-ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
+# The findings summary: one ranked list built from the answers of these cards (no view of its own).
+SUMMARY_CARDS = ("problems", "orientation", "context", "pause", "subagents", "verified", "rereads", "failures")
+ROUTES = {**{f"/api/board/insights/{card}": card for card in CARDS}, "/api/board/insights/summary": "summary"}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
 LONG_PAUSE = ("5_60m", "over_60m")
 OUTCOMES = ("identical_failed", "identical_succeeded", "changed_failed", "changed_succeeded", "other_tool")
@@ -131,9 +134,19 @@ def pause_tax(rows: list[dict]) -> dict:
         long_requests += priced
         long_cost += sum(cell["cost_usd"] for cell in late)
         baseline += priced * quick
+    quick_avg = {tool["tool"]: tool["buckets"][0]["avg_cost_usd"] for tool in tools if tool["tool"] in counted}
+    projects = []
+    for row in _of(rows, "project"):
+        priced, quick = _int(row.get("priced")), quick_avg.get(row.get("tool"))
+        cost = _cost(row.get("cost_usd")) if priced else None
+        projects.append({"project": row.get("project_name") or None, "tool": row.get("tool"), "requests": _int(row.get("requests")),
+                         "sessions": _int(row.get("reached")), "cost_usd": cost,
+                         "extra_usd": cost - priced * quick if cost is not None and quick is not None else None})
+    projects.sort(key=lambda row: -_n(row["extra_usd"]))
     return {
-        "tools": tools,
+        "tools": tools, "projects": projects,
         "summary": {
+            "sessions": _int(next(iter(_of(rows, "reach")), {}).get("reached")),
             "tools": counted, "requests": long_requests, "cost_usd": long_cost if counted else None,
             "baseline_usd": baseline if counted else None, "extra_usd": long_cost - baseline if counted else None,
             "not_reported": [tool["tool"] for tool in tools if not tool["cache_reported"]],
@@ -202,9 +215,14 @@ def subagents(rows: list[dict]) -> dict:
     main_cost = sum(_n(tool["main"]["cost_usd"]) for tool in tools)
     sub_cost = sum(_n(tool["subagents"]["cost_usd"]) for tool in tools)
     priced = any(tool["subagent_share"] is not None for tool in tools)
+    projects = sorted(({"project": row.get("project_name") or None, "requests": _int(row.get("requests")),
+                        "agents": _int(row.get("agents")), "sessions": _int(row.get("sessions")),
+                        "cost_usd": _cost(row.get("cost_usd")) if _int(row.get("priced")) else None}
+                       for row in _of(rows, "project")), key=lambda row: -_n(row["cost_usd"]))
     return {
-        "tools": tools,
+        "tools": tools, "projects": projects,
         "summary": {
+            "sessions": _int(next(iter(_of(rows, "reach")), {}).get("sessions")),
             "main_cost_usd": main_cost if priced else None, "subagent_cost_usd": sub_cost if priced else None,
             "subagent_share": _ratio(sub_cost, main_cost + sub_cost) if priced else None,
             "subagents": sum(tool["subagents"]["agents"] for tool in tools),
@@ -356,7 +374,7 @@ def context_weight(rows: list[dict]) -> dict:
             "p50_context": _cost(row.get("p50_context")) if reported else None,
             "p90_context": _cost(row.get("p90_context")) if reported else None,
             "cost_usd": cost, "buckets": buckets,
-            "heavy_requests": sum(cell["requests"] for cell in heavy),
+            "heavy_requests": sum(cell["requests"] for cell in heavy), "heavy_sessions": _int(row.get("heavy_sessions")),
             "heavy_cost_usd": sum(_n(cell["cost_usd"]) for cell in heavy) if cost is not None else None,
             "small_requests": small if reported else None,
             "small_cost_usd": None if not reported or cost is None or (small and not small_priced) else _n(row.get("small_cost")),
@@ -369,10 +387,15 @@ def context_weight(rows: list[dict]) -> dict:
     cost = sum(tool["cost_usd"] for tool in priced) if priced else None
     heavy_cost = sum(_n(tool["heavy_cost_usd"]) for tool in priced) if priced else None
     small_costs = [tool["small_cost_usd"] for tool in counted if tool["small_cost_usd"] is not None]
+    projects = sorted(({"project": row.get("project_name") or None, "requests": _int(row.get("requests")),
+                        "sessions": _int(row.get("sessions")),
+                        "cost_usd": _cost(row.get("cost_usd")) if _int(row.get("priced")) else None}
+                       for row in _of(rows, "project")), key=lambda row: -_n(row["cost_usd"]))
     return {
-        "tools": tools,
+        "tools": tools, "projects": projects,
         "summary": {
             "reported": reported, "heavy_requests": heavy, "heavy_share": _ratio(heavy, reported),
+            "heavy_sessions": sum(tool["heavy_sessions"] for tool in counted),
             "cost_usd": cost, "heavy_cost_usd": heavy_cost,
             "heavy_cost_share": _ratio(heavy_cost, cost) if cost is not None and heavy_cost is not None else None,
             "small_requests": sum(_int(tool["small_requests"]) for tool in counted) if counted else None,
@@ -411,8 +434,11 @@ def orientation(rows: list[dict]) -> dict:
         priced = _int(row.pop("before_priced"))
         sessions.append({**row, "before_cost": _n(row["before_cost"]) if priced else None})
     sessions.sort(key=lambda row: (-_n(row["before_cost"]), -_n(row["requests"])))
+    never_projects = sorted(({"project": _project_name(row.get("project_path")), "sessions": _int(row.get("sessions")),
+                              "cost_usd": _cost(row.get("never_cost")) if _int(row.get("never_priced")) else None}
+                             for row in _of(rows, "never_project")), key=lambda row: -_n(row["cost_usd"]))
     return {
-        "projects": projects, "tools": tools,
+        "projects": projects, "tools": tools, "never_projects": never_projects,
         "summary": {
             "sessions": sum(tool["sessions"] for tool in tools), "edited": sum(tool["edited"] for tool in tools),
             "projects": len(projects), "never": sum(tool["never"] for tool in tools),
@@ -491,6 +517,12 @@ def fixed_context(rows: list[dict]) -> dict:
     }
 
 
+def _project_name(path: Any) -> str | None:
+    """The last folder of a project path, as the views name a project (extract of the last path part)."""
+    parts = [part for part in str(path or "").replace("\\", "/").split("/") if part]
+    return parts[-1] if parts else None
+
+
 def _priced(row: dict) -> float | None:
     """The list-price cost of a row's sessions: 0 for no session, None when sessions exist but none is priced."""
     if not _int(row.get("sessions")):
@@ -549,9 +581,16 @@ def problem_sessions(rows: list[dict]) -> dict:
     flagged = sum(_int(tool["flagged"]) for tool in counted)
     of = sum(tool["sessions"] for tool in counted)
     costs = [tool["flagged_cost_usd"] for tool in counted if tool["flagged_cost_usd"] is not None]
+    every = [tool["cost_usd"] for tool in tools if tool["cost_usd"] is not None]
+    top = next(iter(_of(rows, "top_session")), None)
+    top_session = {"session_id": top.get("session_id"), "node_id": top.get("node_id"), "tool": top.get("tool"),
+                   "project": top.get("project_name") or None, "signals": _int(top.get("signals")),
+                   "cost_usd": _cost(top.get("cost_usd"))} if top and top.get("session_id") and _int(top.get("priced")) else None
     return {
-        "tools": tools, "signals": totals, "pairs": pairs, "projects": projects,
+        "tools": tools, "signals": totals, "pairs": pairs, "projects": projects, "top_session": top_session,
         "summary": {
+            # The list-price cost of every session with a request or a tool call in the period: the period's total.
+            "cost_usd": sum(every) if every else None,
             "sessions": of, "flagged": flagged, "flagged_share": _ratio(flagged, of),
             "multi": sum(_int(tool["multi"]) for tool in counted), "flagged_cost_usd": sum(costs) if costs else None,
             "not_reporting": [tool["tool"] for tool in tools if not tool["reports"]],
@@ -871,8 +910,114 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
 }
 
 
+def _top(projects: list[dict], key: str) -> dict | None:
+    """The project that carries the most of a finding's stake, with its sessions; none without a named project."""
+    named = [row for row in projects if row.get("project") and _n(row.get(key)) > 0]
+    if not named:
+        return None
+    top = max(named, key=lambda row: _n(row[key]))
+    return {"name": top["project"], "sessions": top.get("sessions"), "stake": top[key]}
+
+
+def _finding(kind: str, card: str, stake: Any, *, unit: str = "usd", share: float | None = None, sessions: Any = None,
+             project: dict | None = None, session: dict | None = None, opens: str = "sessions", **detail: Any) -> dict | None:
+    """One line of the summary; none when the card holds no evidence of it in the period (a stake of none or 0)."""
+    if not isinstance(stake, (int, float)) or isinstance(stake, bool) or stake <= 0:
+        return None
+    return {"kind": kind, "card": card, "unit": unit, "stake": float(stake), "share": share,
+            "sessions": _count(sessions), "project": project, "session": session, "opens": opens, "detail": detail}
+
+
+def findings(answers: dict[str, dict]) -> dict:
+    """The findings summary: what the cards found, each with its stake, ranked by stake.
+
+    A finding priced at list price ranks before a finding that is a count (no price is known for it), by dollars; the
+    counts rank by their share. A card that could not be read adds no finding. The stakes overlap (a session that never
+    edited can also be flagged and use subagents), so they are not to be added together.
+    """
+    problems, orientation, context, pause, subagent, verified, reread, failure = (
+        answers.get(card) or {} for card in SUMMARY_CARDS)
+    total = (problems.get("summary") or {}).get("cost_usd")
+
+    def part(stake: Any) -> float | None:
+        return _ratio(_n(stake), total) if isinstance(stake, (int, float)) and total else None
+
+    found: list[dict | None] = []
+    if problems:
+        s = problems["summary"]
+        found.append(_finding("problem_sessions", "problems", s["flagged_cost_usd"], share=part(s["flagged_cost_usd"]),
+                              sessions=s["flagged"], project=_top(problems["projects"], "cost_usd"), multi=s["multi"]))
+        top = problems.get("top_session")
+        if top:
+            found.append(_finding("top_session", "problems", top["cost_usd"], share=part(top["cost_usd"]), sessions=1,
+                                  project={"name": top["project"], "sessions": 1, "stake": top["cost_usd"]} if top["project"] else None,
+                                  session={key: top[key] for key in ("session_id", "node_id", "tool")}, opens="session",
+                                  signals=top["signals"]))
+    if orientation:
+        s = orientation["summary"]
+        found.append(_finding("never_edited", "orientation", s["never_cost_usd"], share=part(s["never_cost_usd"]),
+                              sessions=s["never"], project=_top(orientation.get("never_projects", []), "cost_usd"), opens="card",
+                              unpriced_requests=s.get("unpriced_requests")))
+    if context:
+        s = context["summary"]
+        found.append(_finding("heavy_context", "context", s["heavy_cost_usd"], share=part(s["heavy_cost_usd"]),
+                              sessions=s.get("heavy_sessions"), project=_top(context.get("projects", []), "cost_usd"),
+                              requests=s["heavy_requests"], request_share=s["heavy_share"]))
+        found.append(_finding("small_steps", "context", s["small_cost_usd"], share=part(s["small_cost_usd"]), opens="card",
+                              requests=s["small_requests"]))
+    if pause:
+        s = pause["summary"]
+        found.append(_finding("pause_tax", "pause", s["extra_usd"], share=part(s["extra_usd"]), sessions=s.get("sessions"),
+                              project=_top(pause.get("projects", []), "extra_usd"), requests=s["requests"],
+                              cost_usd=s["cost_usd"], baseline_usd=s["baseline_usd"]))
+    if subagent:
+        s = subagent["summary"]
+        found.append(_finding("subagents", "subagents", s["subagent_cost_usd"], share=part(s["subagent_cost_usd"]),
+                              sessions=s.get("sessions"), project=_top(subagent.get("projects", []), "cost_usd"),
+                              subagents=s["subagents"], requests=s["subagent_requests"]))
+    if verified:
+        s = verified["summary"]
+        found.append(_finding("untested", "verified", s["untested_sessions"], unit="sessions", sessions=s["untested_sessions"],
+                              share=_ratio(_n(s["untested_sessions"]), _n(s["edit_sessions"])), edit_sessions=s["edit_sessions"]))
+    if reread:
+        s = reread["summary"]
+        found.append(_finding("rereads", "rereads", s["repeat_reads"], unit="reads", share=s["repeat_share"],
+                              reads=s["reads"], repeat_bytes=s["repeat_bytes"], files_5plus=s["files_5plus"]))
+    if failure:
+        s = failure["summary"]
+        found.append(_finding("failure_runs", "failures", s["streaks"], unit="runs",
+                              share=_ratio(s["streak_calls"], s["failures"]), streak_calls=s["streak_calls"],
+                              failures=s["failures"], longest=s["longest"]))
+    ranked = sorted((item for item in found if item), key=lambda item: (
+        item["unit"] != "usd", -item["stake"] if item["unit"] == "usd" else -_n(item["share"])))
+    return {"total_usd": total, "findings": ranked}
+
+
+def summary(filters: Filters, now: float | None = None, *, history: HistoryScope) -> tuple[int, dict]:
+    """The findings summary for the board's period: the cards' own reads (answered from the view cache when the cards
+    already ran them), shaped as each card shapes them, then ranked. A card whose read fails is named, not guessed."""
+    params = {"since": filters.since, "until": filters.until}
+
+    def answer(card: str) -> dict | None:
+        try:
+            return SHAPES[card](READS[card](history, params))
+        except Exception:  # noqa: BLE001 - one failed read leaves its findings out; the others still show
+            return None
+
+    with ThreadPoolExecutor(max_workers=len(SUMMARY_CARDS)) as pool:
+        answers = dict(zip(SUMMARY_CARDS, pool.map(answer, SUMMARY_CARDS)))
+    return 200, {
+        "card": "summary", "range": params, "computed_at": time.time() if now is None else now,
+        **findings({card: body for card, body in answers.items() if body is not None}),
+        "missing": [card for card, body in answers.items() if body is None],
+        "tool_labels": {},
+    }
+
+
 def insight(card: str, filters: Filters, now: float | None = None, *, history: HistoryScope) -> tuple[int, dict]:
     """One card: its figures for the board's period, the sessions to open, and the KQL that produced them."""
+    if card == "summary":
+        return summary(filters, now, history=history)
     if card not in CARDS:
         return 404, {"error": "No such insight"}
     view = CARDS[card]

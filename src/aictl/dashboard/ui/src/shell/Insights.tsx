@@ -1,5 +1,6 @@
 import { createMemo, For, lazy, Loading, untrack } from 'solid-js'
 import { stamp } from '../design/format'
+import { FindingsSummary } from '../panels/insights/FindingsSummary'
 import { insightWindow, INSIGHT_RANGES } from '../panels/insights/insightsModel'
 import type { PanelContext } from '../panels/types'
 import { createBoxes, HiddenBoxes } from '../ui/Box'
@@ -41,6 +42,7 @@ export default function Insights(props: { ctx: PanelContext; search: string }) {
       <p>{describe()}. Each card says the period its figures cover. Cost is list price, not a bill.</p>
       <HiddenBoxes boxes={boxes} />
     </header>
+    <FindingsSummary ctx={ctx} boxes={boxes} since={period().since} until={period().until} />
     <div class={styles.cards}>
       <For each={cards}>{Card => <Loading fallback={<PanelState state="loading" />}>
         <Card ctx={ctx} boxes={boxes} since={period().since} until={period().until} />

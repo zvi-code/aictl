@@ -157,6 +157,10 @@ union
         | project node_id, session_id, tool, signals, names, project_name, priced, sum_cost
         | extend row_type='session'),
     (per_session
+        | top 1 by sum_cost desc
+        | project node_id, session_id, tool, signals, project_name, priced, sum_cost
+        | extend row_type='top_session'),
+    (per_session
         | summarize first_ts=min(first_ts), last_ts=max(last_ts)
         | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
 | extend cost_usd=iff(priced == 0, real(null), sum_cost), all_cost_usd=iff(all_priced == 0, real(null), all_cost)

@@ -4,7 +4,8 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // the edit call counts as before it: a request comes before the call it made. An edit call is named by the
 // board's rule (board_projection._EDIT_TOOL_RE and not a server tool, projection_utils._MCP_TOOL_RE).
 // A session counts in the period its first main-agent request falls in; its later requests count with it.
-// A project is the session's project_path; projects with fewer than 3 sessions that edit are left out.
+// A project is the session's project_path; projects with fewer than 3 sessions that edit are left out. The projects
+// whose sessions never edited cost the most (never_project) are the five with the highest list-price cost.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 // requests_current holds the current row of each key per hour of its time (event_hour); only the keys with
 // two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
@@ -69,6 +70,11 @@ union
                     never_requests=sumif(requests, edited == 0), never_priced=sumif(priced, edited == 0),
                     never_cost=sumif(sum_cost, edited == 0), priced=sum(priced) by tool
         | extend row_type='tool'),
+    (per_session
+        | where edited == 0 and isnotempty(project_path)
+        | summarize sessions=count(), never_priced=sum(priced), never_cost=sum(sum_cost) by project_path
+        | top 5 by never_cost desc
+        | extend row_type='never_project'),
     (per_session
         | where edited == 1 and before_requests > 0
         | top 10 by before_cost desc

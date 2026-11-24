@@ -10,6 +10,7 @@ import { detailPath, detailRead } from '../data'
 import { States } from '../kinds/States'
 import type { PanelContext, Read } from '../types'
 import { learnToolLabels, type CardId, type Hero, type InsightBody, type InsightSession, type QueryBlock } from './insightsModel'
+import { revealed } from './summaryModel'
 import styles from './Insights.module.css'
 
 export type CardProps = { ctx: PanelContext; boxes: Boxes; since: number; until: number }
@@ -80,6 +81,8 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
   }
   createEffect(() => data()?.tool_labels, labels => { learnToolLabels(labels) })
   const body = () => data()!
+  // A finding of the summary asked for this card's sessions: open them once (the person can close them again).
+  const opened = () => revealed()?.card === props.card && revealed()?.sessions === true
   const sessionFields = createMemo((): Field<InsightSession>[] => [{
     id: 'session_id', label: 'Session', read: row => row.session_id,
     action: { label: row => `Open session ${row.session_id}`, run: row => ctx.openAgent(row.session_id, props.tab) },
@@ -92,13 +95,13 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
         <strong>{hero().value}</strong><span>{hero().label}</span></p>}</Show>
       <p class={styles.finding} data-finding>{props.finding(body())}</p>
       {props.visual(body())}
-      <details class={styles.more} data-more>
+      <details class={styles.more} data-more open={opened() || undefined}>
         <summary>Details: sessions ({body().sessions.length}), data table, KQL, how this is measured</summary>
       <details class={styles.disclosure} data-method>
         <summary>How this is measured</summary>
         <p class={styles.note}>{props.note}</p>
       </details>
-      <details class={styles.disclosure} data-sessions>
+      <details class={styles.disclosure} data-sessions open={opened() || undefined}>
         <summary>Open sessions ({body().sessions.length})</summary>
         <Show when={body().sessions.length} fallback={<p class={styles.note}>No session in this period.</p>}>
           <Table label={`${props.title}: sessions`} fields={sessionFields()} rows={body().sessions} pageSize={10}

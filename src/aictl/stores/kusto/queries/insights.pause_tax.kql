@@ -1,7 +1,8 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
 // The pause before each model request: the time since the previous request of the same session and agent
 // ended. Only requests in the period count, so the first request of each session and agent in the period
-// has no pause. A prompt cache entry lapses after about 5 minutes without use.
+// has no pause. A prompt cache entry lapses after about 5 minutes without use. A project is the last folder of
+// the request's project path; the project rows are the ten projects and tools with the highest cost after a long pause.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 // requests_current holds the current row of each key per hour of its time (event_hour); the hours one
 // either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
@@ -17,14 +18,14 @@ let calls = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, input_tokens,
-              cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms
+              cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, project_path
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
     | where coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0
     // A stored cost of 0 for a request with tokens is a model with no list price at ingest: unpriced, not free.
     | extend cost_usd=iff(cost_usd == 0 and coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0, real(null), cost_usd)
     | project node_id, session_id, agent_id, ts, tool, input_tokens, cache_read_tokens, cache_creation_tokens,
-              cost_usd, duration_ms);
+              cost_usd, duration_ms, project_path);
 let paused = materialize(calls
     | sort by node_id asc, session_id asc, agent_id asc, ts asc
     | extend pause_s=iff(prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id,
@@ -48,6 +49,17 @@ union
         | order by sum_cost desc, requests desc, node_id asc, session_id asc
         | take 10
         | extend row_type='session'),
+    (paused
+        | where bucket in ('5_60m', 'over_60m')
+        | extend project_name=extract(@'([^/\\]+)[/\\]*$', 1, project_path)
+        | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd),
+                    reached=count_distinct(strcat(node_id, '|', session_id)) by project_name, tool
+        | top 10 by sum_cost desc
+        | extend row_type='project'),
+    (paused
+        | where bucket in ('5_60m', 'over_60m')
+        | summarize reached=count_distinct(strcat(node_id, '|', session_id))
+        | extend row_type='reach'),
     (calls
         | summarize first_ts=min(ts), last_ts=max(ts)
         | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)

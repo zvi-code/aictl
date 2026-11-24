@@ -1,6 +1,7 @@
 declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
 // Requests of the main agent against requests of subagents: a subagent request has an agent_id that is set
-// and differs from its session_id.
+// and differs from its session_id. A project is the last folder of the session's project path; the project rows are
+// the five with the highest subagent cost.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 // requests_current holds the current row of each key per hour of its time (event_hour); the hours one
 // either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
@@ -16,14 +17,15 @@ let per_agent = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, cost_usd,
-              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens
+              input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, project_path
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
     // A stored cost of 0 for a request with tokens is a model with no list price at ingest: unpriced, not free.
     | extend cost_usd=iff(cost_usd == 0 and coalesce(input_tokens, 0) + coalesce(output_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0, real(null), cost_usd)
     | extend subagent=isnotempty(agent_id) and agent_id != session_id
     | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd), first_ts=min(ts),
-                last_ts=max(ts), tool=take_any(tool) by node_id, session_id, subagent, agent=iff(subagent, agent_id, ''));
+                last_ts=max(ts), tool=take_any(tool), project_path=take_anyif(project_path, isnotempty(project_path))
+          by node_id, session_id, subagent, agent=iff(subagent, agent_id, ''));
 union
     (per_agent
         | summarize requests=sum(requests), priced=sum(priced), sum_cost=sum(sum_cost), agents=countif(subagent)
@@ -38,6 +40,17 @@ union
         | take 10
         | extend row_type='session', main_cost=iff(main_priced == 0, real(null), main_cost)
         | project-away main_priced),
+    (per_agent
+        | where subagent
+        | extend project_name=extract(@'([^/\\]+)[/\\]*$', 1, project_path)
+        | summarize requests=sum(requests), priced=sum(priced), sum_cost=sum(sum_cost), agents=count(),
+                    sessions=count_distinct(strcat(node_id, '|', session_id)) by project_name
+        | top 5 by sum_cost desc
+        | extend row_type='project'),
+    (per_agent
+        | where subagent
+        | summarize sessions=count_distinct(strcat(node_id, '|', session_id))
+        | extend row_type='reach'),
     (per_agent
         | summarize first_ts=min(first_ts), last_ts=max(last_ts)
         | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)

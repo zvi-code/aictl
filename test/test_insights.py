@@ -80,7 +80,7 @@ def test_pause_tax_buckets_pauses_within_one_session_and_agent(kusto_store):
     assert vscode["cache_reported"] is False
     assert all(cell["cache_hit_share"] is None for cell in vscode["buckets"])
     assert body["summary"] == {
-        "tools": ["claude-code"], "requests": 2, "cost_usd": pytest.approx(12.0), "baseline_usd": pytest.approx(1.0),
+        "sessions": 2, "tools": ["claude-code"], "requests": 2, "cost_usd": pytest.approx(12.0), "baseline_usd": pytest.approx(1.0),
         "extra_usd": pytest.approx(11.0), "not_reported": ["copilot-vscode"], "unpriced_requests": 0,
     }
     assert [row["session_id"] for row in body["sessions"]] == ["s1", "s3"]
@@ -569,8 +569,10 @@ def test_problem_sessions_flag_each_signal_per_session_and_tool(kusto_store):
         (["api_error", "compaction"], 1), (["api_error", "failure_streak"], 1), (["compaction", "failure_streak"], 1),
         (["failed_delegation", "hook_failure"], 1), (["failed_delegation", "open_todos"], 1), (["hook_failure", "open_todos"], 1)]
     assert [(row["project"], row["sessions"], row["all_sessions"]) for row in body["projects"]] == [("beta", 2, 3), ("alpha", 1, 2)]
-    assert body["summary"] == {"sessions": 6, "flagged": 3, "flagged_share": 0.5, "multi": 2, "flagged_cost_usd": 2.5,
-                               "not_reporting": ["codex-cli"]}
+    assert body["summary"] == {"cost_usd": 7.5, "sessions": 6, "flagged": 3, "flagged_share": 0.5, "multi": 2,
+                               "flagged_cost_usd": 2.5, "not_reporting": ["codex-cli"]}
+    # The costliest session of the period, flagged or not.
+    assert (body["top_session"]["session_id"], body["top_session"]["cost_usd"], body["top_session"]["project"]) == ("v1", 3.0, None)
     signals = {row["signal"]: row for row in body["signals"]}
     assert signals["api_error"] == {"signal": "api_error", "tools": ["claude-code"], "sessions": 1, "share": 0.5}
     assert [(row["session_id"], row["signals"], row["names"], row["cost_usd"]) for row in body["sessions"]] == [
@@ -587,6 +589,72 @@ def test_problem_sessions_and_after_failure_share_one_failure_run_rule():
         assert "invoke failure_runs()" in text and "invoke failure_streaks()" in text, view
     # A call that starts a subagent is named as tool_targets names one.
     assert _kql_list("insights.problem_sessions", "AgentTools") == set(_AGENT_TOOLS)
+
+
+def test_the_findings_cards_name_the_project_that_carries_the_stake_and_the_summary_ranks_them(kusto_store):
+    s = kusto_store
+    # alpha: one long session with a long pause, a heavy context and a subagent; beta: two small sessions that never edit.
+    # Every request has 900 output tokens, so none is a small step.
+    _request(s, "a1", 1000.0, session="big", cost=1.0, project_path="/p/alpha", output_tokens=900)
+    _request(s, "a1b", 1010.0, session="big", cost=1.0, project_path="/p/alpha", output_tokens=900)  # 10 s: the no-pause price
+    _sized(s, "a2", 1500.0, 300_000, session="big", cost=40.0, project_path="/p/alpha")  # 490 s pause, 300k context
+    _request(s, "a3", 1510.0, session="big", agent="sub", cost=20.0, project_path="/p/alpha", output_tokens=900)
+    _edit(s, "e1", 1600.0, session="big")
+    _request(s, "b1", 1000.0, session="small1", cost=2.0, project_path="C:\\work\\beta", output_tokens=900)
+    _request(s, "b2", 1000.0, session="small2", cost=3.0, project_path="C:\\work\\beta", output_tokens=900)
+    history = HistoryScope(kusto_store.history_store.reader, None)
+    pause = _card(s, "pause")
+    assert pause["projects"] == [{"project": "alpha", "tool": "claude-code", "requests": 1, "sessions": 1, "cost_usd": 40.0,
+                                  "extra_usd": pytest.approx(39.0)}] and pause["summary"]["sessions"] == 1
+    sub = _card(s, "subagents")
+    assert sub["projects"] == [{"project": "alpha", "requests": 1, "agents": 1, "sessions": 1, "cost_usd": 20.0}]
+    assert sub["summary"]["sessions"] == 1
+    context = _card(s, "context")
+    assert context["projects"] == [{"project": "alpha", "requests": 1, "sessions": 1, "cost_usd": 40.0}]
+    assert context["summary"]["heavy_sessions"] == 1
+    orientation = _card(s, "orientation")
+    assert orientation["never_projects"] == [{"project": "beta", "sessions": 2, "cost_usd": 5.0}]
+    problems = _card(s, "problems")
+    assert problems["summary"]["cost_usd"] == pytest.approx(67.0)
+    assert problems["top_session"] == {"session_id": "big", "node_id": "test-node", "tool": "claude-code", "project": "alpha",
+                                       "signals": 0, "cost_usd": 62.0}
+    status, body = insights.insight("summary", PERIOD, 200_000.0, history=history)
+    assert status == 200 and body["missing"] == [] and body["total_usd"] == pytest.approx(67.0)
+    found = {item["kind"]: item for item in body["findings"]}
+    # Ranked by dollars; a card with no evidence (no problem signal, no failure, no read, no commit) adds no line.
+    assert [item["kind"] for item in body["findings"]] == ["top_session", "heavy_context", "pause_tax", "subagents",
+                                                           "never_edited"]
+    assert found["top_session"]["session"] == {"session_id": "big", "node_id": "test-node", "tool": "claude-code"}
+    assert found["top_session"]["share"] == pytest.approx(62.0 / 67.0) and found["top_session"]["opens"] == "session"
+    assert found["never_edited"]["project"] == {"name": "beta", "sessions": 2, "stake": 5.0}
+    assert found["never_edited"]["sessions"] == 2 and found["never_edited"]["opens"] == "card"
+    assert found["pause_tax"]["stake"] == pytest.approx(39.0) and found["pause_tax"]["project"]["name"] == "alpha"
+
+
+def _answers(**cards):
+    empty = {"problems": {"summary": {"cost_usd": 100.0, "flagged_cost_usd": None, "flagged": 0, "multi": 0}, "projects": [],
+                          "top_session": None}}
+    return {**empty, **cards}
+
+
+def test_the_summary_ranks_priced_findings_by_dollars_then_counts_by_share_and_leaves_out_what_has_no_evidence():
+    answers = _answers(
+        context={"summary": {"heavy_cost_usd": 10.0, "heavy_sessions": 3, "heavy_requests": 4, "heavy_share": 0.1,
+                             "small_cost_usd": 0.0, "small_requests": 0}, "projects": []},
+        subagents={"summary": {"subagent_cost_usd": 30.0, "sessions": 2, "subagents": 5, "subagent_requests": 9},
+                   "projects": [{"project": "a", "sessions": 1, "cost_usd": 20.0}, {"project": None, "sessions": 1, "cost_usd": 25.0}]},
+        rereads={"summary": {"repeat_reads": 50, "reads": 100, "repeat_share": 0.5, "repeat_bytes": None, "files_5plus": 1}},
+        failures={"summary": {"streaks": 2, "streak_calls": 9, "failures": 10, "longest": 5}},
+        verified={"summary": {"untested_sessions": 0, "edit_sessions": 4}},
+    )
+    found = insights.findings(answers)
+    assert [item["kind"] for item in found["findings"]] == ["subagents", "heavy_context", "failure_runs", "rereads"]
+    first = found["findings"][0]
+    assert first["share"] == pytest.approx(0.3)
+    # The project that carries the most of the stake, among projects with a name.
+    assert first["project"] == {"name": "a", "sessions": 1, "stake": 20.0}
+    # Without the period's total no share is stated, and a card that was not read adds nothing.
+    assert insights.findings({"context": answers["context"]})["findings"][0]["share"] is None
 
 
 class _Reader:
@@ -617,6 +685,14 @@ def test_each_card_route_answers_on_its_own_and_one_failure_stays_in_its_card(mo
     assert {view for view, _ in reader.calls} == set(insights.CARDS.values())
     assert all(params["since"] == 10.0 and params["until"] == 20.0 for _, params in reader.calls)
     assert board_routes.handle_get("/api/board/insights/pause", "since=20&until=10", None, None, now=30.0)[0] == 400
+
+
+def test_the_summary_reads_the_cards_views_once_each_and_names_a_card_it_could_not_read():
+    reader = _Reader(failing={"insights.rereads"})
+    status, body = insights.insight("summary", Filters(since=10.0, until=20.0), 30.0, history=HistoryScope(reader, None))
+    assert status == 200 and body["findings"] == [] and body["missing"] == ["rereads"]
+    assert sorted(view for view, _ in reader.calls) == sorted(insights.CARDS[card] for card in insights.SUMMARY_CARDS)
+    assert all(params["since"] == 10.0 and params["until"] == 20.0 for _, params in reader.calls)
 
 
 def test_an_empty_store_reports_nothing_as_not_reported():

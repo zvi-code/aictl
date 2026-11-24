@@ -1,0 +1,24 @@
+/* The findings summary at the top of Insights: a ranked list, the stake first. */
+.summary {
+  display: grid; gap: var(--space-3); padding: var(--space-6); min-inline-size: 0;
+  background: var(--color-surface); border: var(--border-size) solid var(--color-border-subtle); border-radius: var(--radius-md);
+}
+.summary h2 { margin: 0; font-size: var(--text-lg); }
+.note { margin: 0; color: var(--color-muted); font-size: var(--text-xs); line-height: var(--leading-normal); }
+.list { display: grid; gap: var(--space-3); margin: 0; padding-inline-start: var(--space-6); }
+.item {
+  display: grid; grid-template-columns: minmax(6rem, auto) 1fr auto; gap: var(--space-2) var(--space-4); align-items: baseline;
+  font-size: var(--text-sm); line-height: var(--leading-normal); min-inline-size: 0;
+}
+.stake { font-size: var(--text-lg); font-weight: var(--weight-medium); font-variant-numeric: tabular-nums; }
+.text { display: grid; gap: var(--space-1); min-inline-size: 0; overflow-wrap: anywhere; }
+.text small { color: var(--color-muted); font-size: var(--text-xs); }
+.link {
+  font: inherit; font-size: var(--text-xs); color: var(--color-text); background: var(--color-surface); white-space: nowrap;
+  border: var(--border-size) solid var(--color-border); border-radius: var(--radius-sm); padding: var(--space-1) var(--space-3); cursor: pointer;
+}
+.link:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 1px; }
+@media (max-width: 40rem) {
+  .item { grid-template-columns: 1fr; }
+  .link { justify-self: start; }
+}
