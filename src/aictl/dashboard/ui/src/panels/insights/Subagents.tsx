@@ -6,7 +6,7 @@ import {
   subagentHero, money, plural, share, subagentFinding, subagentHover, subagentSessionHover, toolLabel,
   type InsightSession, type Label, type SubagentBody,
 } from './insightsModel'
-import { sessionHover, sessionLabel } from './sessionName'
+import { sessionHover, sessionLabel, sessionName } from './sessionName'
 import { RepoLegend } from './RepoLegend'
 import { hasOther, repoParts, type RepoSegment } from './repoSplit'
 
@@ -53,7 +53,7 @@ function sessionRows(body: SubagentBody, label: Label): BarRow[] {
       sub: `${plural(Number(row.agents ?? 0), 'subagent')} · ${plural(Number(row.requests ?? 0), 'request')}`,
       total: money(Number(row.cost_usd)),
       parts: sessionRepos(row)?.length ? repoParts(sessionRepos(row), 'cost_usd', body.repo_order, value => money(value),
-        `Session ${row.session_id.slice(0, 8)}, subagent cost`, 'subagent cost', subagentSessionHover(row, label))
+        `Session ${sessionName(row)}, subagent cost`, 'subagent cost', subagentSessionHover(row, label))
         : [{ key: 'cost', label: 'subagent cost', value: Number(row.cost_usd), tone: 1, text: money(Number(row.cost_usd)),
           hover: subagentSessionHover(row, label) }],
     }))

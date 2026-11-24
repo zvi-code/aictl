@@ -206,7 +206,7 @@ describe('INS-RS-F · Spend in subagents: bars split by repository', () => {
     const row = box.querySelector('[data-chart="subagent-sessions"] [data-row="s-sub-0001-aaaa"]')!
     expect([repos(row), written(row)]).toEqual([['1'], ['$8.00']])
     expect(tip(row, 'repo:/src/docs')).toBe('Session s-sub-00, subagent cost — docs (/src/docs): $8.00 · 100% of this bar · 25% of docs own ' +
-      'subagent cost. Session s-sub-0001-aaaa (claude-code): 4 subagents made 40 requests costing $8.00 at list price; its main agent cost $3.00.')
+      'subagent cost. Session s-sub-00 (claude-code): 4 subagents made 40 requests costing $8.00 at list price; its main agent cost $3.00.')
     dispose()
   })
 
