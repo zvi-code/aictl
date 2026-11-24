@@ -10,13 +10,16 @@ import styles from './ColourBy.module.css'
 export type ColourMode = 'parts' | 'repo'
 
 /** The URL value of the choice: `by=repo`, or no `by` for the view's own parts. */
-export function readColourBy(search: string): ColourMode {
+export function readColourBy(search: string = typeof location === 'undefined' ? '' : location.search): ColourMode {
   return new URLSearchParams(search || '').get('by') === 'repo' ? 'repo' : 'parts'
 }
 
+/** What a view draws: by repository only when that was chosen and the answer carries a split. */
+export const drawnBy = (chosen: ColourMode, split: boolean): ColourMode => split && chosen === 'repo' ? 'repo' : 'parts'
+
 /** The view's choice, read once from the address and written back to it (replacing the entry, no history step). */
 export function useColourBy(): [Accessor<ColourMode>, (mode: ColourMode) => void] {
-  const [mode, setMode] = createSignal<ColourMode>(readColourBy(typeof location === 'undefined' ? '' : location.search))
+  const [mode, setMode] = createSignal<ColourMode>(readColourBy())
   return [mode, next => { setMode(next); writeUrl({ by: next === 'repo' ? 'repo' : null }) }]
 }
 
