@@ -48,6 +48,9 @@ class Filters:
     q: str = ""
     buckets: int = DEFAULT_BUCKETS
     runtime_statuses: tuple[tuple[str, str], ...] | None = None
+    # Asked as ``since=all``: all stored history. A board read replaces since, until and buckets by the
+    # window of all history in its scope (full_history.resolve); other routes read from the start of time.
+    full_history: bool = False
 
     def matches_project(self, path: str | None) -> bool:
         """Whether a folder is one of the chosen projects (exact, in each spelling of one path)."""
@@ -91,7 +94,8 @@ def parse_filters(query: str, now: float) -> Filters:
         return value
 
     until = number("until", now)
-    since = number("since", until - DEFAULT_RANGE_S)
+    full_history = one("since") == "all"
+    since = 0.0 if full_history else number("since", until - DEFAULT_RANGE_S)
     if since >= until:
         raise BoardRequestError("since must be before until")
     status = one("status") or "all"
@@ -113,6 +117,7 @@ def parse_filters(query: str, now: float) -> Filters:
         status=status,
         q=one("q")[:200],
         buckets=min(buckets, MAX_BUCKETS),
+        full_history=full_history,
     )
 
 

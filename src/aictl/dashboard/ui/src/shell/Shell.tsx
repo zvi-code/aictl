@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, lazy, Loading, onCleanup, Show, Switch, Match, untrack } from 'solid-js'
 import { render } from '@solidjs/web'
-import { boardLiveRequest, boardRangePatch, clearedFilters, filtersToParams, parseFilters, RANGES, readScreen, type Screen } from '../data/filters'
+import { boardLiveRequest, boardRangePatch, clearedFilters, filtersToParams, parseFilters, PERIODS, readScreen, type Screen } from '../data/filters'
 import type { LiveClient } from '../data/live'
 import { isRuntimeSession } from '../data/runtimeAgents'
 import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, scopeParam, toolsToParams, writeUrl, type UrlPatch } from '../data/urlState'
@@ -111,7 +111,7 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
     const patch = { ...CLEAR_SETTINGS_PARAMS, ...clearDrawer, screen: next === 'board' ? null : next,
       scope: scopeParam(scope()) }
     const search = mergeSearch(location.search, patch)
-    // The board has no range such as Insights' "all": its address says the range it shows.
+    // The board's address says the range it shows.
     go(location.pathname + (next === 'board' ? mergeSearch(search, boardRangePatch(search) ?? {}) : search))
     window.scrollTo(0, 0)
   }
@@ -244,7 +244,7 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
     ...(Object.entries(screenNames) as [Screen, string][]).map(([id, name]) =>
       ({ id: `screen-${id}`, label: `Open ${name}`, run: () => changeScreen(id) })),
     ...sectionList().filter(section => section.id !== 'top').map(section => ({ id: `section-${section.id}`, label: `Go to ${section.title}`, run: () => jump(section.id) })),
-    ...RANGES.map(range => ({ id: `range-${range.id}`, label: `Time range: ${range.label}`, run: () => {
+    ...PERIODS.map(range => ({ id: `range-${range.id}`, label: `Time range: ${range.label}`, run: () => {
       if (screen() !== 'board') changeScreen('board')
       navigate({ range: range.id, since: null, until: null, sel: null })
     } })),

@@ -2,8 +2,11 @@
 // The period picker of the board (Overview) and of Insights: the same choices, in the same order, with the
 // same words, and each choice gives the window the server is asked for.
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { parseFilters, windowOf } from '../../src/data/filters'
-import { INSIGHT_RANGES } from '../../src/panels/insights/insightsModel'
+import { boardQuery, filtersToParams, parseFilters, periodLabel, PERIODS, windowOf } from '../../src/data/filters'
+import { mergeSearch } from '../../src/data/urlState'
+import { dateLabel } from '../../src/design/format'
+import { INSIGHT_RANGES, insightWindow } from '../../src/panels/insights/insightsModel'
+import { RANGE_LABELS as FINDER_RANGE_LABELS } from '../../src/panels/overview/sessionFinder'
 import type { PanelContext } from '../../src/panels/types'
 import { BoardControls } from '../../src/shell/BoardControls'
 import { installDom, mount } from './dom'
@@ -48,5 +51,40 @@ describe('The period picker', () => {
     expect(win.until % (3 * 86_400)).toBe(0)
     expect(win.until).toBeGreaterThanOrEqual(now)
     expect(win.until - now).toBeLessThan(3 * 86_400)
+  })
+})
+
+describe('All history', () => {
+  const resolved = { since: 1_783_555_200, until: 1_795_564_800, bucket_s: 3 * 86_400, bucket_starts: [] }
+
+  it('follows 90 d and comes before Custom on the board, with the start the answer resolved', () => {
+    const picker = controls('?range=all&scope=fleet', { range: resolved })
+    expect(picker.options().map(([id]) => id).slice(-3)).toEqual(['90d', 'all', 'custom'])
+    expect(picker.select.value).toBe('all')
+    expect(picker.options().find(([id]) => id === 'all')?.[1]).toBe(`All history · since ${dateLabel(resolved.since)}`)
+    expect(controls('?range=all').options().find(([id]) => id === 'all')?.[1]).toBe('All history')
+  })
+
+  it('has the same words on Insights, the board and the session finder', () => {
+    expect(INSIGHT_RANGES.at(-1)).toEqual({ id: 'all', label: 'All history' })
+    expect(INSIGHT_RANGES).toEqual(PERIODS)
+    expect(FINDER_RANGE_LABELS.all).toBe('All history')
+  })
+
+  it('stays in the address and asks the server to resolve the window, with or without a selected interval', () => {
+    const filters = parseFilters('?range=all&sel=1790000000-1790003600&scope=fleet')
+    expect(filters.range.id).toBe('all')
+    expect(mergeSearch('?scope=fleet', filtersToParams(filters))).toContain('range=all')
+    const whole = new URLSearchParams(boardQuery(filters, null, windowOf(filters.range, 1_795_521_000)))
+    expect(Object.fromEntries(whole)).toMatchObject({ since: 'all', until: '1795521600' })
+    expect(whole.has('buckets')).toBe(false)
+    expect(new URLSearchParams(boardQuery(filters, null, filters.sel!)).get('since')).toBe('1790000000')
+    // Insights keeps its own totals over all history: from the start of time.
+    expect(insightWindow('?range=all', 1_795_521_000)).toEqual({ id: 'all', since: 0, until: 1_795_521_600 })
+  })
+
+  it('names the resolved period', () => {
+    expect(periodLabel({ id: 'all' }, resolved)).toBe(`All history · since ${dateLabel(resolved.since)}`)
+    expect(periodLabel({ id: '90d' }, resolved)).toBe('90 d')
   })
 })

@@ -5,6 +5,7 @@
 // project, its exact stored value, and one `repo` key per chosen repository, its root folder
 // (`?project=/src/a&project=/src/b&repo=/src/aictl`). The server resolves a repository to its worktrees and
 // folders. Every per-project request carries both (withProjects).
+import { dateLabel } from '../design/format';
 import { parseUrlState, rangeToParams, type Range, type TimeWindow, type UrlPatch } from './urlState';
 
 export type Screen = 'board' | 'health' | 'insights' | 'index' | 'settings';
@@ -21,6 +22,16 @@ export const RANGES = [
   { id: '30d', buckets: 30, bucket_s: 86400, label: '30 d' },
   { id: '90d', buckets: 30, bucket_s: 259200, label: '90 d' },
 ];
+/** All stored history: the server resolves the window, from the earliest stored session in scope to now
+ * (full_history.py), and the board's answer carries it (`range`). The same words as Insights and the finder. */
+export const ALL_HISTORY = { id: 'all', label: 'All history' };
+/** The choices of a period picker, in order: the presets, then all history (Custom follows where it is offered). */
+export const PERIODS = [...RANGES.map(({ id, label }) => ({ id, label })), ALL_HISTORY];
+/** A period's name; all history with the start the board's answer resolved: "All history · since Jul 9, 2026". */
+export function periodLabel(range: { id: string; label?: string }, resolved?: { since: number } | null): string {
+  const label = PERIODS.find(period => period.id === range.id)?.label ?? range.label ?? range.id;
+  return range.id === ALL_HISTORY.id && resolved && resolved.since > 0 ? `${label} · since ${dateLabel(resolved.since)}` : label;
+}
 const RANGE_BY_ID = Object.fromEntries(RANGES.map(r => [r.id, r]));
 const DEFAULT_RANGE = '24h';
 export function readScreen(search: string): Screen {
@@ -49,7 +60,7 @@ export function parseFilters(search: string) {
   const q = new URLSearchParams(search || '');
   let range: Range = { id: DEFAULT_RANGE };
   if (base.range?.id === 'custom') range = base.range;
-  else if (base.range && RANGE_BY_ID[base.range.id]) range = { id: base.range.id };
+  else if (base.range && (RANGE_BY_ID[base.range.id] || base.range.id === ALL_HISTORY.id)) range = { id: base.range.id };
   let sel: TimeWindow | null = null;
   const m = /^(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)$/.exec(q.get('sel') || '');
   if (m && Number(m[2]) > Number(m[1])) sel = { since: Number(m[1]), until: Number(m[2]) };
@@ -65,8 +76,8 @@ export function parseFilters(search: string) {
   };
 }
 
-/** The URL keys that make the board's address say the range it shows. The board has no range such as
- * Insights' "all": it shows its default, so the address and the picker say that default too. */
+/** The URL keys that make the board's address say the range it shows: a range it cannot show (an unknown id, a
+ * custom range without its times) is replaced by its default, so the address and the picker say that default too. */
 export function boardRangePatch(search: string): UrlPatch | undefined {
   const asked = new URLSearchParams(search || '').get('range');
   if (asked == null || asked === parseFilters(search).range.id) return undefined;
@@ -85,8 +96,10 @@ export function filtersToParams(f: Filters) {
   };
 }
 
-/** The time window for the API. A preset ends now, rounded so repeat calls can match. */
+/** The time window for the API. A preset ends now, rounded so repeat calls can match. All history ends at the next
+ * hour; its start (`since` 0 here) is resolved by the server, which the window's `all` asks for. */
 export function windowOf(range: Range, nowS = Date.now() / 1000): TimeWindow {
+  if (range.id === ALL_HISTORY.id) return { since: 0, until: Math.ceil(nowS / 3600) * 3600, all: true };
   if (range.id === 'custom' && range.since != null && range.until != null) {
     const buckets = 24;
     return { since: Math.floor(range.since), until: Math.floor(range.until), buckets };
@@ -99,9 +112,9 @@ export function windowOf(range: Range, nowS = Date.now() / 1000): TimeWindow {
 /** Board history parameters shared by live and detail reads. Tools null means all, [] means none. */
 export function boardQuery(filters: Filters, tools: Tools, win: TimeWindow) {
   const p = new URLSearchParams();
-  p.set('since', String(win.since));
+  p.set('since', win.all ? 'all' : String(win.since));
   p.set('until', String(win.until));
-  if (win.buckets) p.set('buckets', String(win.buckets));
+  if (win.buckets && !win.all) p.set('buckets', String(win.buckets));
   if (tools) p.set('tool', tools.length ? tools.join(',') : '-');
   for (const project of filters.projects) p.append('project', project);
   for (const repo of filters.repos) p.append('repo', repo);

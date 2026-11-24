@@ -1,0 +1,15 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', row_limit:long);
+// Where all history in scope starts, for the board's "All history" window (dashboard/full_history.py): the
+// earliest start of a stored session that is not deleted; a session stored without a start counts from its
+// last activity. Read through the project filter like every view, so a chosen project starts at its own
+// first session.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
+sessions_secs
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, started_at, last_activity_at, _deleted) by ['project'], node_id, session_id
+| where not(coalesce(_deleted, false))
+| extend first_ts = coalesce(started_at, last_activity_at)
+| where first_ts > 0
+| summarize first_ts=min(first_ts), sessions=count()
+| take row_limit

@@ -255,6 +255,8 @@ class LiveDashboard:
         read_history = history
         if history:
             filters = parse_filters(scope, time.time())
+            if filters.full_history:
+                filters = self._full_history(filters)
             with self._lock:
                 entry = self._scopes.get(scope)
                 if entry is None:
@@ -499,6 +501,20 @@ class LiveDashboard:
             )
 
     _safe_reason = staticmethod(safe_reason)
+
+    def _full_history(self, filters: Any) -> Any:
+        """The window of all history this node's store holds, as the HTTP board resolves it (full_history.py).
+        A failed read draws the last day; the answer's range says so."""
+        from ...stores.base import StoreError
+        from .. import full_history
+        from ..projections.history import HistoryScope
+
+        try:
+            return full_history.resolve(filters, HistoryScope.local(self.store))
+        except StoreError:
+            logger.warning("Could not read where history starts; the board shows the last day", exc_info=True)
+            since, until, buckets = full_history.window(None, filters.until)
+            return replace(filters, since=since, until=until, buckets=buckets)
 
     def _filters_now(self, entry: _Scope, now: float) -> Any:
         from ..board_filters import _clock_range

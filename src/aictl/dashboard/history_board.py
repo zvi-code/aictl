@@ -10,6 +10,7 @@ from urllib.parse import parse_qs
 
 from ..stores import UnresolvedObservationsError, has_history
 from ..stores.base import StoreError
+from . import full_history
 from .board_filters import BoardRequestError, parse_filters
 from .board_projection import compute_board
 from .board_sections import SECTIONS, Abandoned, Selection, compute_section
@@ -56,13 +57,14 @@ def read_board(store, query: str, now: float | None = None) -> bytes:
     now = time.time() if now is None else now
     filters = parse_filters(query, now)
     local = scope.kind == "local"
-    span = filters.until - filters.since
     history = scoped(HistoryScope.local(store), filters.projects)
     if not local:
         if not has_history(history.reader):
             raise ScopeError("Node history requires a shared history store", 422, "unsupported_scope")
         history = HistoryScope(history.reader, scope.node, qualified=True)
     history.require_reader()
+    filters = full_history.resolve(filters, history)
+    span = filters.until - filters.since
     ttl = 15 if local else 120 if span > 86400 else 45
     key = (history.reader, history.node, scope, filters, charts)
     rolling = (history.reader, history.node, scope, replace(filters, since=0.0, until=0.0), round(span), charts)
@@ -234,6 +236,10 @@ def read_section(store, query: str, now: float | None = None) -> bytes:
         raise ScopeError("Node history requires a shared history store", 422, "unsupported_scope")
     history = HistoryScope(history.reader, scope.node, qualified=True)
     history.require_reader()
+    try:
+        filters = full_history.resolve(filters, history)
+    except StoreError as exc:
+        raise ScopeError(str(exc), 503, "query_failed") from exc
     selection = _selection_for(store, filters, history, scope, now, viewer)
     try:
         fields = compute_section(selection, section)

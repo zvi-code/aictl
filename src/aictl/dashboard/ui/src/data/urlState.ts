@@ -4,7 +4,8 @@
 // localStorage on load, so a pasted link shows the view it was copied from.
 // The board's filter hooks (useBoardFilters, useTools) own these parameters.
 
-export type TimeWindow = { since: number; until: number; buckets?: number };
+/** `all`: all stored history up to `until`; the server resolves the start and the buckets (`since=all`). */
+export type TimeWindow = { since: number; until: number; buckets?: number; all?: boolean };
 export type Range = { id: string; since?: number; until?: number };
 /** A list value writes the key once per entry (`?project=/a&project=/b`); an empty list removes it. */
 export type UrlPatch = Record<string, string | number | readonly string[] | null | undefined>;

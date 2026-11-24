@@ -40,17 +40,18 @@ describe('serializers', () => {
 });
 
 describe('BRD-RANGE-01 · the board address says the range the board shows', () => {
-  it('drops a range the board has no window for, such as the Insights "all"', () => {
-    const patch = boardRangePatch('?range=all&scope=fleet');
+  it('drops a range the board has no window for', () => {
+    const patch = boardRangePatch('?range=year&scope=fleet');
     expect(patch).toEqual({ range: null, since: null, until: null, sel: null });
-    const fixed = mergeSearch('?range=all&scope=fleet', patch!);
+    const fixed = mergeSearch('?range=year&scope=fleet', patch!);
     expect(fixed).toBe('?scope=fleet');
     expect(parseFilters(fixed).range.id).toBe('24h');
     expect(boardRangePatch('?range=custom&since=9')).toBeDefined();
   });
 
   it('leaves a range the board shows alone', () => {
-    for (const search of ['', '?scope=fleet', '?range=7d', '?range=24h', '?range=custom&since=100&until=200']) {
+    for (const search of ['', '?scope=fleet', '?range=7d', '?range=24h', '?range=90d', '?range=all&scope=fleet',
+      '?range=all&sel=100-200', '?range=custom&since=100&until=200']) {
       expect(boardRangePatch(search)).toBeUndefined();
     }
   });

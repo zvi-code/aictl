@@ -1,6 +1,6 @@
 import { createEffect, createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { TopicRuntimeAgent } from '../data/contract.gen'
-import { chosenCount, RANGES } from '../data/filters'
+import { chosenCount, PERIODS, periodLabel } from '../data/filters'
 import DockScreen from '../panels/DockScreen'
 import { overviewA } from '../panels/overview/a'
 import { overviewB } from '../panels/overview/b'
@@ -52,7 +52,7 @@ function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
   })
   const toolLabel = (tool: string) => ctx.board('tool_labels')?.[tool] ?? (tool || 'Unreported tool')
   const period = () => ctx.filters().sel ? 'selected interval' :
-    RANGES.find(r => r.id === ctx.filters().range.id)?.label ?? 'custom range'
+    PERIODS.find(r => r.id === ctx.filters().range.id) ? periodLabel(ctx.filters().range, ctx.board('range', true)) : 'custom range'
   return <section class={styles.start} aria-labelledby="history-start-title">
     <h1 id="history-start-title">Overview</h1>
     <div class={styles.startBody}>
@@ -75,7 +75,7 @@ function HistoryStart(props: { ctx: PanelContext; browse: () => void }) {
           {chosenCount(ctx.filters()) ? ' and of the project filter: node reports carry no project' : ''}.</small>
       </section>}</Show>
       <section class={styles.historyStatus} aria-label="Selected history">
-        <h2>{scopeLabel(ctx.scope(), ctx.nodeId())} · {period()} history</h2>
+        <h2>{scopeLabel(ctx.scope(), ctx.nodeId())} · {period()}{ctx.filters().range.id === 'all' && !ctx.filters().sel ? '' : ' history'}</h2>
         <p role="status">{history().state === 'error' ? 'History could not be loaded.' :
           history().state === 'loading' ? 'Reading the selected history…' : 'No history result is available from this source.'}</p>
         <p>Usage, cost and failure trends appear when the selected history is available.</p>

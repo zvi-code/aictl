@@ -230,6 +230,7 @@ _VIEWS = {
         f"{_BOARD_ID} row_type ts tool project_path trigger uses agents total first_ts last_ts projects",
     ),
     "board.activity_facts": ("all_nodes requested_node", "tool fact"),
+    "board.history_start": ("all_nodes requested_node", "first_ts sessions"),
     "board.sources": ("all_nodes requested_node", "tool source last_ts"),
     "index.stored_sessions": ("all_nodes requested_node after_row",
                               "node_id session_id tool source project_path started_at last_activity_at"),

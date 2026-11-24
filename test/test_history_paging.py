@@ -259,6 +259,7 @@ BOUNDED = {
     "analytics.requests": "one row per model, a hidden count and the newest page_size requests",
     "analytics.tools": "one row per tool name (and per tool name and CLI tool) and a hidden count",
     "board.activity_facts": "the distinct (tool, fact) pairs",
+    "board.history_start": "one row: the earliest session start and the number of sessions",
     "board.agents": "one row per agent of the board's sessions",
     "board.search_hits": "one row per session of the board",
     "board.sessions": "one row per requested session",

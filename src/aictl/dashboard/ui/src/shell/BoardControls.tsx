@@ -1,5 +1,5 @@
 import { createSignal, For, Show, untrack } from 'solid-js'
-import { RANGES, STATUSES, canClear, modelReportedAs } from '../data/filters'
+import { PERIODS, STATUSES, canClear, modelReportedAs, periodLabel } from '../data/filters'
 import { toolsToParams } from '../data/urlState'
 import type { PanelContext } from '../panels/types'
 import { Dialog } from '../ui/Dialog'
@@ -44,7 +44,7 @@ export function BoardControls(props: {
           if (range === 'custom') { setError(''); props.setCustom(true); event.currentTarget.value = ctx.filters().range.id }
           else ctx.navigate({ range, since: null, until: null, sel: null })
         }}>
-          <For each={RANGES}>{range => <option value={range.id}>{range.label}</option>}</For>
+          <For each={PERIODS}>{range => <option value={range.id}>{periodLabel(range, ctx.board('range', true))}</option>}</For>
           <option value="custom">Custom</option>
         </select><Icon glyph="down" small /></label>
       <Show when={ctx.filters().range.id === 'custom'}><button class={styles.small} type="button"

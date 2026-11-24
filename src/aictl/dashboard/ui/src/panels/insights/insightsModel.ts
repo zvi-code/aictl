@@ -3,7 +3,7 @@
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
 import { fmtBytes, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd, projectName } from '../../design/format'
-import { parseFilters, RANGES, windowOf } from '../../data/filters'
+import { parseFilters, PERIODS, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 import type { AutonomyBody } from './autonomyModel'
 import type { VerifiedBody } from './verifiedModel'
@@ -145,8 +145,8 @@ export const OUTCOME_LABELS: Record<Outcome, string> = {
 export const OUTCOMES = Object.keys(OUTCOME_LABELS) as Outcome[]
 export const NOT_REPORTED = 'not reported'
 
-/** The range choices of the Insights screen: the board's ranges and all stored history. */
-export const INSIGHT_RANGES = [...RANGES.map(range => ({ id: range.id, label: range.label })), { id: 'all', label: 'All history' }]
+/** The range choices of the Insights screen: the board's choices, all stored history among them. */
+export const INSIGHT_RANGES = PERIODS
 const HOUR = 3600
 
 /** The period of the screen from the URL key `range`: the board's window, or all history up to the next hour. */

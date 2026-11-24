@@ -137,6 +137,8 @@ export const dayLabel = (ts: number) => {
   const d = new Date(ts * 1000);
   return MONTHS[d.getMonth()] + ' ' + d.getDate();
 };
+/** "Jul 9, 2026": a day with its year, for the start of a long period. */
+export const dateLabel = (ts: number) => dayLabel(ts) + ', ' + new Date(ts * 1000).getFullYear();
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 /** "Sat Nov 7": a day in a table, the same month-day order as the axes. */
 export const weekdayLabel = (ts: number) => {
