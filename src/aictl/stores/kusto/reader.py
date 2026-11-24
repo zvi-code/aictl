@@ -361,7 +361,7 @@ _VIEWS = {
         "cache_creation_tokens unsplit_prompt_tokens output_tokens thinking_reported p50_thinking_ms reasoning_reported "
         "reasoning_tokens sessions recorded_sessions calls failures refused exit_unknown call_sessions first_ts last_ts "
         "no_model effort_reported unattributed call_only_sessions store_calls store_sessions unsplit_calls "
-        "unsplit_sessions recorded_calls tool_name node_id session_id models computed_at",
+        "unsplit_sessions recorded_calls tool_name node_id session_id models computed_at split_key repo",
     ),
     "insights.session_names": ("all_nodes requested_node session_keys", "node_id session_id title git_branch project_path"),
     "insights.repo_rank": (_TIME, "row_type repo name rank cost_usd requests sessions repos first_ts last_ts computed_at"),

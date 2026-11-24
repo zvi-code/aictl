@@ -390,6 +390,7 @@ UNPRUNED: dict[tuple[str, str], tuple[str, str]] = {
     ("insights.skills", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.mcp", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.kql", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
+    ("insights.model_report", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.orientation", "requests"): ("ALL_HOURS", ALL_HOURS),
     ("insights.orientation", "tool_invocations"): ("ALL_HOURS", ALL_HOURS),
     # The context cards read sessions for the repository of each session (the <repository map> block).

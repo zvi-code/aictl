@@ -89,7 +89,7 @@ def _ordered(body, bar):
     assert places == sorted(places) and all(segment["repo"] in rank or segment["repo"] == "" for segment in bar["repos"])
 
 
-@pytest.mark.parametrize("card", ["skills", "mcp", "kql"])
+@pytest.mark.parametrize("card", ["skills", "mcp", "kql", "models"])
 def test_the_card_is_split_and_its_view_returns_the_split_columns(card):
     # test_insight_repo_split.py checks that each card of REPO_SPLIT_CARDS carries the rank block, identical everywhere.
     assert card in insights.REPO_SPLIT_CARDS
@@ -325,3 +325,62 @@ def test_kql_project_bars_take_their_split_rows():
     # A root the screen's order does not hold is "other".
     assert _segments(project, "runs") == [("/a", 4), ("", 2)]
     _sums(project, insights_flows.KQL_MEASURES)
+
+
+# ─── Models ────────────────────────────────────────────────────────────────────
+
+
+def _seed_models(store):
+    _repos(store)
+    # Ten more requests in s1, so that the model has the 20 priced requests a per-request figure needs.
+    for i in range(10):
+        _request(store, f"q1-{i}", "s1", REPOS[1], 0.01, ts=101.0 + i, prompt_id="p1")
+
+
+def _model(body, tool="claude-code", name="claude-opus-5-5"):
+    return {model["model"]: model for item in body["tools"] if item["tool"] == tool for model in item["models"]}[name]
+
+
+def test_models_split_requests_and_per_request_figures_by_repository(kusto_store):
+    _seed_models(kusto_store)
+    body = _local(kusto_store, "models")
+    model = _model(body)
+    assert (model["requests"], model["priced"]) == (21, 21)
+    assert model["cost_per_request"] == pytest.approx(60.1 / 21)
+    assert _segments(model, "requests") == [(REPOS[0], 2), (REPOS[1], 11), *[(repo, 1) for repo in REPOS[2:8]], ("", 2)]
+    # A segment of a per-request figure is the repository's sum over all the model's requests: r0's 10 + 5 of 60.1.
+    cost = dict(_segments(model, "cost_per_request"))
+    assert cost[REPOS[0]] == pytest.approx(15 / 21) and cost[""] == pytest.approx(3 / 21)
+    assert dict(_segments(model, "input_per_request"))[REPOS[1]] == pytest.approx(110 / 21)
+    # r0's requests are all of this model: its share of the repository's own requests is 1.
+    assert model["repos"][0]["of_repo"]["requests"] == pytest.approx(1.0)
+    _sums(model, insights.MODEL_MEASURES)
+    _ordered(body, model)
+
+
+def test_models_fleet_scope_ranks_every_node(kusto_store):
+    _seed_models(kusto_store)
+    body = _card(kusto_store, "models")
+    model = _model(body)
+    assert body["repo_order"][0]["repo"] == REPOS[9] and model["requests"] == 22
+    assert _segments(model, "requests")[0] == (REPOS[9], 2)
+    _sums(model, insights.MODEL_MEASURES)
+
+
+def test_models_failure_share_is_split_into_the_parts_of_each_repository():
+    order = [{"repo": "/a", "name": "a"}]
+    rows = [{"row_type": "model", "tool": "t", "model": "m", "requests": 40, "sessions": 5, "priced": 40, "cost_usd": 8.0,
+             "cache_reported": 40, "input_tokens": 400, "output_tokens": 200, "calls": 200, "failures": 20,
+             "call_sessions": 5, "exit_unknown": 0},
+            {"row_type": "repo_split", "tool": "t", "split_key": "m", "repo": "/a", "requests": 30, "priced": 30,
+             "cost_usd": 6.0, "cache_reported": 30, "input_tokens": 300, "output_tokens": 150, "calls": 150, "failures": 15},
+            {"row_type": "repo_split", "tool": "t", "split_key": "m", "repo": "", "requests": 10, "priced": 10,
+             "cost_usd": 2.0, "cache_reported": 10, "input_tokens": 100, "output_tokens": 50, "calls": 50, "failures": 5}]
+    (tool,) = insights.model_report(rows, order)["tools"]
+    (model,) = tool["models"]
+    assert model["failure_share"] == pytest.approx(0.1)
+    assert _segments(model, "failure_share") == [("/a", pytest.approx(0.075)), ("", pytest.approx(0.025))]
+    assert _segments(model, "cost_per_request") == [("/a", pytest.approx(0.15)), ("", pytest.approx(0.05))]
+    # The model reports no prompt without the cache split, and no cache read: those bars and their segments are None.
+    assert model["unsplit_prompt_per_request"] is None and model["repos"][0]["unsplit_prompt_per_request"] is None
+    _sums(model, insights.MODEL_MEASURES)

@@ -96,7 +96,7 @@ let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:stri
 REPO_COLOURS = 8
 # The cards whose shape takes repo_order as a second argument: shape(rows, repo_order).
 REPO_SPLIT_CARDS = frozenset({"carry", "time", "pause", "subagents", "failures", "problems", "flows", "autonomy", "verified",
-                              "durations", "changes", "skills", "mcp", "kql"})
+                              "durations", "changes", "skills", "mcp", "kql", "models"})
 
 
 def repo_order(history: HistoryScope, params: dict) -> dict:
@@ -1262,12 +1262,46 @@ def _figures(row: dict) -> dict:
     }
 
 
-def model_report(rows: list[dict]) -> dict:
+# The bars of a model, each with the sum it is made of and the count it is divided by: (bar, sum, count). A segment is
+# the repository's part of the bar, its sum over the model's whole count, so the segments sum to the bar.
+MODEL_PARTS = (
+    ("requests", "requests", None),
+    ("cost_per_request", "cost_usd", "priced"),
+    ("failure_share", "failures", "calls"),
+    ("input_per_request", "input_tokens", "cache_reported"),
+    ("cache_write_per_request", "cache_creation_tokens", "cache_write_reported"),
+    ("cache_read_per_request", "cache_read_tokens", "cache_reported"),
+    ("unsplit_prompt_per_request", "unsplit_prompt_tokens", None),
+    ("output_per_request", "output_tokens", "requests"),
+)
+MODEL_MEASURES = tuple(bar for bar, _sum, _count in MODEL_PARTS)
+
+
+def _model_segments(model: dict, rows: list[dict]) -> list[dict]:
+    """The model's split rows as parts of its bars (MODEL_PARTS); the requests without the cache split divide the
+    whole prompt."""
+    counts = {count: _n(model.get(count)) for _bar, _sum, count in MODEL_PARTS if count}
+    counts["unsplit"] = _n(model.get("requests")) - _n(model.get("cache_reported"))
+    parts = []
+    for row in rows:
+        part = {"repo": row.get("repo")}
+        for bar, total, count in MODEL_PARTS:
+            whole = counts["unsplit"] if bar == "unsplit_prompt_per_request" else counts[count] if count else 1.0
+            part[bar] = _n(row.get(total)) / whole if whole else 0.0
+        parts.append(part)
+    return parts
+
+
+def model_report(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Per tool and model: requests, cost per priced request, tokens per request, thinking or reasoning, effort, and
     the failure share of the tool calls its requests asked for. Real work, not a controlled comparison.
 
     A figure a tool does not record is None; a failure share needs RATE_CALLS calls in RATE_SESSIONS sessions and is
     a lower bound ("at least") when UNKNOWN_FLOOR or more of the calls are shell commands with no known outcome.
+
+    Each model's bars (MODEL_MEASURES) are split by repository (``repos``, see attach_repos): requests, and the part of
+    each per-request figure and of the failure share that the repository's requests and calls make. Medians of thinking
+    time and the figures per effort are not split.
     """
     efforts: dict[tuple, list[dict]] = {}
     for row in _of(rows, "effort"):
@@ -1312,6 +1346,13 @@ def model_report(rows: list[dict]) -> dict:
     for tool, rest in models.items():
         tools.append({"tool": tool, "requests": sum(item["requests"] for item in rest), "models": rest})
     tools.sort(key=lambda item: (-_n(item.get("requests")), str(item["tool"])))
+    splits = repo_splits(rows)
+    # The models of every tool cover every request with a model: a repository's own total of requests is their sum.
+    totals = repo_totals([row for found in splits.values() for row in found], MODEL_MEASURES)
+    for tool in tools:
+        for model in tool["models"]:
+            mine = splits.get((str(model["tool"] or ""), str(model["model"] or "")), [])
+            attach_repos(model, _model_segments(model, mine), MODEL_MEASURES, order or [], totals)
     not_reported = {
         "cost": [tool["tool"] for tool in tools if "priced" in tool and not tool["priced"]],
         "token_split": [tool["tool"] for tool in tools if "cache_reported" in tool and not tool["cache_reported"]],
