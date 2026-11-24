@@ -1,0 +1,40 @@
+/* A grid of small bars: items in rows, measures in columns, each column on its own scale. */
+.wrap { container-type: inline-size; min-inline-size: 0; }
+.grid { display: grid; grid-template-columns: var(--grid-columns); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
+.row { display: contents; }
+.name, .cell { padding: var(--space-2); border-block-end: var(--border-size) solid var(--color-border-subtle); min-inline-size: 0; }
+.name { display: grid; align-content: start; overflow-wrap: anywhere; }
+.name small, .head small { display: block; color: var(--color-muted); font-weight: normal; }
+.cell { display: grid; gap: var(--space-1); align-content: start; }
+.head > * { font-weight: var(--weight-medium); align-content: end; border-block-end-color: var(--color-border); }
+.foot > * { border-block-end: 0; border-block-start: var(--border-size) solid var(--color-border); }
+.swatch {
+  display: inline-block; inline-size: .75em; block-size: .75em; border-radius: var(--radius-sm); margin-inline-end: var(--space-2);
+  vertical-align: middle;
+}
+.tag {
+  display: inline-block; margin-inline-start: var(--space-1); padding: 0 var(--space-1); color: var(--color-muted);
+  border: var(--border-size) solid var(--color-border); border-radius: var(--radius-sm);
+}
+.faded .lane, .faded .swatch { opacity: .5; }
+.lane { display: block; block-size: var(--space-3); border-radius: var(--radius-sm); background: var(--color-raised); overflow: hidden; }
+.bar { display: flex; block-size: 100%; }
+.part { display: block; flex-basis: 0; min-inline-size: 2px; block-size: 100%; }
+.part + .part { box-shadow: inset var(--border-size) 0 0 var(--color-surface); }
+.part > span { display: flex; inline-size: 100%; block-size: 100%; }
+.hit { all: unset; box-sizing: border-box; display: block; inline-size: 100%; block-size: 100%; cursor: default; }
+.hit:hover { outline: var(--border-size) solid var(--color-text); outline-offset: -1px; }
+.hit:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: -2px; }
+.value { overflow-wrap: anywhere; }
+.muted { color: var(--color-muted); overflow-wrap: anywhere; }
+.lines { display: grid; color: var(--color-muted); }
+/* Narrow: one block per item, each measure on its own line with its name. */
+@container (max-width: 44rem) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
+  .row { display: grid; padding-block: var(--space-2); border-block-end: var(--border-size) solid var(--color-border-subtle); }
+  .row.head { display: none; }
+  .name, .cell { border: 0; padding-block: var(--space-1); }
+  .name { font-weight: var(--weight-medium); }
+  .cell { grid-template-columns: minmax(7rem, 10rem) minmax(0, 1fr); column-gap: var(--space-2); }
+  .cell::before { content: attr(data-label); grid-row: 1 / span 3; color: var(--color-muted); }
+}

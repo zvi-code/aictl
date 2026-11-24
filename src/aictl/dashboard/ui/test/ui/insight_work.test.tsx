@@ -118,15 +118,15 @@ describe('Work by repository', () => {
     const { host, dispose } = mount(() => <Repositories {...props(ctx)} />)
     const box = host.querySelector('#insight-repos')!
     expect(box.querySelector('[data-hero] strong')!.textContent).toBe('$500')
-    const spend = box.querySelector('[data-chart="spend"]')!
-    expect(spend.querySelector('figcaption')!.textContent).toBe('Spend at list price per repository (US dollars)')
-    expect([...spend.querySelectorAll('[data-value]')].map(value => value.textContent)).toEqual(['$300 · 60%', '$150 · 30%', '$50.00 · 10%'])
-    expect(spend.querySelector('[data-bar="app"] [role="tooltip"]')!.textContent).toMatch(/^app: \$300 at list price, 60% of \$500/)
-    expect(spend.querySelector('[data-bar="scratch"]')!.hasAttribute('data-small')).toBe(true)
-    expect(box.querySelector('[data-chart="output"] [data-bar="docs"]')!.textContent).toContain('30 commits')
-    expect(box.querySelector('[data-chart="per-commit"]')!.textContent).toContain('$75.00 per commit')
-    expect(box.querySelector('[data-no-per-commit]')!.textContent).toBe('Fewer than 3 commits, no spend per commit: scratch.')
-    expect(box.querySelector('[data-chart="started"] [data-bar="app"] [data-value]')!.textContent).toBe('6 script · 3 person · 1 not known')
+    // One grid of every measure; the grid's own tests are in insight_view_repos.test.tsx.
+    const grid = box.querySelector('[data-grid="repos"]')!
+    expect([...grid.querySelectorAll('[data-col="spend"] [data-value]')].map(value => value.textContent))
+      .toEqual(['$300 · 60%', '$150 · 30%', '$50.00 · 10%', '$500'])
+    expect(grid.querySelector('[data-row="app"] [data-col="spend"] [role="tooltip"]')!.textContent).toMatch(/^app: \$300 at list price, 60% of \$500/)
+    expect(grid.querySelector('[data-row="scratch"]')!.hasAttribute('data-faded')).toBe(true)
+    expect(grid.querySelector('[data-row="docs"] [data-col="commits"] [data-value]')!.textContent).toBe('30')
+    expect(grid.querySelector('[data-row="app"] [data-col="per-commit"] [data-value]')!.textContent).toBe('$75.00')
+    expect(grid.querySelector('[data-row="scratch"] [data-col="per-commit"] [data-value]')!.textContent).toBe('fewer than 3 commits')
     expect(box.querySelector('[data-small-list]')!.textContent).toBe('Too small to compare (fewer than 50 model requests): scratch.')
     const rows = [...box.querySelectorAll('[data-repo]')]
     expect(rows.map(row => row.getAttribute('data-repo'))).toEqual(['app', 'docs', 'scratch'])

@@ -1,0 +1,9 @@
+/* Work by repository: the grid at full width, then one fold per repository whose detail sits in columns. */
+.visual { display: grid; gap: var(--space-5); min-inline-size: 0; }
+.detail {
+  display: grid; gap: var(--space-4) var(--space-6); grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr));
+  align-items: start; padding-inline-start: var(--space-4); font-size: var(--text-xs); min-inline-size: 0;
+}
+.detail > * { min-inline-size: 0; }
+.wide { grid-column: 1 / -1; }
+.swatch { display: inline-block; inline-size: .75em; block-size: .75em; border-radius: var(--radius-sm); }

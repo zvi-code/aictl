@@ -3,13 +3,15 @@ import { fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import type { PanelContext } from '../types'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { count, share, toolLabel } from './insightsModel'
+import { BarGrid } from './charts/BarGrid'
+import { repoColumns, repoFill, repoGridFoot, repoGridRows, repoRowColour, REPOS_LINE } from './reposModel'
 import { Bars, Columns } from './WorkCharts'
 import { sessionBranch, sessionHover, sessionName } from './sessionName'
 import {
-  agentTime, repoBinChart, repoFinding, repoHero, repoLines, repoModelChart, repoName, repoOutputChart, repoPerCommitChart,
-  repoSpendChart, repoStartChart, SHOWN, smallText, startedText, type Repo, type RepoBody,
+  agentTime, repoBinChart, repoHero, repoLines, repoModelChart, repoName, SHOWN, smallText, startedText, type Repo, type RepoBody,
 } from './workModel'
 import styles from './Insights.module.css'
+import mine from './Repositories.module.css'
 import own from './Work.module.css'
 
 const money = (value: number | null) => value == null ? 'not reported' : fmtUsd(value)
@@ -32,13 +34,14 @@ function RepoDetail(props: { repo: Repo; range: RepoBody['range']; ctx: PanelCon
     ['Spend per commit', repo().cost_per_commit == null ? 'fewer than 3 commits' : fmtUsd(repo().cost_per_commit)],
     ['Spend per changed file', repo().cost_per_file == null ? 'fewer than 5 files' : fmtUsd(repo().cost_per_file)],
   ]
-  return <div class={own.detail} data-repo-detail>
-    <dl class={own.facts}><For each={facts()}>{([label, value]) => <div><dt>{label}</dt><dd>{value}</dd></div>}</For></dl>
+  return <div class={mine.detail} data-repo-detail>
+    <dl class={`${own.facts} ${mine.wide}`}><For each={facts()}>{([label, value]) => <div><dt>{label}</dt><dd>{value}</dd></div>}</For></dl>
     <Bars chart={repoModelChart(repo())} />
     <Show when={repo().bins.length} fallback={<p class={styles.note}>No spend or commit in a bin of this period.</p>}>
       <Columns chart={repoBinChart(repo(), props.range)} />
     </Show>
     <Show when={repo().top_sessions.length}>
+      <div class={mine.wide}>
       <h4 class={own.title}>Sessions by spend</h4>
       <ol class={own.sessions} data-sessions>
         <For each={repo().top_sessions}>{session => <li>
@@ -51,35 +54,34 @@ function RepoDetail(props: { repo: Repo; range: RepoBody['range']; ctx: PanelCon
           <Show when={session.scripted != null}><span>{session.scripted ? 'started by a script' : 'started by a person'}</span></Show>
         </li>}</For>
       </ol>
+      </div>
     </Show>
   </div>
 }
 
+/** The grid of every repository's measures, its totals, then one fold per repository with its detail. */
 function Visual(props: { body: RepoBody; ctx: PanelContext }) {
-  const perCommit = () => repoPerCommitChart(props.body)
-  return <>
-    <Bars chart={repoSpendChart(props.body)} />
-    <Bars chart={repoOutputChart(props.body)} />
-    <Bars chart={perCommit()} />
-    <Show when={perCommit().left.length}>
-      <p class={own.left} data-no-per-commit>Fewer than 3 commits, no spend per commit: {perCommit().left.join(', ')}.</p>
+  return <div class={mine.visual}>
+    <BarGrid name="repos" label="Work by repository: spend, sessions, agent working time, commits, changed files, spend per commit"
+      head="Repository or folder" columns={repoColumns(props.body)} rows={repoGridRows(props.body)} foot={repoGridFoot(props.body)} />
+    <Show when={props.body.repos.length > SHOWN}>
+      <p class={styles.note} data-more-repos>{fmtNum(props.body.repos.length - SHOWN)} more in the data table.</p>
     </Show>
-    <Bars chart={repoStartChart(props.body)} />
     <Show when={smallText(props.body.summary.small)}>{text => <p class={styles.note} data-small-list>{text()}</p>}</Show>
-    <h3 class={styles.subhead}>Each repository: figures, models, spend over time, sessions</h3>
+    <h3 class={styles.subhead}>Each repository: figures, models, spend per week, sessions</h3>
     <ol class={own.rows} aria-label="Repositories and folders by spend">
       <For each={props.body.repos.slice(0, SHOWN)}>{repo => <li><details class={own.row} data-repo={repo.name} data-small={repo.small ? '' : undefined}>
         <summary>
+          <Show when={repoRowColour(props.body.repo_order, repo.repo) != null}>
+            <span class={mine.swatch} style={{ background: repoFill(repoRowColour(props.body.repo_order, repo.repo)) }} />
+          </Show>
           <span class={own.name}>{repo.name}</span><span class={own.kind}>{repo.kind}</span>
           <span class={own.rowText}>{money(repo.cost_usd)} · {count(repo.sessions)} sessions · {fmtNum(repo.commits)} commits</span>
         </summary>
         <RepoDetail repo={repo} range={props.body.range} ctx={props.ctx} />
       </details></li>}</For>
     </ol>
-    <Show when={props.body.repos.length > SHOWN}>
-      <p class={styles.note}>{fmtNum(props.body.repos.length - SHOWN)} more in the data table.</p>
-    </Show>
-  </>
+  </div>
 }
 
 type Row = Record<string, unknown>
@@ -100,14 +102,17 @@ const NOTE = 'A session counts when it made a model request or a tool call in th
   'record, so a loop that types a new prompt each time reads as a person. Spend per commit is the repository\'s spend divided ' +
   'by its commits. Bins are weeks, or whole weeks so the period has at most 8 (all history: a year). Too little data: a ' +
   'repository with fewer than 50 model requests is listed and drawn grey; spend per commit needs 3 commits, per file 5 ' +
-  'files. Charts show the first 15 repositories by spend. The page\'s project, tool and model filters apply (a model: the ' +
+  'files. The grid shows the first 15 repositories by spend; each column has its own linear scale from 0 to its largest ' +
+  'value among them. A row is drawn in the colour its repository has on every Insights view (the 8 repositories with the ' +
+  'highest list-price cost, in rank order); any other row is grey. In the sessions bar, solid is started by a person, ' +
+  'striped by a script, grey not known. The page\'s project, tool and model filters apply (a model: the ' +
   'sessions that used it, all their figures).'
 
 export default function Repositories(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   return <InsightCard<RepoBody> {...props} card="repos" tab="flow" filtered
     hero={repoHero}
-    finding={repoFinding}
+    finding={body => body.summary.sessions ? REPOS_LINE : 'No agent session made a model request or a tool call in this period.'}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>
       <Visual body={body} ctx={ctx} />
     </Show>}
