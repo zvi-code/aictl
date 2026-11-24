@@ -7,6 +7,8 @@ import type { JSX } from '@solidjs/web'
 import { beforeEach, describe, expect, it } from 'vitest'
 import AfterFailure from '../../src/panels/insights/AfterFailure'
 import Rereads from '../../src/panels/insights/Rereads'
+import Kql from '../../src/panels/insights/Kql'
+import type { KqlBody } from '../../src/panels/insights/kqlModel'
 import Mcp from '../../src/panels/insights/Mcp'
 import type { McpBody } from '../../src/panels/insights/mcpModel'
 import Skills from '../../src/panels/insights/Skills'
@@ -415,6 +417,81 @@ describe('INS-V-C · MCP servers', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(parts(svgRow(box, 'calls', 'kusto'))).toEqual(['c1', 'bad'])
     expect(parts(svgRow(box, 'listed', 'claude-code:docs'))).toEqual(['c1', 'muted'])
+    dispose()
+  })
+})
+
+// ─── Kusto queries ───────────────────────────────────────────────────────────────────────────────────────────────────
+const runs = { runs: 30, sessions: 4, failures: 6, changes: 0, large: 0, sum_ms: 3000, output_bytes: 30_000 }
+const runRepos = [seg('/src/app', { runs: 20, failures: 2 }, { runs: 30, failures: 6 }), seg('', { runs: 10, failures: 4 }, { runs: 30, failures: 6 })]
+const kqlShape = { ...runs, shape_key: 'a', snippet: 'Events | where State == ? | take ?', kind: 'query', verb: null, most_in_session: 5,
+  repeated_sessions: 2, repeat_runs: 12, repos: runRepos }
+const kql = {
+  ...base, card: 'kql', repo_order: order, repo_others: others, sessions: [],
+  coverage: [{ tool: 'claude-code', runs: 40, unrecognised: 0, mcp: 30, cli: 10, script: 0, with_text: 40 }],
+  routes: [{ route: 'mcp', runs: 30, repos: [seg('/src/app', { runs: 25 }, { runs: 30 }), seg('/src/docs', { runs: 5 }, { runs: 30 })] },
+    { route: 'cli', runs: 10, repos: [seg('/src/docs', { runs: 10 }, { runs: 10 })] }],
+  kinds: [{ ...runs, kind: 'query', verb: null, change: false, repos: runRepos },
+    { ...runs, runs: 10, failures: 0, changes: 10, kind: 'management', verb: 'create', change: true, repos: [] }],
+  failure_kinds: [{ failure: 'syntax', runs: 6, repos: [seg('', { runs: 6 }, { runs: 6 })] }],
+  targets: [{ ...runs, cluster: 'c.kusto.windows.net', database: 'db', repos: runRepos }],
+  shapes: [kqlShape],
+  projects: [{ ...runs, project: '/src/app', repos: runRepos }],
+  large: [{ session_id: 's-big', node_id: 'n', tool: 'claude-code', ts: null, route: 'mcp', kind: 'query', verb: null, output_bytes: 250_000,
+    snippet: 'Events | take ?', text: 'Events | take 100000', project_name: null,
+    repos: [seg('/src/app', { output_bytes: 250_000 }, { output_bytes: 250_000 })] }],
+  summary: { runs: 40, sessions: 5, failures: 6, changes: 10, large: 1, sum_ms: 4000, output_bytes: 300_000, enough: true, failure_share: 0.15,
+    large_bytes: 250_000, with_text: 40, top_failure: { failure: 'syntax', runs: 6 }, change_verbs: ['create'], top_shape: kqlShape,
+    repeated: kqlShape, unrecognised: 0, routes: { mcp: 30, cli: 10, script: 0 }, small_projects: [] },
+} as unknown as KqlBody
+
+describe('INS-V-C · Kusto queries', () => {
+  it('states what is measured and draws routes, failure kinds and kinds first, side by side', () => {
+    const { box, dispose } = draw(Kql, 'kql', kql)
+    expect(finding(box)).toBe('Kusto runs recognised from tool calls (MCP tool, Kusto command line, script with an inline query), per route, ' +
+      'failure kind, kind, target, query shape and project.')
+    expect(box.querySelector('[data-hero]')!.textContent).toBe('40recognised Kusto runs in 5 sessions')
+    expect(charts(box)).toEqual(['routes', 'failures', 'kinds', 'targets', 'projects', 'shapes', 'large'])
+    expect(rows(box, 'routes')).toEqual(['mcp', 'cli'])
+    expect(values(box, 'routes')).toEqual(['30 runs (75%)', '10 runs (25%)'])
+    expect(parts(svgRow(box, 'kinds', '.create'))).toEqual(['c4'])
+    expect(parts(svgRow(box, 'shapes', 'a'))).toEqual(['c2', 'c1'])
+    expect(box.querySelector('[data-totals] p')!.textContent).toMatch(/^40 recognised Kusto runs in 5 sessions/)
+    dispose()
+  })
+
+  it('switches every split bar to repositories; a shape\'s repeated runs stay in its hover', () => {
+    const { box, dispose, navigated } = draw(Kql, 'kql', kql)
+    colourBy(box, 'Repository')
+    expect(navigated).toEqual([{ by: 'repo' }])
+    expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
+    expect(repos(svgRow(box, 'routes', 'mcp'))).toEqual(['0', '1'])
+    expect(svgTip(svgRow(box, 'routes', 'mcp'), 'repo:/src/app')).toBe('MCP tool — app (/src/app): 25 runs · 83% of this bar. ' +
+      'MCP tool: 30 of 40 recognised runs (75%)')
+    expect(repos(svgRow(box, 'failures', 'syntax'))).toEqual([OTHER_TEXT])
+    const query = svgRow(box, 'kinds', 'query')
+    expect(repos(query)).toEqual(['0', OTHER_TEXT])
+    expect(svgTip(query, 'repo:')).toBe('query — Other repositories (every repository outside the 8 with the highest cost, summed): 10 runs · ' +
+      '33% of this bar. 4 of them failed. query: 30 runs in 4 sessions; 6 failed (20%); 0 changed schema or data; run time 3 s; 30 KB returned')
+    // A kind the answer does not split keeps its own parts.
+    expect(parts(svgRow(box, 'kinds', '.create'))).toEqual(['c4'])
+    expect(svgTip(svgRow(box, 'shapes', 'a'), 'repo:/src/app')).toContain('12 of the runs in 2 sessions that ran it 3 times or more, up to 5 in one ' +
+      'session. The runs in sessions that ran the shape 3 times or more are not split by repository.')
+    expect(repos(svgRow(box, 'targets', 'c.kusto.windows.net/db'))).toEqual(['0', OTHER_TEXT])
+    expect(repos(svgRow(box, 'projects', '/src/app'))).toEqual(['0', OTHER_TEXT])
+    expect(repos(svgRow(box, 'large', 's-big:0'))).toEqual(['0'])
+    dispose()
+  })
+
+  it('draws failed and kind with no switch when the answer carries no split', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&by=repo')
+    const strip = <T extends object>(list: T[]) => list.map(row => ({ ...row, repos: undefined }))
+    const plain = { ...kql, repo_order: [], repo_others: null, routes: undefined, kinds: strip(kql.kinds), failure_kinds: strip(kql.failure_kinds),
+      targets: strip(kql.targets), shapes: strip(kql.shapes), projects: strip(kql.projects), large: strip(kql.large) } as unknown as KqlBody
+    const { box, dispose } = draw(Kql, 'kql', plain)
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(values(box, 'routes')).toEqual(['30 runs (75%)', '10 runs (25%)'])
+    expect(parts(svgRow(box, 'kinds', 'query'))).toEqual(['c1', 'bad'])
     dispose()
   })
 })

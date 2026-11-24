@@ -1,22 +1,28 @@
 // ─── Kusto runs — the payload of /api/board/insights/kql, the sentence it states and the rows of its charts ─
 // A period with fewer than 20 recognised runs in 3 sessions gives counts only: no failure share in its sentence.
 import { fmtNum, projectName, stamp } from '../../design/format'
-import { type BarLegend, type BarRow } from './flowBarModel'
-import { bytes, hours, plural, share, type Base, type Hero, type Label } from './insightsModel'
+import { type BarLegend, type BarPart, type BarRow } from './flowBarModel'
+import { bytes, hours, plural, segmentValue, share, type Base, type Hero, type Label } from './insightsModel'
+import { hasSplit, repoBarParts } from './repoBarParts'
+import type { RepoRef, RepoSegment } from './repoSplit'
 
 type Num = number | null
-type Figures = { runs: number; sessions: number; failures: number; changes: number; large: number; sum_ms: number; output_bytes: number }
+type Figures = { runs: number; sessions: number; failures: number; changes: number; large: number; sum_ms: number; output_bytes: number
+  /** Its parts per repository (runs, failures), repoSplit.ts; a shape's repeat_runs part is not split. */
+  repos?: RepoSegment[] }
 export type KqlKind = 'query' | 'management' | 'unknown'
 export type KqlShape = Figures & {
   shape_key: string; snippet: string; kind: KqlKind; verb: string | null; most_in_session: number | null; repeated_sessions: number
   repeat_runs: number
 }
 export type KqlLarge = { session_id: string; node_id: string; tool: string; ts: Num; route: string; kind: KqlKind; verb: string | null
-  output_bytes: number; snippet: string; text: string; project_name: string | null }
+  output_bytes: number; snippet: string; text: string; project_name: string | null; repos?: RepoSegment[] }
 export type KqlBody = Base<'kql'> & {
   coverage: { tool: string; runs: number; unrecognised: number; mcp: number; cli: number; script: number; with_text: number }[]
   kinds: (Figures & { kind: KqlKind; verb: string | null; change: boolean })[]
-  failure_kinds: { failure: string; runs: number }[]
+  failure_kinds: { failure: string; runs: number; repos?: RepoSegment[] }[]
+  /** The recognised runs per route, split by repository (`summary.routes` holds the same counts, unsplit). */
+  routes?: { route: 'mcp' | 'cli' | 'script'; runs: number; repos?: RepoSegment[] }[]
   targets: (Figures & { cluster: string | null; database: string | null })[]
   shapes: KqlShape[]
   projects: (Figures & { project: string })[]
@@ -36,6 +42,7 @@ export const ROUTE_LABELS = { mcp: 'MCP tool', cli: 'Kusto command line', script
 export const kindName = (kind: KqlKind, verb: string | null) => kind === 'management' ? `.${verb ?? '?'}` : kind === 'query' ? 'query' : 'text not kept'
 
 const SHOWN = 8
+const notSplit = 'The runs in sessions that ran the shape 3 times or more are not split by repository.'
 const ratio = (part: number, whole: number) => whole ? part / whole : null
 
 /** How many runs, in how many sessions, how many changed schema or data, failed or brought large results: counts only. */
@@ -52,15 +59,30 @@ export function kqlFinding(body: KqlBody) {
     `${plural(s.large, 'result')} of 100 KB or more (${bytes(s.large_bytes)}).${blind}`
 }
 
+/** The line under the title: what is measured, in technical terms. */
+export const kqlMeasured = 'Kusto runs recognised from tool calls (MCP tool, Kusto command line, script with an inline query), per route, ' +
+  'failure kind, kind, target, query shape and project.'
+
+/** Whether the answer carries a repository split on any bar. */
+export const kqlSplit = (body: KqlBody) => hasSplit(body.repo_order, body.routes ?? [], body.failure_kinds, body.kinds, body.targets, body.shapes,
+  body.projects, body.large)
+
+/** A repository's failed runs of a bar of runs. */
+const failedMore = (segment: RepoSegment) => `${fmtNum(segmentValue(segment, 'failures') ?? 0)} of them failed.`
+const runsText = (value: number) => plural(value, 'run')
+
 export const kqlHero = (body: KqlBody): Hero | undefined => body.summary.runs
   ? { value: fmtNum(body.summary.runs), label: `recognised Kusto runs in ${plural(body.summary.sessions, 'session')}` } : undefined
 
 /** The recognised runs by how they were recognised. */
-export function routeRows(body: KqlBody): BarRow[] {
+export function routeRows(body: KqlBody, repo = false): BarRow[] {
   const s = body.summary, total = s.routes.mcp + s.routes.cli + s.routes.script
   return (['mcp', 'cli', 'script'] as const).filter(route => s.routes[route]).map(route => {
     const hover = `${ROUTE_LABELS[route]}: ${fmtNum(s.routes[route])} of ${plural(total, 'recognised run')} (${share(ratio(s.routes[route], total))})`
-    return { key: route, name: ROUTE_LABELS[route], parts: [{ value: s.routes[route], tone: 'c1', hover }], hover,
+    const split = body.routes?.find(item => item.route === route)?.repos
+    return { key: route, name: ROUTE_LABELS[route], hover,
+      parts: repo && split?.length ? repoBarParts(body.repo_order, split, 'runs', runsText, ROUTE_LABELS[route], 'runs', hover)
+        : [{ value: s.routes[route], tone: 'c1', hover }],
       text: `${plural(s.routes[route], 'run')} (${share(ratio(s.routes[route], total))})` }
   })
 }
@@ -76,33 +98,41 @@ export function runHover(name: string, item: Figures) {
     `${bytes(item.output_bytes)} returned`
 }
 
-const runRow = (key: string, name: string, item: Figures, sub: string, change = false): BarRow => ({
-  key, name, sub, hover: runHover(name, item),
-  parts: [{ value: item.runs - item.failures, tone: change ? 'c4' : 'c1', hover: `${name}: ${fmtNum(item.runs - item.failures)} of ${plural(item.runs, 'run')} did not fail` },
-    { value: item.failures, tone: 'bad', hover: `${name}: ${fmtNum(item.failures)} of ${plural(item.runs, 'run')} failed (${share(ratio(item.failures, item.runs))})` }],
+/** The parts of a bar of runs: did not fail and failed, or a segment per repository. */
+function runParts(order: readonly RepoRef[] | undefined, name: string, item: Figures, repo: boolean, change: boolean): BarPart[] {
+  if (repo && item.repos?.length) return repoBarParts(order, item.repos, 'runs', runsText, name, 'runs', runHover(name, item), failedMore)
+  return [{ value: item.runs - item.failures, tone: change ? 'c4' : 'c1', hover: `${name}: ${fmtNum(item.runs - item.failures)} of ${plural(item.runs, 'run')} did not fail` },
+    { value: item.failures, tone: 'bad', hover: `${name}: ${fmtNum(item.failures)} of ${plural(item.runs, 'run')} failed (${share(ratio(item.failures, item.runs))})` }]
+}
+
+const runRow = (order: readonly RepoRef[] | undefined, key: string, name: string, item: Figures, sub: string, repo: boolean, change = false): BarRow => ({
+  key, name, sub, hover: runHover(name, item), parts: runParts(order, name, item, repo, change),
   text: `${plural(item.runs, 'run')} · ${fmtNum(item.failures)} failed`,
 })
 
-/** Runs by kind and management verb, split into failed and not. */
-export const kindRows = (body: KqlBody): BarRow[] => body.kinds.slice(0, SHOWN).map(item => {
+/** Runs by kind and management verb, split into failed and not, or by repository. */
+export const kindRows = (body: KqlBody, repo = false): BarRow[] => body.kinds.slice(0, SHOWN).map(item => {
   const name = kindName(item.kind, item.verb)
-  return runRow(name, name, item, item.change ? 'changes schema or data' : 'reads', item.change)
+  return runRow(body.repo_order, name, name, item, item.change ? 'changes schema or data' : 'reads', repo, item.change)
 })
 
 /** The failed runs by the kind of failure read from the stored error summary. */
-export const failureRows = (body: KqlBody): BarRow[] => {
+export const failureRows = (body: KqlBody, repo = false): BarRow[] => {
   const total = body.failure_kinds.reduce((sum, item) => sum + item.runs, 0)
   return body.failure_kinds.map(item => {
     const name = FAILURE_LABELS[item.failure] ?? item.failure
     const hover = `${name}: ${fmtNum(item.runs)} of ${plural(total, 'failed run')} (${share(ratio(item.runs, total))}), read from the stored error summary`
-    return { key: item.failure, name, parts: [{ value: item.runs, tone: 'bad', hover }], hover, text: plural(item.runs, 'run') }
+    return { key: item.failure, name, hover, text: plural(item.runs, 'run'),
+      parts: repo && item.repos?.length ? repoBarParts(body.repo_order, item.repos, 'runs', runsText, name, 'failed runs', hover)
+        : [{ value: item.runs, tone: 'bad', hover }] }
   })
 }
 
 /** Runs per cluster and database. */
-export const targetRows = (body: KqlBody): BarRow[] => body.targets.slice(0, SHOWN).map(row => {
+export const targetRows = (body: KqlBody, repo = false): BarRow[] => body.targets.slice(0, SHOWN).map(row => {
   const name = `${row.cluster ?? 'cluster not named'} · ${row.database ?? 'database not named'}`
-  return runRow(`${row.cluster ?? ''}/${row.database ?? ''}`, name, row, `${plural(row.changes, 'change')} · ${plural(row.sessions, 'session')}`)
+  return runRow(body.repo_order, `${row.cluster ?? ''}/${row.database ?? ''}`, name, row,
+    `${plural(row.changes, 'change')} · ${plural(row.sessions, 'session')}`, repo)
 })
 
 export const shapeLegend: BarLegend = [{ tone: 'c2', label: 'Runs in sessions that ran the shape 3 times or more' }, { tone: 'c1', label: 'Other runs' }]
@@ -115,12 +145,15 @@ export function shapeHover(shape: KqlShape) {
 }
 
 /** The query shapes run most: runs in sessions that ran the shape 3 times or more apart from the others. */
-export const shapeRows = (body: KqlBody): BarRow[] => body.shapes.slice(0, 6).map(shape => {
+export const shapeRows = (body: KqlBody, repo = false): BarRow[] => body.shapes.slice(0, 6).map(shape => {
   const hover = shapeHover(shape)
+  const name = shape.snippet || 'text not kept'
   return { key: shape.shape_key, name: shape.snippet || 'text not kept', hover,
     sub: `${kindName(shape.kind, shape.verb)} · ${plural(shape.sessions, 'session')}` +
       (shape.most_in_session ? ` · up to ${fmtNum(shape.most_in_session)} in one session` : ''),
-    parts: [{ value: shape.repeat_runs, tone: 'c2', hover }, { value: shape.runs - shape.repeat_runs, tone: 'c1', hover }],
+    parts: repo && shape.repos?.length
+      ? repoBarParts(body.repo_order, shape.repos, 'runs', runsText, name, 'runs', `${hover}. ${notSplit}`, failedMore)
+      : [{ value: shape.repeat_runs, tone: 'c2', hover }, { value: shape.runs - shape.repeat_runs, tone: 'c1', hover }],
     text: plural(shape.runs, 'run') }
 })
 
@@ -132,15 +165,17 @@ export function largeHover(run: KqlLarge, label: Label) {
 }
 
 /** The runs that brought 100 KB or more into the context, by bytes. */
-export const largeRows = (body: KqlBody, label: Label): BarRow[] => body.large.slice(0, 6).map((run, index) => {
+export const largeRows = (body: KqlBody, label: Label, repo = false): BarRow[] => body.large.slice(0, 6).map((run, index) => {
   const hover = largeHover(run, label)
-  return { key: `${run.session_id}:${index}`, name: run.snippet || 'text not kept', sub: kindName(run.kind, run.verb),
-    parts: [{ value: run.output_bytes, tone: 'c3', hover }], hover, text: bytes(run.output_bytes) }
+  const name = run.snippet || 'text not kept'
+  return { key: `${run.session_id}:${index}`, name, sub: kindName(run.kind, run.verb), hover, text: bytes(run.output_bytes),
+    parts: repo && run.repos?.length ? repoBarParts(body.repo_order, run.repos, 'output_bytes', value => bytes(value), name, 'bytes returned', hover)
+      : [{ value: run.output_bytes, tone: 'c3', hover }] }
 })
 
 /** Runs per project with 5 or more runs. */
-export const kqlProjectRows = (body: KqlBody): BarRow[] => body.projects.slice(0, SHOWN).map(row =>
-  runRow(row.project, projectName(row.project), row, `${plural(row.sessions, 'session')} · ${plural(row.changes, 'change')}`))
+export const kqlProjectRows = (body: KqlBody, repo = false): BarRow[] => body.projects.slice(0, SHOWN).map(row =>
+  runRow(body.repo_order, row.project, projectName(row.project), row, `${plural(row.sessions, 'session')} · ${plural(row.changes, 'change')}`, repo))
 
 /** How runs were recognised per tool, and the groups too small to compare, in one line. */
 export function kqlCoverage(body: KqlBody, label: Label) {
