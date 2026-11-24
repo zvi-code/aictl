@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 import ContextCarry from '../../src/panels/insights/ContextCarry'
-import type { CarryBody } from '../../src/panels/insights/insightsModel'
+import TimeSplit from '../../src/panels/insights/TimeSplit'
+import type { CarryBody, TimeBody } from '../../src/panels/insights/insightsModel'
 import {
   hasOther, notSplitNote, OTHER, OTHER_REPOS, repoColour, repoColourVar, repoHover, repoLegend, repoName, repoParts,
   type RepoRef, type RepoSegment,
@@ -37,6 +38,29 @@ const carry = {
     top: { tool: 'claude-code', tool_name: 'Bash', calls: 100, output_bytes: 1_000_000, carried_bytes: 10_000_000, avg_later_requests: 10 } },
   sessions: [],
 } as unknown as CarryBody
+
+const H = 3_600_000
+const timeSegment = (repo: string, name: string | null, model: number, tool: number, own: number | null): RepoSegment => ({
+  repo, name, time_ms: model + tool, model_ms: model, tool_ms: tool,
+  share: { time_ms: (model + tool) / (10 * H), model_ms: model / (6 * H), tool_ms: tool / (4 * H) },
+  of_repo: { time_ms: own, model_ms: own, tool_ms: own },
+})
+const cargoRepos: RepoSegment[] = [
+  { repo: '/src/app', name: 'app', duration_ms: 3 * H, share: { duration_ms: 0.75 }, of_repo: { duration_ms: null } },
+  { repo: '', name: null, duration_ms: 1 * H, share: { duration_ms: 0.25 }, of_repo: { duration_ms: null } },
+]
+const time = {
+  ...base, card: 'time', repo_order: order, repo_others: others,
+  tools: [{ tool: 'claude-code', requests: 1000, untimed_requests: 0, overlong_requests: 0, model_ms: 6 * H, thinking_ms: 1 * H,
+    calls: 500, untimed_calls: 0, overlong_calls: 0, overlong_ms: 0, tool_ms: 4 * H, time_ms: 10 * H,
+    repos: [timeSegment('/src/app', 'app', 4 * H, 3 * H, 1), timeSegment('/src/docs', 'docs', 1.5 * H, 0.5 * H, 1),
+      timeSegment('', null, 0.5 * H, 0.5 * H, 1)] }],
+  programs: [{ group: 'program', program: 'cargo', calls: 40, untimed: 0, overlong: 0, duration_ms: 4 * H, p50_ms: 1000, p95_ms: 9000,
+    failure_share: 0.1, repos: cargoRepos }],
+  summary: { model_ms: 6 * H, thinking_ms: 1 * H, tool_ms: 4 * H, thinking_reported: ['claude-code'], untimed_requests: 0, untimed_calls: 0,
+    overlong: 0, overlong_ms: 0, top_program: null },
+  sessions: [],
+} as unknown as TimeBody
 
 function context(state: DetailState<unknown>) {
   return {
@@ -118,6 +142,28 @@ describe('INS-RS · Bars split by repository, one colour per repository for the 
     const box = host.querySelector('[data-box="insight-carry"]')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect([...box.querySelectorAll('[data-chart="carry-output"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['output'])
+    dispose()
+  })
+
+  it('draws Where the time goes with the split by kind kept and a second bar per tool split by repository', () => {
+    const { host, dispose } = mount(() => <TimeSplit {...props(context({ data: time, status: 'ready', error: null }))} />)
+    const box = host.querySelector('[data-box="insight-time"]')!
+    expect([...box.querySelectorAll('[data-repo-legend] li')].map(item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
+    // The bar by kind stays as it was.
+    expect([...box.querySelectorAll('[data-chart="time-tools"] [data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['thinking', 'model', 'tools'])
+    const repos = box.querySelector('[data-chart="time-tools-repos"] [data-row="claude-code"]')!
+    expect(repos.querySelector('[data-total]')!.textContent).toBe('10 h')
+    expect([...repos.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1', String(OTHER)])
+    expect([...repos.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['7 h', '2 h', ''])
+    expect(repos.querySelector('[data-part="repo:/src/docs"] [role="tooltip"]')!.textContent).toBe('claude-code, summed time — docs ' +
+      '(/src/docs): 2 h · 20% of this bar · 100% of docs own summed time. claude-code: model 6 h + tool calls 4 h = 10 h.')
+    const cargo = box.querySelector('[data-chart="time-programs"] [data-row="program:cargo"]')!
+    expect([...cargo.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', String(OTHER)])
+    expect(cargo.querySelector('[data-part="repo:"] [role="tooltip"]')!.textContent).toMatch(new RegExp('^cargo, summed time — Other ' +
+      'repositories \\(every repository outside the 8 with the highest cost, summed\\): 1 h · 25% of this bar\\. cargo: .* The ' +
+      'median and 95th percentile are of all the row\'s calls, not split by repository\\.$'))
+    expect(box.querySelector('[data-chart="time-programs"] [data-axis]')!.textContent).toContain('a segment per repository')
     dispose()
   })
 })

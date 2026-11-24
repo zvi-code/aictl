@@ -7,6 +7,8 @@ import { timeHero,
   toolLabel, type Label, type TimeBody,
 } from './insightsModel'
 import styles from './Insights.module.css'
+import { RepoLegend } from './RepoLegend'
+import { hasOther, repoParts } from './repoSplit'
 
 const NO_THINKING = 'thinking time not recorded by this tool'
 
@@ -22,6 +24,16 @@ function timeRows(body: TimeBody, label: Label): BarRow[] {
         hover: timePartHover(tool, 'model', label) },
       { key: 'tools', label: 'tool calls', value: tool.tool_ms, tone: 1, text: hours(tool.tool_ms), hover: timePartHover(tool, 'tools', label) },
     ],
+  }))
+}
+
+/** Per tool: its summed time (model + tool calls) in a segment per repository; the split by kind is the bar above. */
+function repoTimeRows(body: TimeBody, label: Label): BarRow[] {
+  return body.tools.filter(tool => tool.repos?.length).map(tool => ({
+    key: tool.tool, label: label(tool.tool), sub: `${plural(tool.requests, 'request')} · ${plural(tool.calls, 'call')}`,
+    total: hours(tool.time_ms ?? null),
+    parts: repoParts(tool.repos, 'time_ms', body.repo_order, value => hours(value), `${label(tool.tool)}, summed time`, 'summed time',
+      `${label(tool.tool)}: model ${hours(tool.model_ms)} + tool calls ${hours(tool.tool_ms)} = ${hours(tool.time_ms ?? null)}.`),
   }))
 }
 
@@ -48,12 +60,20 @@ function programRows(body: TimeBody): BarRow[] {
     key: `${row.group}:${row.program ?? ''}`, label: programName(row),
     sub: `${plural(row.calls, 'call')} · ${share(row.failure_share)} failed`,
     total: `${hours(row.duration_ms)} · median ${millis(row.p50_ms)} · p95 ${millis(row.p95_ms)}`,
-    parts: [{ key: 'time', label: 'summed time', value: row.duration_ms, tone: row.group === 'program' ? 1 : 7, text: hours(row.duration_ms),
-      hover: programHover(row, total) }],
+    parts: row.repos?.length
+      ? repoParts(row.repos, 'duration_ms', body.repo_order, value => hours(value), `${programName(row)}, summed time`, 'summed time',
+        `${programHover(row, total)} The median and 95th percentile are of all the row's calls, not split by repository.`)
+      : [{ key: 'time', label: 'summed time', value: row.duration_ms, tone: row.group === 'program' ? 1 : 7, text: hours(row.duration_ms),
+        hover: programHover(row, total) }],
   }))
 }
 
 type Row = Record<string, unknown>
+
+const programAxis = (body: TimeBody) => body.programs.some(row => row.repos?.length)
+  ? 'Length: summed hours, linear from 0, a segment per repository; the rows for shell constructs, waiting and no program ' +
+    'recorded are groups, not one program.'
+  : 'Length: summed hours, linear from 0; grey rows are groups, not one program.'
 
 export default function TimeSplit(props: CardProps) {
   const ctx = untrack(() => props.ctx)
@@ -62,10 +82,14 @@ export default function TimeSplit(props: CardProps) {
     hero={timeHero}
     finding={body => timeFinding(body, label)}
     visual={body => <>
+      <RepoLegend split={body} other={hasOther([...body.tools, ...body.programs])} />
       <Bars name="time-tools" title="Summed time per tool: model requests and tool calls"
         legend={[{ label: 'Model: thinking', tone: 3 }, { label: 'Model: rest of the request', tone: 2 }, { label: 'Tool calls', tone: 1 }]}
         axis="Length: summed hours, one linear scale for every tool from 0; thinking is part of the model time."
         rows={timeRows(body, label)} />
+      <Bars name="time-tools-repos" title="Summed time per tool, by repository"
+        axis="Length: summed hours of model requests and tool calls, one linear scale from 0; a segment per repository."
+        rows={repoTimeRows(body, label)} />
       <Show when={reasoningRows(body, label).length}>
         <Bars name="time-reasoning" title="Reasoning tokens in the requests that report them, per tool" scale="whole"
           legend={[{ label: 'Reasoning tokens', tone: 3 }, { label: 'Other output tokens', tone: 6 }]}
@@ -73,7 +97,7 @@ export default function TimeSplit(props: CardProps) {
           rows={reasoningRows(body, label)} />
       </Show>
       <Bars name="time-programs" title="Programs run by command calls, by summed time"
-        axis="Length: summed hours, linear from 0; grey rows are groups, not one program."
+        axis={programAxis(body)}
         rows={programRows(body)} />
       <p class={styles.note} data-counted>
         Without a recorded duration: {fmtNum(body.summary.untimed_requests)} requests and {fmtNum(body.summary.untimed_calls)} calls.
