@@ -176,6 +176,8 @@ def reset_store(settings, tables: list[str] | None = None, *, node: str | None =
     from here discards its restart state when it next starts.
     """
     from . import _configured_modes
+    from .current import drop_command as current_drop
+    from .current import owned as current_owned
     from .schema import (
         ensure_schema,
         function_commands,
@@ -203,6 +205,10 @@ def reset_store(settings, tables: list[str] | None = None, *, node: str | None =
             theirs.tables = {k: v for k, v in theirs.tables.items() if v not in set(names)}
             for text in function_commands(state, logical_tables()):
                 command(text, "Database User (create) or Function Admin", "Create or alter the stored functions")
+    # A table cannot be dropped while a materialized view reads it: drop aictl's current views of these tables first.
+    for view in sorted(view for view, row in state.views.items()
+                       if str(row.get("SourceTable")) in set(names) and current_owned(view, str(row.get("SourceTable")))):
+        command(current_drop(view), "Database Admin", "Drop aictl current views")
     if names:
         command(f".drop tables ({', '.join(quote(name) for name in sorted(names))}) ifexists",
                 "Database Admin", "Drop aictl tables")

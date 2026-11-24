@@ -16,8 +16,8 @@ whose meaning the writing code does not settle says "meaning not established".
 
 ## Layout version
 
-The current layout is `LAYOUT_VERSION = 5`; it reads nodes from
-`COMPATIBLE_SINCE = 3`. A change to tables, columns, keys or the meaning of
+The current layout is `LAYOUT_VERSION = 6`; it reads nodes from
+`COMPATIBLE_SINCE = 6`. A change to tables, columns, keys or the meaning of
 stored values bumps the layout and adds a line here:
 
 | layout | breaks compatibility | migration | change |
@@ -27,6 +27,7 @@ stored values bumps the layout and adds a line here:
 | 3 | yes | `node_tables` | Each node writes its own tables (requests__&lt;node key&gt;, ...); a stored function named like each table reads all nodes. Layout, data epoch, migration and reset are per node. The migration copies each node's rows out of the shared tables, verifies them, and keeps the shared tables as legacy__*. |
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
 | 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. context_events: kinds rewind_point, checkpoint, truncation, memory_recall, instruction_update, tool_baseline, context_reset and context_query, with checkpoint_no, message_id, files_count, lines, dropped and preserved counts, path, tool_call_id, turn, content_hash and detail; a Claude Code compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; a transcript imported again stores its compactions once more under the new key). file_history: rows for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), origin, mechanism, version, state and line counts. context_events kinds config.* (session_start, session_resume, model_change, mode_change, permissions_change, managed_override, feature_flags, assignment_context, subagent_configured, context_changed, launch_flags): the settings a session ran under, with the reported fields in detail; sessions written before have none. |
+| 6 | yes | `timed_tombstones` | requests and tool_invocations: each node table has a materialized view of the current row of each key per hour of the row's time (requests_current__&lt;node key&gt;, tool_invocations_current__&lt;node key&gt;), read through the functions `requests_current` and `tool_invocations_current` (see [Current views](#current-views)); the requests views read them. A tombstone carries the time of the row it deletes, and the writers refuse one without it. A node of an older layout has no such view, and a tombstone it stored before November 2026 carries only the key, which a current view cannot place in time: the migration gives each such tombstone a new one with its row's time, then each start builds the views from the stored rows. |
 
 ### The `schema_version` registry
 
@@ -164,6 +165,45 @@ The "Ingestion" line of a table is its default mode (`streaming` or `queued`), u
 `[storage] kusto_ingestion = "auto"`. Another global mode, or an entry in
 `[storage.kusto_table_ingestion]`, replaces it. The mode changes how soon a row can be read,
 not what is stored.
+
+## Current views
+
+Reducing the versions of a whole table before a time range applies makes a 15-minute read cost
+what a 30-day read costs. For `requests` and `tool_invocations` Kusto keeps the current rows in a
+materialized view per node table, and the function `requests_current` (`tool_invocations_current`)
+unions the views of every node the functions include:
+
+- The view `T_current__<node key>` (folder `aictl/current`) over `T__<node key>` is
+  `T__<node key> | extend event_hour = bin(unixtime_seconds_todatetime(ts), 1h) | summarize arg_max(_v, *) by event_hour, ['project'], node_id, dedup_key`.
+  It has every column of the table plus `event_hour` (`datetime`), and takes a new column of the
+  table as the table does (`autoUpdateSchema`).
+- A query of it reads the materialized part and the rows not materialized yet, so a row is read
+  in the next query after it is ingested; tombstones are rows like any other.
+- `event_hour` is a group-by key and the view is partitioned by day of it, so a filter on
+  `event_hour` reads only the extents of those days. A filter on `ts` alone reads the whole view.
+- The time of a row can move a little between versions (the same call read again). A key whose
+  time crossed an hour boundary has a row in each hour, the older one stale. So read one hour
+  either side of the range, reduce the keys that have two rows to their newest row, then drop
+  tombstones and apply the exact range:
+
+```kql
+let since = 1795435200.0;  // epoch seconds, like ts
+let until = 1795438800.0;
+let current_rows = requests_current
+    | where event_hour between (bin(unixtime_seconds_todatetime(since), 1h) - 1h .. unixtime_seconds_todatetime(until) + 1h);
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+union (current_rows | where dedup_key !in (crossed)),
+    (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+| where not(coalesce(_deleted, false))
+| where ts between (since .. until)
+| summarize calls = count(), output_tokens = sum(output_tokens) by model
+```
+
+- Before that reduction, filter only on key columns, `event_hour` (with the margin) and the
+  columns the table's tombstones carry, as for the table itself.
+- The view keeps rows for the table's retention period. `aictl db reset` drops a node's views
+  before its tables; a start creates a missing view (from the stored rows, waiting for the build)
+  and enables a disabled one. Creating a view needs Database Admin.
 
 ## OTel tables: what is promoted and what stays in the bags
 
@@ -1024,6 +1064,7 @@ One row per model call.
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`requests`), from transcripts and from OTel
+- Current view: `requests_current` (see [Current views](#current-views))
 
 A call reported by OTel and read again from the transcript is stored once. The two are paired by session and the four token counts, in order; the transcript row takes the telemetry-only values (`duration_ms`, `ttft_ms`, `prompt_id`, `pid`, `finish_reason`, `request_id`, `response_id`) and the OTel row is deleted with a tombstone.
 
@@ -1113,6 +1154,7 @@ One row per tool call, without its text.
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
 - Written by: `tool_calls.py` (`ToolCalls`), from transcripts, hooks and OTel
+- Current view: `tool_invocations_current` (see [Current views](#current-views))
 
 | column | type | meaning |
 |---|---|---|

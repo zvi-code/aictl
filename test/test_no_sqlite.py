@@ -202,6 +202,8 @@ def _supplement_replay(client, settings):
          for name, source in columns_of.items()],
     )
     response("command", _FUNCTIONS_QUERY, [("Name", "string"), ("Body", "string")], [])
+    from aictl.stores.kusto.current import VIEWS_QUERY
+    response("command", VIEWS_QUERY, [("Name", "string"), ("SourceTable", "string"), ("IsEnabled", "bool")], [])
     # The stored layout: this build's, so the store opens without a migration or a reset.
     response("query", STORED_LAYOUT_QUERY,
              [(c, "string") for c in ("kind", "node_id", "version", "compatible_since", "data_epoch",
@@ -237,7 +239,8 @@ def _supplement_replay(client, settings):
     # regenerates, a reset's new tables) are answered, not replayed.
     execute_mgmt = client.execute_mgmt
     written = (".set-or-append ['schema_version']", ".create-or-alter function", ".drop function",
-               ".alter table ", ".alter tables ", ".create-merge tables ")
+               ".alter table ", ".alter tables ", ".create-merge tables ", ".create ifnotexists materialized-view",
+               ".create async ifnotexists materialized-view", ".alter materialized-view ", ".drop materialized-view ")
 
     def mgmt(database, text, properties=None):
         if text.startswith(written) and not client._responses.get(("command", text)):

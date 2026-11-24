@@ -28,7 +28,7 @@ _KQL_WORDS = frozenset({
     "let", "summarize", "arg_max", "by", "where", "not", "coalesce", "and", "or", "isnull", "isnotempty",
     "project", "unixtime_seconds_todatetime", "order", "desc", "asc", "count", "sum", "countif", "dcount",
     "take", "true", "false", "tostring", "extend", "iff", "isempty", "matches", "regex", "substring", "join",
-    "leftouter", "on",
+    "leftouter", "on", "between", "bin", "union", "in", "h", "datetime",
 })
 
 
@@ -115,8 +115,23 @@ def _queries() -> list[str]:
 
 
 def test_example_queries_dedup_by_the_key_and_name_only_real_columns():
+    from test_tombstone_scope import current_view_problems
+
+    from aictl.stores.kusto.current import HOUR, current_names
+
     checked = 0
     for query in _queries():
+        current = re.search(r"^let \w+ = (\w+)$", query, re.MULTILINE)
+        if current and current[1] in current_names():
+            # An example of a current view reads it in the one shape the views use (test_tombstone_scope.py).
+            assert current_view_problems(query) == [], query
+            table = current[1].removesuffix("_current")
+            body = re.sub(r"//[^\n]*|\['\w+'\]|\"[^\"]*\"|'[^']*'", " ", query)
+            aliases = set(re.findall(r"(\w+)\s*=(?!=)", body)) | set(re.findall(r"^let (\w+)", query, re.MULTILINE))
+            names = {w for w in re.findall(r"[A-Za-z_]\w*", body) if w not in _KQL_WORDS and w not in aliases}
+            assert names - {current[1], HOUR} <= dict(logical_columns(table)).keys(), sorted(names)
+            checked += 1
+            continue
         lines = [line for line in query.splitlines() if line.strip() and not line.startswith("let ")]
         source = lines[0].strip()
         name = "schema_version" if source == "aictl_nodes()" else source

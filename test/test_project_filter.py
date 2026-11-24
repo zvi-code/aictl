@@ -87,6 +87,10 @@ def test_a_restricted_view_reads_only_project_tables_through_the_restriction():
     assert "let sessions" not in text
     commits = restricted_query(_query("sessions.commits"))
     assert "let session_commits = session_commits | join kind=leftsemi aictl_project_sessions" in commits
+    # A view that reads a current view (stores/kusto/current.py) has it restricted the same way.
+    cells = restricted_query(_query("requests.cells"))
+    assert "let requests_current = requests_current | where ['project'] in (restrict_projects);" in cells
+    assert "let requests =" not in cells
     # Every table with a project of its own, and only those, is in the restriction.
     assert set(PROJECT_TABLES) | set(SESSION_TABLES) <= TABLES.keys()
     assert not {"files", "context_lists", "OTELLogs", "system_snapshots", "metrics"} & set(PROJECT_TABLES)

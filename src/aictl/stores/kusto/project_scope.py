@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import re
 
+from .current import current_names
+
 PARAMETER = "restrict_projects"
 # The parameter holds the exact stored values to keep: an exact match on the key column lets the
 # cluster use its index (a function over every row's key made a large view read run past its timeout).
@@ -36,6 +38,9 @@ PROJECT_TABLES = (
     "vscode_chat_messages", "cursor_session_messages", "events", "events_text", "hook_calls", "hook_calls_text",
     "memory_snapshots", "memory_snapshots_text",
 )
+# The current views of those tables (current.py) are filed the same way. `project` is a group-by key
+# of their materialized views, so the filter reaches the stored rows.
+CURRENT_VIEWS = tuple(sorted(current_names()))
 # Tables restricted by their session's project; `session_id` is part of their key.
 SESSION_TABLES = ("session_commits", "session_processes", "session_sources")
 
@@ -54,7 +59,7 @@ def restricted_query(text: str) -> str:
     declaration = f"declare query_parameters({names}{', ' if names else ''}{PARAMETER}:dynamic);{match['head'].rstrip()}"
     body = text[match.end():].strip().rstrip(";")
     code = _TEXT.sub(" ", body)
-    used = {table for table in (*PROJECT_TABLES, *SESSION_TABLES) if re.search(rf"\b{table}\b", code)}
+    used = {table for table in (*PROJECT_TABLES, *CURRENT_VIEWS, *SESSION_TABLES) if re.search(rf"\b{table}\b", code)}
     lets = []
     if used & set(SESSION_TABLES):
         # Read before `sessions` is shadowed below; the same rows either way.
@@ -63,7 +68,7 @@ def restricted_query(text: str) -> str:
             " | extend _gone=column_ifexists('_deleted', false)"
             " | summarize arg_max(_v, _gone) by ['project'], node_id, session_id"
             " | where not(coalesce(_gone, false)) | distinct node_id, session_id;")
-    for table in PROJECT_TABLES:
+    for table in (*PROJECT_TABLES, *CURRENT_VIEWS):
         if table in used:
             lets.append(f"let {table} = {table} | where ['project'] in ({PARAMETER});")
     for table in SESSION_TABLES:

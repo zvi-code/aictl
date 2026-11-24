@@ -565,7 +565,40 @@ def rename_commands(tables: list[str]) -> list[str]:
     return commands
 
 
+# ── timed_tombstones (layout 6) ─────────────────────────────────────
+
+
+def _timed_tombstones(tables: Mapping[str, str] | None = None) -> list[Statement]:
+    """A tombstone stored before tombstones carried their row's columns has no time, so the current
+    view (current.py), which keys rows by hour of their time, would never meet the row it deletes.
+    Each such key gets a new tombstone: its last live row, marked deleted, with a newer version."""
+    from .current import CURRENT_TABLES
+
+    statements = []
+    for table, time in sorted(CURRENT_TABLES.items()):
+        target = (tables or {}).get(table, table)
+        read = shared(target)
+        key = "['project'], node_id, dedup_key"
+        untimed = (f"{read} | summarize arg_max(_v, _deleted, {time}) by {key}"
+                   f" | where coalesce(_deleted, false) and isnull({time}) | project {key}")
+        live = f"{read} | where not(coalesce(_deleted, false)) and isnotnull({time}) | summarize arg_max(_v, *) by {key}"
+        rows = f"{live} | join kind=inner ({untimed}) on {key} | project-away ['project1'], node_id1, dedup_key1"
+        statements.append(Statement(
+            f"Give each {table} tombstone without a time a new one that carries its row's time",
+            f"{rows} | count",
+            append(target, f"{rows} | extend _deleted=true, _v=now()", read=read),
+            target,
+        ))
+    return statements
+
+
 MIGRATIONS: dict[str, Migration] = {
+    "timed_tombstones": Migration(
+        "timed_tombstones",
+        "Give every tombstone of requests and tool_invocations the time of the row it deletes",
+        _timed_tombstones,
+        scope="node",
+    ),
     "agents_by_session": Migration(
         "agents_by_session",
         "Key agents by session and agent id",
@@ -639,7 +672,7 @@ def run(
             result.statements.append(StatementResult(migration.summary, "\n".join(context.planned), total))
         else:
             assert migration.plan is not None
-            statements = migration.plan()
+            statements = migration.plan(tables) if migration.scope == "node" else migration.plan()
             widened: set[str] = set()
             for statement in statements:
                 try:

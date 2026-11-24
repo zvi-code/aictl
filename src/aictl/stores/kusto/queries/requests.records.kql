@@ -2,15 +2,19 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', requested_project:string = '', requested_session:string,
     example_limit:long = 200, row_limit:long
 );
-let calls = materialize(
-    requests
+// requests_current holds the current row of each call per hour of its time (event_hour). A call
+// whose time moved across an hour has a row in each hour: only the calls with two rows are reduced to
+// the newest (docs/storage-schema.md, "Read the current row").
+let current_rows = requests_current
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
-        and (isempty(requested_project) or ['project'] == requested_project)
-    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
-    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
-    | where not(coalesce(column_ifexists('_deleted', false), false))
+        and (isempty(requested_project) or ['project'] == requested_project);
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let calls = materialize(
+    union (current_rows | where dedup_key !in (crossed)),
+        (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
     | project ts, session_id, model, input_tokens, output_tokens, duration_ms, is_error, error_type, http_status,
-              finish_reason, fact_key
+              finish_reason, fact_key=dedup_key
 );
 union
     (calls | order by ts desc, fact_key asc | take example_limit | extend row_type='example'),

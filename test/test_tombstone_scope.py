@@ -20,6 +20,7 @@ from aictl.records import RequestRow
 from aictl.session_facts import SessionFacts
 from aictl.state_file import StateFile
 from aictl.stores.base import InvalidRowError
+from aictl.stores.kusto.current import CURRENT_TABLES, HOUR, logical
 from aictl.stores.kusto.schema import LEGACY_COLUMNS
 from aictl.stores.kusto.tables import TABLES
 from aictl.stores.kusto.writer import KustoWriter
@@ -78,6 +79,9 @@ def filtered_before_dedup(text: str) -> list[tuple[str, str]]:
     # A source is a table or a let bound to an unreduced pipeline of one, with the columns it extended.
     sources: dict[str, tuple[str, dict[str, set[str]]]] = {
         name: (name, {}) for name, table in TABLES.items() if table.tombstone}
+    # A current view holds a row per key and hour, tombstones included: the same rule applies before
+    # its versions are reduced again (its hour, event_hour, is a key column there).
+    sources.update({logical(name): (name, {}) for name in CURRENT_TABLES if TABLES[name].tombstone})
     found: set[tuple[str, str]] = set()
     seen: set[str] = set()
     while pending := [name for name in sources if name not in seen]:
@@ -174,6 +178,100 @@ def test_the_check_sees_a_filter_before_dedup_and_ignores_one_after():
     assert {"requests.records.kql", "agents.resolve.kql", "tools.totals.kql", "files.changes.kql"} <= flagged
 
 
+# The views that read a current view (stores/kusto/current.py) instead of reducing the whole table.
+CONVERTED = ("requests",)
+
+
+def current_view_problems(text: str) -> list[str]:
+    """What a view that reads a current view gets wrong.
+
+    A current view has a row per key and hour of the key's time; a key whose time crossed an hour
+    has a row in each. A view reads it in one shape only: the rows it wants (only ``where``, an hour
+    range only with the margin either side), the keys among them with more than one row, and those
+    keys reduced again to their newest version by the table's key; tombstones are dropped after that.
+
+        let current_rows = requests_current | where ...;
+        let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+        union (current_rows | where dedup_key !in (crossed)),
+            (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by <key>)
+        | where not(coalesce(_deleted, false))
+    """
+    code = re.sub(r"\s+", " ", _code(text))
+    problems = []
+    for name in CURRENT_TABLES:
+        view, key = logical(name), ", ".join(TABLES[name].key)
+        for match in re.finditer(rf"(?<![\w.]){view}(?!\w)", code):
+            bound = re.search(r"\blet (\w+) = $", code[:match.start()])
+            if bound is None:
+                problems.append(f"{view} is read outside `let <rows> = {view} | where ...`")
+                continue
+            rows = bound.group(1)
+            steps = _pipeline(code, match.end())
+            if not all(step.startswith("where ") for step in steps):
+                problems.append(f"{view}: only `where` may come before the rows of a key are reduced")
+            for step in steps:
+                if "_deleted" in step:
+                    problems.append(f"{view}: tombstones are dropped before the reduction")
+                if HOUR in step and not ("- 1h" in step or "+ 1h" in step):
+                    problems.append(f"{view}: {HOUR} is read without the one-hour margin: {step}")
+            crossed = re.search(rf"\blet (\w+) = {rows} \| summarize copies=count\(\) by dedup_key "
+                                r"\| where copies > 1 \| project dedup_key;", code)
+            reduced = crossed and re.search(
+                rf"union \({rows} \| where dedup_key !in \({crossed.group(1)}\)\), \({rows} \| where dedup_key in "
+                rf"\({crossed.group(1)}\) \| summarize arg_max\(_v, \*\) by {re.escape(key)}\) "
+                r"\| where not\(coalesce\(_deleted, false\)\)", code)
+            if not reduced:
+                problems.append(f"{view}: the keys with two rows are not reduced by {key}, then tombstones dropped")
+            elif len(re.findall(rf"(?<![\w.]){rows}(?!\w)", code)) != 4:
+                problems.append(f"{view}: {rows} is read other than to reduce the keys with two rows")
+    return problems
+
+
+@pytest.mark.parametrize("path", sorted(QUERIES.glob("*.kql")), ids=lambda path: path.name)
+def test_a_view_reads_a_current_view_or_reduces_versions_itself(path):
+    text = path.read_text()
+    assert current_view_problems(text) == [], path.name
+    table = path.name.split(".", 1)[0]
+    if table in CONVERTED:
+        # The defect this replaces: the whole table reduced before the time range was applied.
+        assert not re.search(rf"(?<![\w.]){table}(?!\w)", _code(text)), (
+            f"{path.name} reads the versioned table {table}; read {logical(table)}")
+
+
+GOOD = """let current_rows = requests_current
+    | where event_hour between (bin(unixtime_seconds_todatetime(since), 1h) - 1h .. unixtime_seconds_todatetime(until) + 1h);
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+union (current_rows | where dedup_key !in (crossed)),
+    (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+| where not(coalesce(_deleted, false))
+| where ts between (since .. until)"""
+
+
+def test_the_current_view_check_sees_each_mistake():
+    assert current_view_problems(GOOD) == [] and _violations(GOOD) == []
+    assert current_view_problems("requests_current | where ts > 1") == [
+        "requests_current is read outside `let <rows> = requests_current | where ...`"]
+    # Every row taken as current: a key whose time crossed an hour is counted twice.
+    unreduced = GOOD.replace("in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)", "in (crossed))")
+    assert current_view_problems(unreduced) == [
+        "requests_current: the keys with two rows are not reduced by project, node_id, dedup_key, then tombstones dropped"]
+    no_tombstones = GOOD.replace("| where not(coalesce(_deleted, false))\n", "")
+    assert current_view_problems(no_tombstones) == [
+        "requests_current: the keys with two rows are not reduced by project, node_id, dedup_key, then tombstones dropped"]
+    early = GOOD.replace("let current_rows = requests_current\n", "let current_rows = requests_current | where not(_deleted)\n")
+    assert "requests_current: tombstones are dropped before the reduction" in current_view_problems(early)
+    narrow = GOOD.replace(" - 1h ..", " ..").replace(" + 1h)", ")")
+    assert current_view_problems(narrow) == [
+        "requests_current: event_hour is read without the one-hour margin: where event_hour between "
+        "(bin(unixtime_seconds_todatetime(since), 1h) .. unixtime_seconds_todatetime(until))"]
+    reused = GOOD + "\n| join (current_rows | where is_error == 1) on dedup_key"
+    assert current_view_problems(reused) == [
+        "requests_current: current_rows is read other than to reduce the keys with two rows"]
+    # A filter before the reduction on a column a tombstone does not carry is the old mistake again.
+    model = GOOD.replace("let current_rows = requests_current\n", "let current_rows = requests_current | where model == 'm'\n")
+    assert _violations(model) == [("requests", "model")]
+
+
 def test_the_kql_tab_presets_reduce_versions_before_any_filter_on_a_column_a_tombstone_does_not_carry():
     from aictl.dashboard.drawer_kql import kql_templates
     options = {"reporting_node": "node-a", "session": "sid-1", "include_all_sessions": "1", "since": "1", "until": "9",
@@ -199,6 +297,18 @@ def test_writers_refuse_a_tombstone_without_its_scope(name):
         KustoWriter(Sink(), node_id="node").delete(name, [key])
     with pytest.raises(InvalidRowError, match="a tombstone carries"):
         MemoryWriter().delete(name, [key])
+
+
+@pytest.mark.parametrize("name", sorted(CURRENT_TABLES))
+def test_writers_refuse_a_tombstone_without_the_time_its_current_view_keys_by(name):
+    # A current view keys rows by hour of their time: a tombstone without one never meets its row.
+    table = TABLES[name]
+    row = {**{column: "k" for column in table.key if column != "node_id"},
+           **{column: "s" for column in table.tombstone_scope}, CURRENT_TABLES[name]: None}
+    with pytest.raises(InvalidRowError, match="current view keys by hour"):
+        KustoWriter(Sink(), node_id="node").delete(name, [row])
+    with pytest.raises(InvalidRowError, match="current view keys by hour"):
+        MemoryWriter().delete(name, [row])
 
 
 def test_a_tombstone_keeps_the_columns_of_the_row_it_deletes():

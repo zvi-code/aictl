@@ -32,8 +32,8 @@ from typing import Any
 
 from ..base import StoreConfigurationError
 
-LAYOUT_VERSION = 5
-COMPATIBLE_SINCE = 3
+LAYOUT_VERSION = 6
+COMPATIBLE_SINCE = 6
 # The first layout released as generally available. From then on a breaking change needs a migration.
 GA_LAYOUT_VERSION: int | None = None
 # The layout that gave each node its own tables. The database record carries it.
@@ -110,6 +110,17 @@ CHANGES: tuple[Change, ...] = (
         "assignment_context, subagent_configured, context_changed, launch_flags): the settings a session ran "
         "under, with the reported fields in detail; sessions written before have none.",
         breaks=False,
+    ),
+    Change(
+        6,
+        "requests and tool_invocations: each node table has a materialized view of the current row of each key "
+        "per hour of the row's time (requests_current__<node key>, tool_invocations_current__<node key>), read through "
+        "the functions requests_current and tool_invocations_current; the requests views read them. A node of an "
+        "older layout has no such view, and a tombstone it stored before November 2026 carries only the key, which "
+        "a current view cannot place in time: the migration gives each such tombstone a new one with its row's "
+        "time, then the views are built from the stored rows.",
+        breaks=True,
+        migration="timed_tombstones",
     ),
 )
 

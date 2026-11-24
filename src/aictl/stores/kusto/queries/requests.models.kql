@@ -3,13 +3,19 @@ declare query_parameters(
     requested_session:string, requested_agent:string = '',
     since:real = real(null), until:real = real(null), row_limit:long
 );
-requests
-| where all_nodes or node_id == requested_node
-| where isempty(requested_project) or ['project'] == requested_project
-| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
-| summarize arg_max(_v, *) by ['project'], node_id, fact_key
-| where not(coalesce(column_ifexists('_deleted', false), false))
-| where session_id == requested_session and (isempty(requested_agent) or agent_id == requested_agent)
+// requests_current holds the current row of each call per hour of its time (event_hour). A call
+// whose time moved across an hour has a row in each hour: the hours one either side of the range are
+// read too, and only the calls with two rows are reduced to the newest (docs/storage-schema.md).
+let current_rows = requests_current
+    | where all_nodes or node_id == requested_node
+    | where isempty(requested_project) or ['project'] == requested_project
+    | where session_id == requested_session and (isempty(requested_agent) or agent_id == requested_agent)
+    | where isnull(since) or event_hour >= bin(unixtime_seconds_todatetime(since), 1h) - 1h
+    | where isnull(until) or event_hour <= unixtime_seconds_todatetime(until) + 1h;
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+union (current_rows | where dedup_key !in (crossed)),
+    (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+| where not(coalesce(_deleted, false))
 | where (isnull(since) or ts >= since) and (isnull(until) or ts <= until)
 // A call stored with no cost has none that can be known: a row of its own, never priced at read time.
 | extend cost_known=isnotnull(cost_usd)

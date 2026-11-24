@@ -396,7 +396,9 @@ def history(monkeypatch, kusto_store):
         model="model-a",
         input_tokens=100_000,
     )
-    add("requests", "host-b", 900, version=2, id=900, session_id=sid, ts=20_000, tool="copilot-cli", model="model-a")
+    # A newer version moves the call out of the window, into the next hour: the current view holds a row in each
+    # hour and the newer one wins. A move of more than an hour is outside what current views read (current.py).
+    add("requests", "host-b", 900, version=2, id=900, session_id=sid, ts=3_700, tool="copilot-cli", model="model-a")
     add(
         "session_usage",
         "host-a",

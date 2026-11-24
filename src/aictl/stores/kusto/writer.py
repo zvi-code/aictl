@@ -15,6 +15,7 @@ from typing import Any
 
 from ..base import InvalidRowError, Row, StoreError
 from .client import next_version, retrying, schema_cache_behind
+from .current import untimed_tombstone
 from .ingest import RowIngester, json_line
 from .maintenance import TRIM_TIMESTAMPS
 from .schema import LEGACY_COLUMNS
@@ -159,6 +160,8 @@ class KustoWriter:
             # A view that filters on these before it reduces versions would drop a tombstone
             # without them, and the deleted row would show again.
             raise InvalidRowError(f"{name}: a tombstone carries {', '.join(missing)} of the row it deletes")
+        if delete and (problem := untimed_tombstone(name, row)):
+            raise InvalidRowError(problem)
         for column in table.key:
             if column == "node_id":
                 continue

@@ -1,12 +1,17 @@
 declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', session_keys:dynamic, row_limit:long
 );
-requests
-| where all_nodes or node_id == requested_node
-| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
-| summarize arg_max(_v, *) by ['project'], node_id, fact_key
-| where not(coalesce(column_ifexists('_deleted', false), false))
-| where isempty(agent_id) and strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+// requests_current holds the current row of each call per hour of its time (event_hour). A call
+// whose time moved across an hour has a row in each hour: only the calls with two rows are reduced to
+// the newest (docs/storage-schema.md, "Read the current row").
+let current_rows = requests_current
+    | where all_nodes or node_id == requested_node
+    | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys);
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+union (current_rows | where dedup_key !in (crossed)),
+    (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+| where not(coalesce(_deleted, false))
+| where isempty(agent_id)
 | summarize arg_max(ts, finish_reason) by node_id, session_id
 | where finish_reason in ('end_turn', 'stop', 'stop_sequence')
 | order by node_id asc, session_id asc

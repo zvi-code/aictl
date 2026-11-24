@@ -39,6 +39,8 @@ class FakeKusto:
         self.layout_rows = [dict(row) for row in layout_rows]
         self.counts = counts or (lambda query: 0)
         self.functions: dict[str, dict] = {}
+        # Materialized views: name -> {source, query, enabled, policies, backfill}.
+        self.views: dict[str, dict] = {}
         self.commands: list[str] = []
         self.queries: list[str] = []
         self.fail = lambda text: None
@@ -120,6 +122,28 @@ class FakeKusto:
                                        retention(name),
                                        json.dumps({"IsEnabled": True}), spec["folder"], spec["docstring"]]
                                       for name, spec in self.tables.items()])
+        if text.startswith(".show materialized-views"):
+            return response([("Name", "string"), ("SourceTable", "string"), ("IsEnabled", "bool")],
+                            [[name, view["source"], view["enabled"]] for name, view in self.views.items()])
+        if match := re.match(rf"\.create (async )?ifnotexists materialized-view with \((.*?)\) {_NAME} on table {_NAME}\n"
+                             r"\{\n(.*)\n\}$", text, re.S):
+            name, source = match.group(3), match.group(4)
+            if source not in self.tables:
+                raise RuntimeError(f"Table '{source}' does not exist")
+            if name in self.tables or name in self.functions:
+                raise RuntimeError(f"Entity '{name}' already exists")
+            self.views.setdefault(name, {"source": source, "query": match.group(5), "enabled": True, "policies": {},
+                                         "backfill": "backfill=true" in match.group(2)})
+            return response([("OperationId", "string")], [["op-1"]] if match.group(1) else [])
+        if match := re.match(rf"\.alter materialized-view {_NAME} policy (\w+) (.*)$", text, re.S):
+            self.views[match.group(1)]["policies"][match.group(2)] = json.loads(_string(match.group(3))[0])
+            return response()
+        if match := re.match(rf"\.drop materialized-view {_NAME} ifexists$", text):
+            self.views.pop(match.group(1), None)
+            return response()
+        if text.startswith(".show operations "):
+            return response([("OperationId", "string"), ("State", "string"), ("Status", "string")],
+                            [[text.split()[-1], "Completed", ""]])
         if text.startswith(".show functions"):
             return response([("Name", "string"), ("Body", "string")],
                             [[name, f["body"]] for name, f in self.functions.items()])
@@ -146,6 +170,8 @@ class FakeKusto:
         elif match := re.match(rf"\.alter-merge table {_NAME} policy retention softdelete = (\w+)$", text):
             self.tables[match.group(1)]["retention"] = match.group(2)
         elif match := re.match(r"\.drop tables \((.*)\) ifexists$", text):
+            if read := [v for v, view in self.views.items() if view["source"] in re.findall(_NAME, match.group(1))]:
+                raise RuntimeError(f"Cannot drop a table that is the source of materialized view(s): {read}")
             for name in re.findall(_NAME, match.group(1)):
                 self.tables.pop(name, None)
                 if name == "schema_version":

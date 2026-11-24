@@ -7,17 +7,16 @@ let wanted = (t:real, n:string, s:string, m:string, e:long) {
     and (isempty(requested_model) or m == requested_model)
     and strcat(strlen(n), ':', n, s) in (session_keys)
 };
-let versions = requests
+// requests_current holds the current row of each call per hour of its time (event_hour). A call
+// whose time moved across an hour has a row in each hour: the hours one either side of the range are
+// read too, and only the calls with two rows are reduced to the newest (docs/storage-schema.md).
+let current_rows = requests_current
     | where all_nodes or node_id == requested_node
-    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key);
-// A request's newest version is in the window only if one of its versions is. The keys of the
-// window are read first, so the cost follows the window and not the size of the table.
-let keys = versions | where wanted(ts, node_id, session_id, model, is_error) | distinct ['project'], node_id, fact_key;
-versions
-| join kind=inner keys on ['project'], node_id, fact_key
-| project-away ['project1'], node_id1, fact_key1
-| summarize arg_max(_v, *) by ['project'], node_id, fact_key
-| where not(coalesce(column_ifexists('_deleted', false), false))
+    | where event_hour between (bin(unixtime_seconds_todatetime(since), 1h) - 1h .. unixtime_seconds_todatetime(until) + 1h);
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+union (current_rows | where dedup_key !in (crossed)),
+    (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+| where not(coalesce(_deleted, false))
 | where wanted(ts, node_id, session_id, model, is_error)
 | extend g=min_of(grid - 1, tolong((ts - since) / ((until - since) / grid)))
 | summarize calls=count(), last_ts=max(ts) by node_id, session_id, error_type, http_status, g

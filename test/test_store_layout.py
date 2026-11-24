@@ -424,10 +424,86 @@ def test_reset_names_the_role_when_the_drop_is_denied(monkeypatch):
     from aictl.stores.base import StorePermissionError
 
     fake = started("node-a")
-    fake.fail = lambda text: (_ for _ in ()).throw(RuntimeError("Forbidden")) if text.startswith(".drop") else None
+    fake.fail = lambda text: (_ for _ in ()).throw(RuntimeError("Forbidden")) if text.startswith(".drop tables") else None
     monkeypatch.setattr(KustoClientFactory, "client", lambda _: fake)
     with pytest.raises(StorePermissionError, match="Drop aictl tables requires Database Admin"):
         maintenance.reset_store(SETTINGS, [phys("requests")])
+
+
+# ── current views (current.py) ──────────────────────────────────────
+
+
+def test_a_new_node_gets_an_empty_current_view_per_table_and_the_functions_read_them():
+    from aictl.stores.kusto import current as C
+
+    fake = started("node-a", "node-b")
+    for name in C.CURRENT_TABLES:
+        for node in ("node-a", "node-b"):
+            view = fake.views[C.physical(name, key(node))]
+            assert view["source"] == phys(name, node) and not view["backfill"]
+            assert "summarize arg_max(_v, *) by event_hour, ['project'], node_id, dedup_key" in view["query"]
+            partition = view["policies"]["partitioning"]["PartitionKeys"][0]
+            assert (partition["ColumnName"], partition["Kind"]) == ("event_hour", "UniformRange")
+            assert view["policies"]["retention"]["SoftDeletePeriod"] == TABLES[name].retention_timespan
+        assert legs(fake, C.logical(name)) == sorted(C.physical(name, key(n)) for n in ("node-a", "node-b"))
+        assert "['event_hour']:datetime" in fake.functions[C.logical(name)]["body"]
+
+
+def test_a_table_that_lost_its_view_gets_it_back_built_from_its_rows():
+    from aictl.stores.kusto import current as C
+
+    fake = started("node-a")
+    fake.views.pop(C.physical("requests", key("node-a")))
+    ensure(fake)
+    view = fake.views[C.physical("requests", key("node-a"))]
+    assert view["backfill"]
+    create = next(c for c in fake.commands if c.startswith(".create async ifnotexists materialized-view"))
+    # The start waits for the build: the view cannot be read before it is done.
+    assert fake.commands[fake.commands.index(create) + 1] == ".show operations op-1"
+
+
+def test_a_disabled_view_is_enabled_again():
+    from aictl.stores.kusto import current as C
+
+    fake = started("node-a")
+    fake.views[C.physical("requests", key("node-a"))]["enabled"] = False
+    ensure(fake)
+    assert f".enable materialized-view ['{C.physical('requests', key('node-a'))}']" in fake.commands
+
+
+def test_a_node_of_layout_5_migrates_its_tombstones_and_builds_its_views_from_its_rows():
+    from aictl.stores.kusto import current as C
+
+    fake = started("node-a")
+    for name in C.CURRENT_TABLES:
+        fake.views.pop(C.physical(name, key("node-a")))  # layout 5 had none
+    for row in layouts(fake, "node-a"):
+        row.update(version=5, compatible_since=3)
+    with pytest.raises(L.LayoutMigrationRequired, match="timed_tombstones"):
+        ensure(fake)
+    fake.counts = counting({"and isnull(ts) | project": 2})
+    start = len(fake.commands)
+    status = ensure(fake, migrate=migrations.runner(fake, "db"))
+    assert status.layout["verdict"] == L.MIGRATE
+    steps = [(r["step"], r["detail"]) for r in fake.layout_rows if r["kind"] == "migration"]
+    assert steps == [("timed_tombstones", "done: 4 rows")]
+    assert all(fake.views[C.physical(name, key("node-a"))]["backfill"] for name in C.CURRENT_TABLES)
+    # The views are built after the migration, from the migrated rows.
+    commands = fake.commands[start:]
+    last_append = max(i for i, c in enumerate(commands) if "and isnull(ts) | project" in c)
+    first_view = min(i for i, c in enumerate(commands) if "materialized-view" in c and c.startswith(".create"))
+    assert last_append < first_view
+
+
+def test_reset_drops_the_current_views_of_the_node_before_its_tables(monkeypatch):
+    from aictl.stores.kusto import current as C
+
+    fake = started("node-a", "node-b")
+    monkeypatch.setattr(KustoClientFactory, "client", lambda _: fake)
+    maintenance.reset_store(SETTINGS)  # the fake refuses to drop a table a view reads
+    assert C.physical("requests", key("node-b")) in fake.views
+    assert legs(fake, C.logical("requests")) == sorted(C.physical("requests", key(n)) for n in ("node-a", "node-b"))
+    assert fake.views[C.physical("requests", key("node-a"))]["source"] == phys("requests")
 
 
 def test_owned_tables_cover_every_definition_and_the_marker():
@@ -454,7 +530,8 @@ def counting(per_statement):
 
 def test_requests_single_copy_runs_on_the_shared_table_before_the_node_tables_are_made():
     fake = with_data()
-    fake.counts = counting({"claude-code-jsonl": 7, "| where (coalesce(duration_ms": 2, "fact_key=o_key": 3})
+    fake.counts = counting({"claude-code-jsonl": 7, "| where (coalesce(duration_ms": 2, "fact_key=o_key": 3,
+                            "and isnull(ts) | project": 4})
     status = ensure(fake, migrate=migrations.runner(fake, "db"))
     appends = [c for c in fake.commands if c.startswith(".set-or-append ['requests'] <|")]
     assert len(appends) == 3
@@ -465,7 +542,13 @@ def test_requests_single_copy_runs_on_the_shared_table_before_the_node_tables_ar
     # The fake counts by text: the scan's session rows (source claude-code-jsonl) match agents_by_session too.
     assert [(r["step"], r["detail"]) for r in steps] == [("requests_single_copy", "done: 12 rows"),
                                                           ("agents_by_session", "done: 7 rows"),
-                                                          ("node_tables", "done: 15 rows")]
+                                                          ("node_tables", "done: 15 rows"),
+                                                          ("timed_tombstones", "done: 8 rows")]
+    # The per-node step runs on this node's copies, once they exist.
+    tombstones = [c for c in fake.commands if "and isnull(ts) | project" in c and c.startswith(".set-or-append")]
+    assert [c.split(" <|")[0] for c in tombstones] == [
+        f".set-or-append ['{phys('requests')}']", f".set-or-append ['{phys('tool_invocations')}']"]
+    assert all(fake.commands.index(c) > first_copy for c in tombstones)
     assert status.epoch_kept_data and status.layout["verdict"] == L.MIGRATE
 
 
@@ -592,11 +675,13 @@ def test_dry_run_prints_the_plan_with_counts_and_commands_and_changes_nothing(mo
 
 
 def test_every_statement_appends_by_column_name_and_reads_the_physical_table():
-    tables = {"requests_single_copy": ["requests"] * 3, "agents_by_session": ["agents_text", "agents", "sessions"]}
+    tables = {"requests_single_copy": ["requests"] * 3, "agents_by_session": ["agents_text", "agents", "sessions"],
+              "timed_tombstones": ["requests", "tool_invocations"]}
     for migration in migrations.MIGRATIONS.values():
         if migration.plan is None:
             continue
-        for statement, table in zip(migration.plan(), tables[migration.name], strict=True):
+        for statement, table in zip(migration.plan(*(({},) if migration.scope == "node" else ())),
+                                    tables[migration.name], strict=True):
             assert statement.command.startswith(f".set-or-append ['{table}'] <| ")
             assert f'table("{table}") | take 0 | union (' in statement.command
             # Once the function of a table exists, a bare name reads the function: always table('T').
@@ -609,12 +694,14 @@ def test_the_migration_chain_starts_where_each_database_is():
     def names(stored):
         return [m.name for _, m in migrations.pending(stored)]
 
-    assert names(L.UNVERSIONED) == ["requests_single_copy", "agents_by_session", "node_tables"]
-    assert names(L.StoredLayout(1, 1, "e")) == ["agents_by_session", "node_tables"]
-    assert names(L.StoredLayout(2, 2, "e")) == ["node_tables"]
-    assert names(L.StoredLayout(3, 3, "e")) == []
+    assert names(L.UNVERSIONED) == ["requests_single_copy", "agents_by_session", "node_tables", "timed_tombstones"]
+    assert names(L.StoredLayout(1, 1, "e")) == ["agents_by_session", "node_tables", "timed_tombstones"]
+    assert names(L.StoredLayout(2, 2, "e")) == ["node_tables", "timed_tombstones"]
+    assert names(L.StoredLayout(3, 3, "e")) == ["timed_tombstones"]
+    assert names(L.StoredLayout(5, 3, "e")) == ["timed_tombstones"]
+    assert names(L.StoredLayout(6, 6, "e")) == []
     done = L.StoredLayout(0, 0, "e", migrations_done=frozenset({"requests_single_copy"}))
-    assert names(done) == ["agents_by_session", "node_tables"]
+    assert names(done) == ["agents_by_session", "node_tables", "timed_tombstones"]
 
 
 def test_a_layout_2_shared_database_runs_only_the_node_tables_step():
@@ -622,7 +709,7 @@ def test_a_layout_2_shared_database_runs_only_the_node_tables_step():
     fake.layout_row(2, 2, "shared-epoch", detail="migrate", node_id="node-a")
     ensure(fake, migrate=migrations.runner(fake, "db"))
     steps = [r["step"] for r in fake.layout_rows if r["kind"] == "migration" and "/" not in r["step"]]
-    assert steps == ["requests_single_copy", "node_tables"]
+    assert steps == ["requests_single_copy", "node_tables", "timed_tombstones"]
     assert not [c for c in fake.commands if c.startswith(".set-or-append ['agents")]
 
 

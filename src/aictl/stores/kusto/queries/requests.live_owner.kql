@@ -2,13 +2,17 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', requested_tool:string,
     project_path_key:string, fold_project:bool, row_limit:long
 );
-requests
-| where all_nodes or node_id == requested_node
-| extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
-| summarize arg_max(_v, *) by ['project'], node_id, fact_key
-| where not(coalesce(column_ifexists('_deleted', false), false))
-| where tool == requested_tool
+// requests_current holds the current row of each call per hour of its time (event_hour). A call
+// whose time moved across an hour has a row in each hour: only the calls with two rows are reduced to
+// the newest (docs/storage-schema.md, "Read the current row").
+let current_rows = requests_current
+    | where all_nodes or node_id == requested_node
+    | where tool == requested_tool;
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+union (current_rows | where dedup_key !in (crossed)),
+    (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+| where not(coalesce(_deleted, false))
 | where iff(fold_project, trim_end(@'/+', replace_string(tolower(project_path), @'\', '/')), project_path) == project_path_key
-| order by ts desc, node_id asc, ['project'] asc, fact_key asc
+| order by ts desc, node_id asc, ['project'] asc, dedup_key asc
 | take row_limit
 | project node_id, session_id

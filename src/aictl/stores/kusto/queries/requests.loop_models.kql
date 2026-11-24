@@ -7,18 +7,17 @@ let bounds = materialize(
     | project span_index, span_node=tostring(span[0]), session_id=tostring(span[1]), span_agent=tostring(span[2]),
               since_ts=toreal(span[3]), until_ts=toreal(span[4])
 );
-let raw_requests = () { requests
+// requests_current holds the current row of each call per hour of its time (event_hour). A call
+// whose time moved across an hour has a row in each hour: only the calls with two rows are reduced to
+// the newest (docs/storage-schema.md, "Read the current row").
+let current_rows = requests_current
     | where all_nodes or node_id == requested_node
-    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)
-};
-// Select the keys with a version in one of the sessions, then keep each one's winning version.
-let keys = raw_requests() | where session_id in ((bounds | project session_id)) | distinct fact_key;
-raw_requests()
-| where fact_key in (keys)
-| extend deleted=column_ifexists('_deleted', false)
-| summarize arg_max(_v, deleted, session_id, agent_id, ts, model, input_tokens, output_tokens, cache_read_tokens,
-                    cache_creation_tokens, cost_usd) by ['project'], node_id, fact_key
-| where not(coalesce(deleted, false))
+    | where session_id in ((bounds | project session_id));
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+union (current_rows | where dedup_key !in (crossed)),
+    (current_rows | where dedup_key in (crossed)
+        | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+| where not(coalesce(_deleted, false))
 | join kind=inner bounds on session_id
 | where (isempty(span_node) or node_id == span_node) and (isempty(span_agent) or agent_id == span_agent)
     and ts >= since_ts and ts <= until_ts

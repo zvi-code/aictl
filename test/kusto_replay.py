@@ -17,6 +17,9 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from aictl.stores import Store
+from aictl.stores.kusto.current import SUFFIX as CURRENT_SUFFIX
+from aictl.stores.kusto.current import current_names
+from aictl.stores.kusto.current import view_query as current_view_query
 from aictl.stores.kusto.reader import KustoReader
 from aictl.stores.kusto.recorded import RecordedKustoClient, UnrecordedQueryError
 from aictl.stores.kusto.tables import TABLES
@@ -154,8 +157,14 @@ def _query_with_facts(facts, text, packed, bind):
     code = _TEXT.sub(lambda match: match["quoted"][2:-2] if match["quoted"] else " ", text)
     if _BYPASS.search(code) or text.lstrip().startswith("."):
         raise ValueError("This KQL bypasses inline fixture tables")
-    tables = sorted(set(_IDENTIFIER.findall(code)) & TABLES.keys())
+    names = set(_IDENTIFIER.findall(code))
+    # A current view (stores/kusto/current.py) is its materialized view's own query over the inline table.
+    currents = sorted(names & current_names())
+    tables = sorted((names & TABLES.keys()) | {name.removesuffix(CURRENT_SUFFIX) for name in currents})
     prefix = "".join(facts.inline(table, packed, bind) for table in tables)
+    for name in currents:
+        table = name.removesuffix(CURRENT_SUFFIX)
+        prefix += f"let {name} = {current_view_query(table, table, TABLES[table].key)};\n"
     # Keep query parameter declarations at the start of the script.
     if text.startswith("declare query_parameters"):
         declaration, query = text.split(";", 1)

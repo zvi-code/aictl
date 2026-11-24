@@ -275,6 +275,7 @@ def test_a_node_of_layout_3_upgrades_without_a_migration_and_gains_the_table(mon
     with monkeypatch.context() as layout_3:
         layout_3.setattr(L, "LAYOUT_VERSION", 3)
         layout_3.setattr(L, "CHANGES", L.CHANGES[:3])
+        layout_3.setattr(L, "COMPATIBLE_SINCE", 3)
         ensure(older)
     fake.add_rows(phys("session_context_items"), "node-a", 3)
     assert phys("context_lists") not in fake.tables
@@ -282,8 +283,12 @@ def test_a_node_of_layout_3_upgrades_without_a_migration_and_gains_the_table(mon
     [command] = [c for c in function_commands(check_layout(fake, "db", "node-a"), {"context_lists"})
                  if "['context_lists']()" in c]
     assert "datatable(['list_id']:string" in command and "context_lists__" not in command
+    # Layout 5, the last one before layout 6 broke compatibility (current views, a migration).
+    monkeypatch.setattr(L, "LAYOUT_VERSION", 5)
+    monkeypatch.setattr(L, "COMPATIBLE_SINCE", 3)
+    monkeypatch.setattr(L, "CHANGES", L.CHANGES[:5])
     status = ensure({**older, "context_lists": TABLES["context_lists"]})
     assert status.layout["verdict"] == L.UPGRADE
     rows = [r for r in fake.layout_rows if r["kind"] == "layout" and not r.get("step")]
-    assert (rows[-1]["version"], rows[-1]["compatible_since"], rows[-1]["detail"]) == (L.LAYOUT_VERSION, 3, "upgrade")
+    assert (rows[-1]["version"], rows[-1]["compatible_since"], rows[-1]["detail"]) == (5, 3, "upgrade")
     assert phys("context_lists") in fake.tables and [r for r in fake.layout_rows if r["kind"] == "migration"] == []

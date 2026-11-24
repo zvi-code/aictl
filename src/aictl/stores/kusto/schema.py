@@ -30,6 +30,7 @@ from typing import Any
 
 from ...kusto.observations import COMPANIONS, CURRENT_STORE
 from ..base import StoreConfigurationError, StorePermissionError
+from . import current as C
 from . import layout as L
 from . import nodes as N
 from .client import Result, kql_literal, quote, retrying
@@ -308,6 +309,7 @@ class LayoutState:
     legacy: dict[str, int | None] = field(default_factory=dict)  # shared tables named like logical ones
     renamed: dict[str, int | None] = field(default_factory=dict)  # legacy__ tables kept by the migration
     settled: frozenset[str] = frozenset()  # database-wide migrations done
+    views: dict[str, dict] = field(default_factory=dict)  # materialized views: name -> SourceTable, IsEnabled
 
     @property
     def verdict(self) -> str:
@@ -390,6 +392,8 @@ def inspect(command: Command, query: Query, node_id: str = "") -> LayoutState:
     response = command(_FUNCTIONS_QUERY, "Database Viewer", "Read stored functions")
     functions = {str(row["Name"]): str(row.get("Body") or "") for row in Result.from_response(response).dicts()
                  if row.get("Name")}
+    response = command(C.VIEWS_QUERY, "Database Viewer", "Read materialized views")
+    views = {str(row["Name"]): row for row in Result.from_response(response).dicts() if row.get("Name")}
     rows: list[dict] = []
     if {"kind", "version", "compatible_since", "data_epoch"} <= have.get(LAYOUT_TABLE, {}).keys():
         rows = query(LAYOUT_QUERY, "Read the data layout").dicts()
@@ -438,7 +442,7 @@ def inspect(command: Command, query: Query, node_id: str = "") -> LayoutState:
 
     if mode == SHARED:
         return LayoutState(have, details, counts, shared, True, rows, functions, node_id, mode, shared, nodes,
-                           legacy, renamed, settled)
+                           legacy, renamed, settled, views)
     mine = nodes.get(N.node_key(node_id))
     stored = mine.stored if mine is not None else None
     tables = set(mine.tables.values()) if mine is not None else set()
@@ -446,7 +450,7 @@ def inspect(command: Command, query: Query, node_id: str = "") -> LayoutState:
     if stored is None and tables and not has_data:
         has_data = _rows_in(query, tables)
     return LayoutState(have, details, counts, stored, has_data, rows, functions, node_id, mode, shared, nodes,
-                       legacy, renamed, settled)
+                       legacy, renamed, settled, views)
 
 
 def check_layout(client: Any, database: str, node_id: str = "") -> LayoutState:
@@ -474,6 +478,17 @@ def function_commands(state: LayoutState, logical: Iterable[str]) -> list[str]:
         if N.normalized_body(state.functions.get(name)) != N.normalized_body(body):
             commands.append(N.function_command(name, body, N.function_docstring(
                 name, [leg.rsplit(N.SEPARATOR, 1)[1] for leg in legs], bool(collector))))
+    for name in sorted(C.CURRENT_TABLES):
+        # The current view of each included node; a node whose view does not exist yet is left out of
+        # it until its start creates the view (current.py).
+        views = sorted(view for node in included if name in node.tables
+                       if (view := C.physical(name, node.key)) in state.views)
+        columns = (*logical_columns(name), (C.HOUR, "datetime"))
+        body = N.function_body(columns, views)
+        if N.normalized_body(state.functions.get(C.logical(name))) != N.normalized_body(body):
+            docstring = (f"aictl current view {C.logical(name)}: the union of {len(views)} node view(s) of the current "
+                         f"row of each {name} key. See docs/storage-schema.md.")
+            commands.append(N.function_command(C.logical(name), body, docstring))
     registry = N.registry_function_command()
     if N.normalized_body(state.functions.get("aictl_nodes")) != N.normalized_body(_body(registry)):
         commands.append(registry)
@@ -538,6 +553,63 @@ def create_node_tables(command: Command, node_id: str, specs: Mapping[str, tuple
     return created
 
 
+def ensure_current_views(command: Command, state: LayoutState, node_id: str, tables: Mapping[str, Table], *,
+                         created: set[str], retained: set[str], wait_s: float = 3600.0) -> list[str]:
+    """Create this node's current views (current.py) that do not exist, and enable a disabled one.
+
+    A view over a table this start created is empty and readable at once; a view over a table
+    that may hold rows is built from them (backfill), which the start waits for, because the
+    view cannot be read before. Returns the names of the views created.
+    """
+    key = N.node_key(node_id)
+    made = []
+    for name, table in sorted(tables.items()):
+        view = C.physical(name, key)
+        row = state.views.get(view)
+        if row is not None:
+            if str(row.get("IsEnabled")).lower() in ("false", "0"):
+                command(f".enable materialized-view {quote(view)}", "Materialized View Admin or Database Admin",
+                        f"Enable {view}")
+            if N.physical(name, key) in retained:
+                command(C.retention_command(name, key, table.retention_timespan), "Database Admin",
+                        f"Set retention for {view}")
+            continue
+        backfill = name not in created
+        result = command(C.create_command(name, node_id, key, table.key, backfill=backfill), "Database Admin",
+                         f"Create the current view {view}")
+        if backfill:
+            _wait_for_operation(command, Result.from_response(result).dicts(), view, wait_s)
+        command(C.partitioning_command(name, key), "Database Admin", f"Partition {view} by day")
+        command(C.retention_command(name, key, table.retention_timespan), "Database Admin",
+                f"Set retention for {view}")
+        made.append(view)
+    return made
+
+
+def _wait_for_operation(command: Command, rows: list[dict], what: str, wait_s: float) -> None:
+    """Wait for the async operation a ``.create async`` started; raise when it fails or takes too long."""
+    import time
+
+    operation = str(rows[0].get("OperationId") or "") if rows else ""
+    if not operation:
+        return
+    deadline = time.monotonic() + wait_s
+    log.info("Building %s from the rows already stored (operation %s)", what, operation)
+    while True:
+        states = Result.from_response(command(f".show operations {operation}", "Database Viewer",
+                                              f"Read the progress of {what}")).dicts()
+        state = str(states[-1].get("State") or "") if states else ""
+        if state == "Completed":
+            return
+        if state in ("Failed", "Abandoned", "BadInput", "Canceled", "Throttled", "PartiallySucceeded"):
+            raise StoreConfigurationError(f"Building {what} failed ({state}): {states[-1].get('Status')}. "
+                                          "Start aictl again to retry.")
+        if time.monotonic() > deadline:
+            raise StoreConfigurationError(f"Building {what} did not finish in {wait_s:.0f} s (operation {operation}); "
+                                          "start aictl again once it is done (.show operations).")
+        time.sleep(5)
+
+
 def retention_commands(periods: Mapping[str, tuple[str, str]], details: Mapping[str, dict]) -> list[str]:
     """``.alter tables (...) policy retention`` per period, for tables whose period differs.
 
@@ -574,6 +646,7 @@ def ensure_schema(
     command, query = management(client, database), querying(client, database)
     state = inspect(command, query, node_id)
     migrated = False
+    shared_before: L.StoredLayout | None = None
     if state.mode == SHARED:
         from .migrations import lock_owner
 
@@ -584,6 +657,7 @@ def ensure_schema(
                 "done; start it again afterwards (aictl db layout shows the progress).")
         if state.verdict != L.MIGRATE or migrate is None:
             raise state.error(cluster, database)
+        shared_before = state.shared or L.UNVERSIONED
         epoch = state.shared.data_epoch if state.shared is not None and state.shared.data_epoch else uuid.uuid4().hex
         command(f".create-merge table {quote(LAYOUT_TABLE)} ("
                 + ", ".join(f"{quote(c)}:{t}" for c, t in TABLES[LAYOUT_TABLE].columns) + ")",
@@ -659,8 +733,10 @@ def ensure_schema(
     periods = {mapping[name]: (table.retention_timespan, table.retention_literal)
                for name, table in tables.items() if name in mapping}
     periods[LAYOUT_TABLE] = (TABLES[LAYOUT_TABLE].retention_timespan, TABLES[LAYOUT_TABLE].retention_literal)
+    retained = set()
     for text in retention_commands(periods, details):
         names = ", ".join(n.strip("[]'") for n in text.split("(", 1)[1].split(")", 1)[0].split(", "))
+        retained |= set(names.split(", "))
         command(text, "Table Admin or Database Admin", f"Set retention for {names}")
     if changed and streaming:
         clear_streaming_schema_cache(
@@ -686,6 +762,11 @@ def ensure_schema(
         migrate.node(stored or L.UNVERSIONED, epoch, node_id, mapping,
                      lambda change, migration, detail: record("migration", detail, migration.name, change.version))
         record("layout", "migrate")
+    elif migrated and shared_before is not None and migrate is not None:
+        # The node tables were made from the shared ones: the per-node steps the shared layout predates
+        # run on this node's copies (the node's layout row already names this layout).
+        migrate.node(shared_before, epoch, node_id, mapping,
+                     lambda change, migration, detail: record("migration", detail, migration.name, change.version))
     elif verdict == L.NEW:
         record("layout", origin)
     elif verdict == L.UPGRADE:
@@ -693,6 +774,9 @@ def ensure_schema(
     if verdict != L.CURRENT:
         log.info("Data layout %s recorded for node %s in %s (stored: %s; data epoch %s)", L.LAYOUT_VERSION, node_id,
                  database, L.describe(stored), epoch)
+    # After a migration, so a view built from stored rows is built from the migrated ones.
+    ensure_current_views(command, state, node_id, {name: tables[name] for name in C.CURRENT_TABLES if name in mapping},
+                         created={logical for logical, _ in created}, retained=retained)
     final = sync_functions(command, query, node_id, set(tables) | {n for node in state.nodes.values()
                                                                    for n in node.tables})
     reported = L.MIGRATE if migrated or node_migrating else verdict

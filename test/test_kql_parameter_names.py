@@ -7,7 +7,8 @@ or model == requested_model`` after ``requests | summarize arg_max(_v, *) by ...
 column is read once into a ``let`` before the pipeline, and the view uses that alias.
 
 The rule below finds the shape that failed: a statement that keeps every column
-(``arg_max(_v, *)``) and reads such a parameter after it, with no ``project`` between.
+(``arg_max(_v, *)``, or a current view, which has every column of its table) and reads such a
+parameter after it, with no ``project`` between.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from aictl.stores.kusto.current import CURRENT_TABLES, logical
 from aictl.stores.kusto.tables import TABLES
 
 QUERIES = Path(__file__).resolve().parent.parent / "src" / "aictl" / "stores" / "kusto" / "queries"
@@ -34,14 +36,17 @@ def shadowed_reads(text: str) -> list[str]:
     """The parameters named like a column that a statement reads after ``arg_max(_v, *)``."""
     text = _STRING.sub("''", _COMMENT.sub("", text))
     # The columns of the tables this view reads, not of every table.
-    columns = {name for table, spec in TABLES.items() if re.search(rf"\b{table}\b", text) for name, _kind in spec.columns}
+    read = {table for table in TABLES if re.search(rf"\b{table}\b", text)}
+    read |= {table for table in CURRENT_TABLES if re.search(rf"\b{logical(table)}\b", text)}
+    columns = {name for table in read for name, _kind in TABLES[table].columns}
+    currents = [logical(table) for table in CURRENT_TABLES]
     names = _parameters(text) & columns
     found = []
     for statement in _DECLARE.sub("", text).split(";"):
         for name in sorted(names):
             for use in re.finditer(rf"\b{name}\b", statement):
                 before = statement[:use.start()]
-                keep = before.rfind("arg_max(_v, *)")
+                keep = max(before.rfind("arg_max(_v, *)"), *(before.rfind(view) for view in currents))
                 if keep >= 0 and not re.search(r"\|\s*project(?:-\w+)?\b", before[keep:]) and not re.match(
                         rf"\s*let\s+\w+\s*=\s*{name}\s*$", statement):
                     found.append(name)
@@ -61,3 +66,6 @@ def test_the_rule_finds_the_shape_that_failed():
              "| where isempty(wanted_model) or model == wanted_model\n")
     assert shadowed_reads(broken) == ["requested_model"]
     assert shadowed_reads(fixed) == []
+    # A current view has every column of its table from its first operator on.
+    current = declared + "requests_current\n| where isempty(requested_model) or model == requested_model\n"
+    assert shadowed_reads(current) == ["requested_model"]

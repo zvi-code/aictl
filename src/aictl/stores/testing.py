@@ -44,6 +44,7 @@ class MemoryWriter:
 
     def delete(self, table: str, keys: Iterable[Row]) -> None:
         rows = deepcopy(list(keys))
+        from .kusto.current import untimed_tombstone
         from .kusto.tables import TABLES
 
         # The same refusal as the Kusto writer, so a caller that drops these is caught in its own tests.
@@ -51,6 +52,8 @@ class MemoryWriter:
         for row in rows:
             if missing := [column for column in scope if column not in row]:
                 raise InvalidRowError(f"{table}: a tombstone carries {', '.join(missing)} of the row it deletes")
+            if problem := untimed_tombstone(table, row):
+                raise InvalidRowError(problem)
         self.operations.append(("delete", table, rows))
 
     def flush(self) -> None:
