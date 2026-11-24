@@ -300,7 +300,7 @@ BOUNDED = {
     "runtime.processes": "a total and the 1000 newest processes",
     "runtime.resources": "one row per tool and grid bucket",
     "sequence.evidence_counts": "one row per step kind",
-    "sequence.stamp": "one aggregate row",
+    "sequence.flow_bounds": "one aggregate row",
     "sessions.commit_counts": "one row per requested session",
     "sessions.first_activity": "one aggregate row",
     "sessions.pid_owners": "one row per requested pid",

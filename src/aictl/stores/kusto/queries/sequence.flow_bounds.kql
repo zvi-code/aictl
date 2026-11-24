@@ -1,0 +1,60 @@
+declare query_parameters(all_nodes:bool=true, requested_node:string='', requested_session:string,
+    since:real, until:real, segment_bounds:dynamic=dynamic([]), page_rows:long=1500, row_limit:long);
+// One row about a session's flow, which flow_projection.py reads in time segments:
+// - stamps: {segment, versions, newest} for each segment (segment_bounds holds their lower
+//   bounds, ascending; the last one is open-ended). A segment whose stamp is unchanged still holds
+//   the same rows, so a refresh reads again only the segments that changed.
+// - page_lo, page_stamp: where the next older segment starts, below the oldest segment (or below
+//   until): the start of a turn about page_rows records back, or since when fewer remain; and the
+//   stamp of that page. older: whether any record lies below the oldest segment.
+// - last_turn: the start of the newest turn, where the open-ended segment can be split.
+let bound_count = array_length(segment_bounds);
+let before = iff(bound_count > 0, todouble(segment_bounds[0]), until);
+let versions = materialize(union
+    (requests | project session_id,node_id,ts,_v,key=strcat('r:',iff(isempty(dedup_key),tostring(id),dedup_key))),
+    (tool_invocations | project session_id,node_id,ts,_v,key=strcat('t:',iff(isempty(dedup_key),tostring(id),dedup_key))),
+    (session_prompts | project session_id,node_id,ts,_v,key=strcat('p:',iff(isempty(dedup_key),tostring(id),dedup_key))),
+    (events | project session_id,node_id,ts,_v,key=strcat('e:',iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key))),
+    (context_events | project session_id,node_id,ts,_v,key=strcat('c:',iff(isempty(dedup_key),tostring(id),dedup_key))),
+    (session_steps | project session_id,node_id,ts,_v,key=strcat('s:',step_key)),
+    (session_step_text | project session_id,node_id,ts,_v,key=strcat('x:',step_key)),
+    (session_digests | project session_id,node_id,ts,_v,key=strcat('d:',agent_id,':',kind,':',tostring(seq))),
+    (copilot_session_messages | project session_id,node_id,ts,_v,key=strcat('m:',source_table,':',tostring(source_row_id))),
+    (cursor_session_messages | project session_id,node_id,ts,_v,key=strcat('u:',iff(isempty(source_key),tostring(source_row_id),source_key))),
+    (vscode_chat_messages | project session_id,node_id,ts,_v,key=strcat('v:',source_file,':',tostring(source_row_id))),
+    (agents | project session_id,node_id,ts=coalesce(ended_at,started_at),_v,key=strcat('a:',agent_id)),
+    (sessions | project session_id,node_id,ts=coalesce(ended_at,started_at),_v,key='session')
+| where session_id == requested_session and (all_nodes or node_id == requested_node)
+| where isnull(ts) or ts < until
+// The session row comes with every segment read: a change to it is a change of the newest segment.
+| project ts=iff(key == 'session', until, coalesce(ts, until)), _v, key=strcat(node_id,'|',key));
+let stamps = versions
+    | where bound_count > 0 and ts >= todouble(segment_bounds[0])
+    | extend segment=array_sum(array_iff(series_less_equals(segment_bounds, repeat(ts, bound_count)), 1, 0)) - 1
+    | summarize n=count(), newest=max(_v) by segment
+    | order by segment asc
+    | summarize stamps=make_list(bag_pack('segment', segment, 'versions', n, 'newest', tostring(newest)));
+let records = versions
+    | where ts >= since and ts < before
+    | summarize arg_max(_v, ts) by key;
+let cutoff = toscalar(records | top page_rows by ts desc | summarize iff(count() < page_rows, real(null), min(ts)));
+let turn_starts = union
+    (session_prompts | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | where isempty(agent_id) | project ts),
+    (session_steps | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | where role == 'user' and kind == 'message' | project ts)
+    | where ts > since and ts < before;
+let turn_start = toscalar(turn_starts | where isnotnull(cutoff) and ts <= cutoff | summarize max(ts));
+let page_start = iff(isnull(cutoff) or isnull(turn_start), since, turn_start);
+// Without segments the page is the open-ended newest segment: its stamp covers the newest rows too.
+let page_versions = toscalar(versions | where ts >= page_start and (ts < before or bound_count == 0)
+    | summarize pack_array(count(), tostring(max(_v))));
+let newest_turn = toscalar(union
+    (session_prompts | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | where isempty(agent_id) | project ts),
+    (session_steps | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | where role == 'user' and kind == 'message' | project ts)
+    | where ts > since and ts < until | summarize max(ts));
+print stamps=coalesce(toscalar(stamps), dynamic([])), page_lo=page_start, page_stamp=page_versions,
+    older=toscalar(records | count) > 0, last_turn=newest_turn
+| take row_limit

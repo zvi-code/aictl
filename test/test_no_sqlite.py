@@ -249,7 +249,8 @@ def _supplement_replay(client, settings):
     for view, columns, rows in (
         ("events.count", [("count", "long")], [[0]]),
         ("sessions.first_activity", [("first_ts", "real")], [[None]]),
-        ("sequence.stamp", [("versions", "long"), ("newest", "datetime"), ("in_window", "long")], [[0, None, 0]]),
+        ("sequence.flow_bounds", [("stamps", "dynamic"), ("page_lo", "real"), ("page_stamp", "dynamic"), ("older", "bool"),
+                                  ("last_turn", "real")], [[[], 0.0, [0, ""], False, None]]),
         ("runtime.processes", [("row_type", "string"), ("total", "long")], [["total", 0]]),
         ("tools.detail", [("row_type", "string"), ("total", "long")], [["count", 0]]),
         ("skills.detail",

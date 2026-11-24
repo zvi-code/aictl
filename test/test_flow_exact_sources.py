@@ -26,7 +26,6 @@ def flow(rows, legacy=None, **kwargs):
     store = Store(reader=FixtureReader({
         "agents.resolve": lambda params: [{"session_id": SID, "priority": 0}],
         "sequence.flow": rows,
-        "sequence.stamp": [{"revision": 1}],
     }))
     status, body = flow_projection.agent_flow(store, SID, now=T + 10_000, legacy_flow=lambda *_: legacy or {}, **kwargs)
     assert status == 200
@@ -146,7 +145,6 @@ def transcript(rows, **kwargs):
     store = Store(reader=FixtureReader({
         "agents.resolve": lambda params: [{"session_id": SID, "priority": 0}],
         "sequence.flow": rows,
-        "sequence.stamp": [{"revision": 1}],
     }))
     status, body = flow_projection.agent_transcript(store, SID, now=T + 10_000, legacy_flow=lambda *_: {}, brief=False,
                                                     **kwargs)

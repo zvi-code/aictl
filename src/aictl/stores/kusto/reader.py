@@ -240,7 +240,7 @@ _VIEWS = {
         "calls errors times timed",
     ),
     "sequence.flow": (f"{_TIME} requested_session keep_text text_floor after_row", "row_type values"),
-    "sequence.stamp": (f"{_TIME} requested_session", "versions newest in_window"),
+    "sequence.flow_bounds": (f"{_TIME} requested_session segment_bounds page_rows", "stamps page_lo page_stamp older last_turn"),
     "sequence.event_log": (f"{_TIME} requested_session requested_tool requested_pid requested_kinds",
                            "ts tool kind detail session_id pid"),
     "sequence.pid_sessions": (f"{_TIME} requested_pid", "node_id session_id"),
@@ -417,6 +417,7 @@ _PARAMETER_TYPES = {
     "growth_points": int,
     "edit_limit": int,
     "page_size": int,
+    "page_rows": int,
     "requested_pid": int,
     "requested_kinds": list,
     "requested_models": list,
@@ -479,7 +480,7 @@ def _parameter(name: str, value: Any) -> str:
         return f"dynamic({json.dumps(value)})"
     if name == "page_offset" and type(value) is int and 0 <= value <= 20_000:
         return str(value)
-    if name == "calendar_starts" and isinstance(value, (tuple, list)) and all(
+    if name in ("calendar_starts", "segment_bounds") and isinstance(value, (tuple, list)) and all(
         type(item) in (float, int) and math.isfinite(item) for item in value
     ):
         return f"dynamic({json.dumps(value)})"

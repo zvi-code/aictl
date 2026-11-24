@@ -6,8 +6,11 @@ import bisect
 import json
 import threading
 import time
+import uuid
 from collections import defaultdict
 from collections.abc import Callable
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from typing import Any
 
 from ..data.model_pricing import canonical_model_id
@@ -638,61 +641,237 @@ def _agent_scope(events: list[dict], agent_raw: str, session_raw: str) -> list[d
 FLOW_MEMO_S = 120.0
 
 
-# Flows kept per store. A large session holds tens of thousands of events, so only a few stay.
-FLOW_MEMO_ENTRIES = 4
+# Session flows kept per store. Each holds the segments read so far, not the whole session.
+FLOW_MEMO_ENTRIES = 8
 
 
-_FLOW_STAMP_TABLES = ("requests", "tool_invocations", "session_prompts", "events", "session_steps")
+# A session's flow is read in time segments, newest first. A segment starts at a turn and holds
+# about FLOW_PAGE_ROWS records; one read returns at most FLOW_READ_ROWS rows (a larger segment
+# is read in several pages).
+FLOW_PAGE_ROWS = 1500
+FLOW_READ_ROWS = 2000
+
+
+@dataclass
+class _Segment:
+    lo: float
+    stamp: tuple
+    facts: dict[str, list[tuple]]
+    legacy: dict
+    floor: float
+    read: int
+
+
+@dataclass
+class _FlowCache:
+    """The segments of one session flow read so far, ascending; the last one is open-ended.
+
+    ``anchor`` is where the first read started: positions and numbers are counted from there, so
+    that reading older segments does not change those of the events already shown.
+    """
+
+    segments: list[_Segment] = dataclass_field(default_factory=list)
+    older: bool = True
+    anchor: float | None = None
+    last_turn: float | None = None
+    epoch: str = dataclass_field(default_factory=lambda: uuid.uuid4().hex[:12])
+    version: int = 0
+    reads: int = 0
+    checked: float = -1e18
+    built: tuple | None = None
+    lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
+
+
+def _stamp(value: Any) -> tuple:
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return (0, "")
+    return (int(value[0] or 0), str(value[1] or ""))
 
 
 def _session_flow(db: Any, agent_id: str, since: float, until: float,
                   legacy_flow: Callable[[str, float, float], dict] | None,
                   history: HistoryScope, *, open_end: bool = False,
-                  reuse: bool = False) -> tuple[str, list[dict], str] | None:
+                  reuse: bool = False, load_older: bool = False, whole: bool = False,
+                  meta: dict | None = None) -> tuple[str, list[dict], str] | None:
     """(session id, merged events, source) of a board agent, or None for an unknown agent.
 
-    Building the flow reads every record of the session, so the result is kept on the store
-    for FLOW_MEMO_S as long as the session's records have not changed. The flow of one
-    session is asked for several times in a row: the flow tab, the transcript, each turn.
-    ``open_end`` marks a range that ends now, whose end moves with each request. With
-    ``reuse``, a kept flow of the same range is returned without checking the records again,
-    so that the windows of one long flow read the same events.
+    The flow is read in segments, newest first (see FLOW_PAGE_ROWS); only the newest one is read
+    when a flow opens. ``load_older`` reads the next older segment; ``whole`` reads them all.
+    Each request checks the segments' stamps (one row) and reads again only the segments whose
+    records changed, so a live session reads its newest turn, never the whole flow. ``reuse``
+    skips that check for the windows of one flow. ``meta`` receives the anchor (where the first
+    read started), the start of the loaded events and whether older ones remain.
     """
     sid, _agent = _resolve_agent(history, agent_id)
     node, raw = history.split(sid)
     # A PID bridge may add events from another session, so it cannot use a session stamp.
     use_memo = legacy_flow is None and ":" not in raw and hasattr(db, "__dict__")
     if not use_memo:
+        if meta is not None:
+            meta.update(anchor=since, older=False, epoch="", lo=since)
         return _session_flow_build(db, None, sid, since, until, legacy_flow, history=history)
     memo = db.__dict__.setdefault("_reader_flow_memo", {})
     guard = db.__dict__.setdefault("_reader_flow_guard", threading.Lock())
+    keep = capture_mode(db, default="full") == "full"
+    scope = (history.reader, node, sid, since, None if open_end else until, keep)
     with guard:
-        lock = db.__dict__.setdefault("_reader_flow_locks", {}).setdefault((history.reader, node, sid), threading.Lock())
-    scope = (history.reader, node, sid, since, None if open_end else until, capture_mode(db, default="full"))
-    # One build at a time for a session: the live loop and the HTTP route ask for the same flow,
-    # and a request that waited for a build takes its result.
-    with guard:
-        before = memo.get(scope)
-    with lock:
-        with guard:
-            hit = memo.get(scope)
-        fresh = hit is not None and 0 <= time.monotonic() - hit[0] < FLOW_MEMO_S
-        if fresh and (reuse or hit is not before):
-            return hit[2]
-        revision = tuple(history.read("sequence.stamp", sid=sid, since=since, until=until, limit=1)[0].values())
-        if fresh and hit[1] == revision:
-            return hit[2]
-        found = _session_flow_build(db, None, sid, since, until, legacy_flow, history=history)
-        with guard:
-            memo.pop(scope, None)
+        cache = memo.get(scope)
+        if cache is None:
             while len(memo) >= FLOW_MEMO_ENTRIES:
-                del memo[min(memo, key=lambda k: memo[k][0])]
-            memo[scope] = (time.monotonic(), revision, found)
-        return found
+                del memo[min(memo, key=lambda k: memo[k].checked)]
+            cache = memo[scope] = _FlowCache()
+    # One read at a time for a session: the live loop and the HTTP route ask for the same flow.
+    with cache.lock:
+        floor = text_floor(db, time.time())
+        fresh = bool(cache.segments) and 0 <= time.monotonic() - cache.checked < FLOW_MEMO_S
+        legacy_reader = _legacy_reader(db, history)
+        if not (reuse and fresh):
+            _refresh_flow(cache, history, sid, since, until, keep, floor, legacy_flow=legacy_reader)
+        if load_older and cache.older:
+            _refresh_flow(cache, history, sid, since, until, keep, floor, legacy_flow=legacy_reader, older=True)
+        while whole and cache.older:
+            _refresh_flow(cache, history, sid, since, until, keep, floor, legacy_flow=legacy_reader, older=True)
+        if cache.built is None or cache.built[0] != cache.version:
+            # With nothing older left, the flow starts where its range does (the session's start).
+            lo = cache.segments[0].lo if cache.segments and cache.older else since
+            facts, legacy = _merged_parts(cache.segments)
+            cache.built = (cache.version, _flow_from_parts(db, sid, lo, until, facts, legacy, keep, floor))
+        if meta is not None:
+            meta.update(anchor=cache.anchor if cache.anchor is not None else since, older=cache.older,
+                        epoch=cache.epoch, lo=cache.segments[0].lo if cache.segments else since)
+        return cache.built[1]
+
+
+def _legacy_reader(db: Any, history: HistoryScope) -> Callable[[str, float, float], dict]:
+    if _is_reported_history(db) or history.qualified:
+        return lambda *_args: {}
+
+    def legacy_flow(session_id: str, lo: float, hi: float) -> dict:
+        from .session_flow import reader_session_flow
+
+        return reader_session_flow(history, session_id, lo, hi, limit=FLOW_READ_ROWS - 1)
+
+    return legacy_flow
+
+
+def _read_segment(history: HistoryScope, sid: str, lo: float, hi: float, keep: bool, floor: float,
+                  legacy_flow: Callable[[str, float, float], dict]) -> tuple[dict, dict]:
+    from .projections.history import typed_rows
+
+    # Each read returns at most FLOW_READ_ROWS rows; a larger segment continues in pages.
+    facts = typed_rows(history.read("sequence.flow", sid=sid, since=lo, until=hi, keep_text=keep, text_floor=floor,
+                                    limit=FLOW_READ_ROWS - 1))
+    return facts, legacy_flow(sid, lo, hi) or {}
+
+
+def _refresh_flow(cache: _FlowCache, history: HistoryScope, sid: str, since: float, until: float, keep: bool,
+                  floor: float, *, legacy_flow: Callable[[str, float, float], dict], older: bool = False) -> None:
+    """Check the stamps of the loaded segments and read the changed ones; read the newest segment
+    of a new flow, or with ``older`` the next older one."""
+    bounds = [segment.lo for segment in cache.segments]
+    layout = list(bounds)
+    # A new turn in the open segment starts a segment of its own: later changes read that turn only.
+    if layout and cache.last_turn is not None and cache.last_turn > layout[-1]:
+        layout.append(cache.last_turn)
+    info = history.read("sequence.flow_bounds", sid=sid, since=since, until=until, segment_bounds=layout,
+                        page_rows=FLOW_PAGE_ROWS, limit=1)[0]
+    stamps = {int(row["segment"]): _stamp((row["versions"], row["newest"])) for row in info.get("stamps") or []}
+    if len(layout) > len(bounds):
+        # The open segment is split only when it has to be read again anyway.
+        head, turn = stamps.get(len(bounds) - 1, (0, "")), stamps.get(len(bounds), (0, ""))
+        whole = (head[0] + turn[0], max(head[1], turn[1]))
+        old = cache.segments[-1]
+        if old.stamp == whole and _floor_unchanged(old, old.lo, until, floor):
+            layout.pop()
+            stamps[len(bounds) - 1] = whole
+    segments: list[_Segment] = []
+    changed = False
+    for index, lo in enumerate(layout):
+        hi = layout[index + 1] if index + 1 < len(layout) else until
+        stamp = stamps.get(index, (0, ""))
+        old = cache.segments[index] if index < len(cache.segments) else None
+        same_range = old is not None and old.lo == lo and (index + 1 < len(bounds)) == (index + 1 < len(layout))
+        if same_range and old.stamp == stamp and _floor_unchanged(old, lo, hi, floor):
+            segments.append(old)
+            continue
+        facts, legacy = _read_segment(history, sid, lo, hi, keep, floor, legacy_flow)
+        cache.reads += 1
+        segments.append(_Segment(lo, stamp, facts, legacy, floor, cache.reads))
+        changed = True
+    if not layout or (older and info.get("older")):
+        page_lo = float(info.get("page_lo") if info.get("page_lo") is not None else since)
+        hi = layout[0] if layout else until
+        facts, legacy = _read_segment(history, sid, page_lo, hi, keep, floor, legacy_flow)
+        cache.reads += 1
+        segments.insert(0, _Segment(page_lo, _stamp(info.get("page_stamp")), facts, legacy, floor, cache.reads))
+        changed = True
+        cache.older = page_lo > since
+        if cache.anchor is None:
+            cache.anchor = page_lo
+    else:
+        cache.older = bool(info.get("older"))
+    cache.last_turn = info.get("last_turn")
+    cache.checked = time.monotonic()
+    if changed:
+        cache.segments = segments
+        cache.version += 1
+
+
+def _floor_unchanged(segment: _Segment, lo: float, hi: float, floor: float) -> bool:
+    """Whether the retention floor of texts moved past no record of the segment since it was read."""
+    return floor == segment.floor or hi <= segment.floor or lo >= floor
+
+
+_SINGLETONS = ("session", "tool", "known")
+
+
+def _merged_parts(segments: list[_Segment]) -> tuple[dict[str, list[tuple]], list[dict]]:
+    """The records of all segments as one read of their whole range, and their legacy flows.
+
+    The session's own rows come with every segment and agents with each segment they start or end
+    in: the copy read last is the current one."""
+    facts: dict[str, list[tuple]] = defaultdict(list)
+    agents: dict[Any, tuple[int, tuple]] = {}
+    newest = max(segments, key=lambda segment: segment.read) if segments else None
+    for segment in segments:
+        for kind, rows in segment.facts.items():
+            if kind in _SINGLETONS:
+                continue
+            if kind == "agent":
+                for row in rows:
+                    if row[0] not in agents or agents[row[0]][0] < segment.read:
+                        agents[row[0]] = (segment.read, row)
+                continue
+            facts[kind].extend(rows)
+    if newest is not None:
+        for kind in _SINGLETONS:
+            if newest.facts.get(kind):
+                facts[kind] = list(newest.facts[kind])
+            else:
+                for segment in segments:
+                    if segment.facts.get(kind):
+                        facts[kind] = list(segment.facts[kind])
+    facts["agent"] = [row for _, row in agents.values()]
+    return dict(facts), [segment.legacy for segment in segments]
+
+
+def _flow_from_parts(db: Any, sid: str, since: float, until: float, facts: dict[str, list[tuple]],
+                     legacy_parts: list[dict], keep: bool, floor: float) -> tuple[str, list[dict], str] | None:
+    store, native_authorship = _store_flow_events(None, sid, since, until, keep_text=keep, text_floor=floor, facts=facts)
+    legacy: list[dict] = []
+    legacy_source = ""
+    for part in legacy_parts:
+        events, source = _legacy_flow_events(part or {})
+        legacy.extend(events)
+        if events:
+            legacy_source = legacy_source or source
+    return _finish_flow(sid, store, native_authorship, legacy, legacy_source, facts, keep, floor)
+
 
 def _session_flow_build(db: Any, conn: Any | None, sid: str, since: float, until: float,
                         legacy_flow: Callable[[str, float, float], dict] | None, *,
                         history: HistoryScope | None = None) -> tuple[str, list[dict], str] | None:
+    """The whole flow of a range in one pass: for the flows a segment stamp cannot follow."""
     if _is_reported_history(db) or (history is not None and history.qualified):
         legacy_flow = lambda *_args: {}
     elif legacy_flow is None:
@@ -708,9 +887,14 @@ def _session_flow_build(db: Any, conn: Any | None, sid: str, since: float, until
         from .projections.history import typed_rows
 
         facts = typed_rows(history.read("sequence.flow", sid=sid, since=since, until=until,
-                                        keep_text=keep, text_floor=floor))
+                                        keep_text=keep, text_floor=floor, limit=FLOW_READ_ROWS - 1))
     store, native_authorship = _store_flow_events(conn, sid, since, until, keep_text=keep, text_floor=floor, facts=facts)
     legacy, legacy_source = _legacy_flow_events(legacy_flow(sid, since, until) or {})
+    return _finish_flow(sid, store, native_authorship, legacy, legacy_source, facts or {}, keep, floor)
+
+
+def _finish_flow(sid: str, store: list[dict], native_authorship: bool, legacy: list[dict], legacy_source: str,
+                 facts: dict, keep: bool, floor: float) -> tuple[str, list[dict], str] | None:
     if native_authorship:
         legacy = [event for event in legacy if event["type"] != "user_message"]
     known = bool(facts.get("known"))
@@ -785,6 +969,7 @@ def agent_flow(
     lo, hi = since if since is not None else 0.0, until if until is not None else now + 60.0
     from .flow_filters import select_events, session_kql_url
 
+    meta: dict = {}
     if category == "skills" or skill_name or skill_phase:
         from .flow_skills import skill_events
 
@@ -795,41 +980,76 @@ def agent_flow(
         summary = {"skill_evidence": True, "event_count": len(events)}
         flow_scope = {"kind": "session", "agent_id": agent_id, "session_id": sid, "subagent": False}
     else:
-        found = _session_flow(db, agent_id, lo, hi, legacy_flow, history, open_end=until is None,
-                              reuse=offset is not None)
-        if found is None:
-            return 404, {"error": "No such agent"}
-        sid, records, source = found
-        events = [dict(e) for e in records]  # aggregation annotates events; don't mutate another reader's cached flow
-        agent_raw, session_raw = history.split(agent_id)[1], history.split(sid)[1]
-        own = None if whole else _agent_scope(events, agent_raw, session_raw)
-        flow_scope = {"kind": "agent" if own is not None else "session", "agent_id": agent_id, "session_id": sid,
-                      "subagent": bool(agent_raw and agent_raw != session_raw)}
-        if own is not None:
-            events = own
-        _link_spawns(events)
-        cumulative, largest = _aggregate_flow(events)
-        summary = _flow_summary(events, source, cumulative, largest)
-        summary["total_steps"] = _number_steps(events)
-        if own is not None:
-            # A subagent's prompt is the task its main agent gave it.
-            summary["total_turns"] = sum(1 for e in events if e["type"] == "subagent")
-    keep = max(1, min(int(limit or FLOW_DEFAULT_EVENTS), MAX_FLOW_EVENTS))
+        load_older = False
+        while True:
+            found = _session_flow(db, agent_id, lo, hi, legacy_flow, history, open_end=until is None,
+                                  reuse=offset is not None, load_older=load_older, meta=meta)
+            if found is None:
+                return 404, {"error": "No such agent"}
+            sid, records, source = found
+            events = [dict(e) for e in records]  # aggregation annotates events; don't mutate another reader's cached flow
+            agent_raw, session_raw = history.split(agent_id)[1], history.split(sid)[1]
+            own = None if whole else _agent_scope(events, agent_raw, session_raw)
+            flow_scope = {"kind": "agent" if own is not None else "session", "agent_id": agent_id, "session_id": sid,
+                          "subagent": bool(agent_raw and agent_raw != session_raw)}
+            if own is not None:
+                events = own
+            _link_spawns(events)
+            cumulative, largest = _aggregate_flow(events)
+            summary = _flow_summary(events, source, cumulative, largest)
+            summary["total_steps"] = _number_steps(events)
+            if own is not None:
+                # A subagent's prompt is the task its main agent gave it.
+                summary["total_turns"] = sum(1 for e in events if e["type"] == "subagent")
+            if offset is None or not meta.get("older"):
+                break
+            # A window that starts before the loaded events reads the next older segment first.
+            base = sum(1 for e in events if e["ts"] < meta["anchor"])
+            if int(offset) >= -base:
+                break
+            load_older = True
+        _rebase(events, meta.get("anchor", lo))
     capture = capture_mode(db, default="full")
     matches, scope = select_events(events, q=q, category=category, tool_name=tool_name, flow_agent=flow_agent,
                                    failed=failed, allow_text=capture == "full", skill_name=skill_name, skill_phase=skill_phase)
-    start = max(0, len(matches) - keep) if offset is None else max(0, min(int(offset), len(matches)))
+    # Positions count from where the flow's first read started (its anchor): reading older segments
+    # adds events at negative positions and moves none of the events shown already.
+    anchor = meta.get("anchor", lo)
+    base = sum(1 for e in matches if e["ts"] < anchor)
+    keep = max(1, min(int(limit or FLOW_DEFAULT_EVENTS), MAX_FLOW_EVENTS))
+    start = max(0, len(matches) - keep) if offset is None else max(0, min(int(offset) + base, len(matches)))
     shown = matches[start:start + keep]
-    summary["offset"] = start
-    summary["matched_events"] = len(matches)
+    summary["offset"] = start - base
+    summary["first_offset"] = -base
+    summary["matched_events"] = len(matches) - base
     summary["shown_events"] = len(shown)
     summary["omitted_events"] = start
-    summary["turn_marks"] = _turn_marks(matches)
+    summary["older_events"] = bool(meta.get("older"))
+    summary["complete"] = not meta.get("older")
+    summary["flow_epoch"] = meta.get("epoch", "")
+    marks = _turn_marks(matches)
+    for mark in marks:
+        mark["offset"] -= base
+    summary["turn_marks"] = marks
     settings = reader_feature(HistoryScope.local(db).reader, "connection_info")
     return 200, {"session_id": sid, "turns": shown, "summary": summary, "scope": scope, "flow_scope": flow_scope,
                  "capture_mode": capture,
                  "node_id": settings.node_id if settings else None,
                  "session_kql_url": session_kql_url(settings, sid, since, until)}
+
+
+def _rebase(events: list[dict], anchor: float) -> None:
+    """Count steps, requests and turns from the anchor: the events before it, read later as older
+    segments, get numbers of zero and below, and the numbers of the events after it stay as they were."""
+    before = [e for e in events if e["ts"] < anchor]
+    if not before:
+        return
+    shift = {key: max((int(e[key]) for e in before if e.get(key) is not None), default=0)
+             for key in ("step", "request_n", "turn_index")}
+    for event in events:
+        for key, by in shift.items():
+            if by and event.get(key) is not None:
+                event[key] -= by
 
 
 def _clip(text: Any, limit: int = ACTION_SUMMARY_CHARS) -> str:
@@ -1012,7 +1232,8 @@ def agent_transcript(
     returns every turn whole.
     """
     now = time.time() if now is None else now
-    found = _session_flow(db, agent_id, 0.0, now + 60.0, legacy_flow, history or HistoryScope.local(db), open_end=True)
+    found = _session_flow(db, agent_id, 0.0, now + 60.0, legacy_flow, history or HistoryScope.local(db), open_end=True,
+                          whole=True)
     if found is None:
         return 404, {"error": "No such agent"}
     sid, events, source = found

@@ -44,7 +44,6 @@ def store(rows=ROWS):
             {
                 "agents.resolve": lambda params: [{"session_id": SID, "priority": 0}],
                 "sequence.flow": rows,
-                "sequence.stamp": [{"revision": 1}],
             }
         )
     )

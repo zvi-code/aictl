@@ -107,7 +107,7 @@ def test_session_history_does_not_wait_for_machine_snapshot(starting, monkeypatc
     from aictl.stores.testing import FixtureReader
 
     reader = FixtureReader({"sequence.evidence": [], "agents.resolve": [], "sequence.flow": [],
-                            "sequence.stamp": [{}], "sequence.event_log": []})
+                            "sequence.flow_bounds": [{"stamps": [], "page_lo": 0.0, "page_stamp": [0, ""], "older": False, "last_turn": None}], "sequence.event_log": []})
     _store.history_store = Store(reader=reader)
     with urllib.request.urlopen(base + "/api/session-evidence?session_id=absent", timeout=5) as resp:
         assert json.load(resp)["rows"] == []

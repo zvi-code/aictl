@@ -5,18 +5,23 @@ let session_rows = materialize(sessions
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
     | summarize arg_max(_v, *) by ['project'], node_id, session_id
     | where not(column_ifexists('_deleted', false)));
+// Records are read in the requested time window before their versions are reduced: ts is in the
+// tombstone scope of requests and tool calls, and the other windowed tables have no tombstones.
 let calls = materialize(requests
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | where ts >= since and ts < until
     | extend key=iff(isempty(dedup_key), tostring(id), dedup_key)
     | summarize arg_max(_v, *) by ['project'], node_id, key
     | where not(column_ifexists('_deleted', false)));
 let prompts = materialize(session_prompts
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | where ts >= since and ts < until
     | extend key=iff(isempty(dedup_key), tostring(id), dedup_key)
     | summarize arg_max(_v, *) by ['project'], node_id, key
     | where not(column_ifexists('_deleted', false)));
 let flow_tools = materialize(tool_invocations
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | where ts >= since and ts < until
     | extend key=iff(isempty(dedup_key), tostring(id), dedup_key)
     | summarize arg_max(_v, *) by ['project'], node_id, key
     | where not(column_ifexists('_deleted', false)));
@@ -30,15 +35,18 @@ let tool_text = union isfuzzy=true
     | project ['project'], node_id, key=dedup_key, retained_input=input, retained_result=result_summary, retained_target=target;
 let steps = materialize(session_steps
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | where ts >= since and ts < until
     | summarize arg_max(_v, *) by ['project'], node_id, step_key
-    | where not(column_ifexists('_deleted', false)) and ts >= since and ts < until);
+    | where not(column_ifexists('_deleted', false)));
 let step_text = session_step_text
     | where keep_text and session_id == requested_session and (all_nodes or node_id == requested_node)
+    | where ts >= since and ts < until
     | summarize arg_max(_v, *) by ['project'], node_id, step_key
     | where not(column_ifexists('_deleted', false)) and ts >= text_floor
     | project ['project'], node_id, session_id, step_key, retained=text;
 let message_rows = union
     (copilot_session_messages | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | where ts >= since and ts < until
         | summarize arg_max(_v, *) by ['project'], node_id, source_table, source_row_id
         | where not(column_ifexists('_deleted',false))
         | project ['project'], node_id, ts, role, content, model='', key=strcat('copilot:',source_table,':',source_row_id)),
@@ -47,6 +55,7 @@ let message_rows = union
         | where not(column_ifexists('_deleted',false))
         | project ['project'], node_id, ts, role, content, model, key=strcat('vscode:',source_file,':',source_row_id)),
     (cursor_session_messages | where session_id == requested_session and (all_nodes or node_id == requested_node)
+        | where ts >= since and ts < until
         | extend key=iff(isempty(source_key),tostring(source_row_id),source_key)
         | summarize arg_max(_v, *) by ['project'], node_id, key
         | where not(column_ifexists('_deleted',false))
@@ -67,20 +76,32 @@ let tasks = union isfuzzy=true
     | project ['project'], node_id, session_id, agent_id, retained_task=task;
 let session_events = materialize(context_events
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
+    | where ts < until
     | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)
     | summarize arg_max(_v, *) by ['project'], node_id, key
     | where not(column_ifexists('_deleted',false)));
 let known_events = events
     | where session_id == requested_session and (all_nodes or node_id == requested_node)
-    | extend key=iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key)
-    | summarize arg_max(_v, *) by ['project'],node_id,key
-    | where not(column_ifexists('_deleted',false))
+    | extend key=iff(isempty(source_key),strcat(ts,':',kind,':',seq),source_key), deleted=column_ifexists('_deleted',false)
+    | summarize arg_max(_v, deleted) by ['project'],node_id,key
+    | where not(deleted)
     | take 1;
+// The session's tool is that of its first model call, wherever the window starts: read only for
+// a session whose row names no tool.
+let session_tool = toscalar(session_rows | where isnotempty(tool) | count) > 0;
+let first_tool = requests
+    | where not(session_tool)
+    | where session_id == requested_session and (all_nodes or node_id == requested_node) and isnotempty(tool)
+    | extend key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | summarize arg_max(_v, ts, tool, deleted) by ['project'], node_id, key
+    | where not(deleted)
+    | top 1 by ts asc;
 union
     (session_rows | top 1 by _v desc
         | project row_type='session', values=pack_array(tool,project_path,started_at,ended_at)),
-    (calls | where isnotempty(tool) | top 1 by ts asc | project row_type='tool', values=pack_array(tool)),
-    (union (session_rows | project present=1), (calls | project present=1), (flow_tools | project present=1),
+    (first_tool | project row_type='tool', values=pack_array(tool)),
+    (union (session_rows | project present=1), (first_tool | project present=1), (calls | project present=1),
+           (flow_tools | project present=1),
            (prompts | project present=1), (known_events | project present=1)
         | take 1 | project row_type='known', values=pack_array(true)),
     (prompts | where ts >= since and ts < until

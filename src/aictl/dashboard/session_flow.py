@@ -127,7 +127,7 @@ def _extract_response_text(detail: dict) -> str:
 _UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
 
 
-def reader_session_flow(history, session_id: str, since: float, until: float) -> dict:
+def reader_session_flow(history, session_id: str, since: float, until: float, *, limit: int = 5000) -> dict:
     from .projections.history import event_params, event_rows, node_scope
 
     node, sid = history.split(session_id)
@@ -146,10 +146,10 @@ def reader_session_flow(history, session_id: str, since: float, until: float) ->
             })
             return [row["session_id"] for row in result.rows]
 
-    return build_session_flow(EvidenceReader(), sid, since, until)
+    return build_session_flow(EvidenceReader(), sid, since, until, limit=limit)
 
 
-def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
+def build_session_flow(db, session_id: str, since: float, until: float, *, limit: int = 5000) -> dict:
     """Query events and build the complete session flow for a session.
 
     Returns ``{"turns": [...], "summary": {...}}`` ready for JSON response.
@@ -172,7 +172,7 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
         since=since,
         until=until,
         session_id=session_id,
-        limit=5000,
+        limit=limit,
     )
 
     # Step 2: Find related sessions via PID (session_processes table).
@@ -196,7 +196,7 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
             since=since - 7200,
             until=until,
             session_id=rel_sid,
-            limit=5000,
+            limit=limit,
         )
         all_events.extend(rel_events)
         api_by_session.extend(e for e in rel_events if (e.kind or "").startswith("otel:"))
@@ -208,7 +208,7 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
             until=until,
             tool=tool,
             pid=session_pid,
-            limit=5000,
+            limit=limit,
         )
         all_events.extend(pid_events)
         api_by_session.extend(e for e in pid_events if (e.kind or "").startswith("otel:"))
@@ -227,7 +227,7 @@ def build_session_flow(db, session_id: str, since: float, until: float) -> dict:
             since=since - 7200,
             until=until,
             tool=tool,
-            limit=5000,
+            limit=limit,
         )
         for e in fallback_events:
             kind = e.kind or ""

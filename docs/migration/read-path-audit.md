@@ -82,7 +82,7 @@ R2 adds 18 parameterized KustoReader views. The counts below are direct call sit
 
 | Domain | New views (`.kql`) | Replaced call sites |
 |---|---|---|
-| 4. Sequence and evidence | `sequence.flow`, `sequence.stamp`, `sequence.evidence`, `sequence.skills`, `sequence.otel`, `sequence.context`, `sequence.event_log`, `sequence.pid_sessions` | **8:** Flow/Transcript inputs and revision check (2), Agent OTel and context (2), skills (1), retained evidence (1), and event/PID lookups for Flow (2). |
+| 4. Sequence and evidence | `sequence.flow`, `sequence.flow_bounds`, `sequence.evidence`, `sequence.skills`, `sequence.otel`, `sequence.context`, `sequence.event_log`, `sequence.pid_sessions` | **8:** Flow/Transcript segments and their stamps (2), Agent OTel and context (2), skills (1), retained evidence (1), and event/PID lookups for Flow (2). |
 | 5. Files and search | `files.changes`, `files.inventory`, `files.artifacts`, `files.recorded`, `files.detail`, `files.recent_writes`, `sessions.search` | **9:** Board file changes and memory (3), Agent file totals (1), artifact list/count (2), recorded-path check (1), file detail (1), and local/scoped session search (1). |
 | 6. Context and history | `context.daily`, `context.growth`, `context.telemetry` | **10:** Local context inventory, telemetry, day totals, and growth (4); scoped inventory, telemetry, and growth (3); session context inventory (1); audit writes and instruction loads (2). These include the uses of `files.inventory`, `files.recent_writes`, and `sequence.event_log`. |
 

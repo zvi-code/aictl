@@ -104,9 +104,11 @@ export default function Flow(props: TabProps) {
   const summary = () => read()?.data?.summary
   const flowScope = () => read()?.data?.flow_scope
   const agentScope = () => flowScope()?.kind === 'agent'
+  // A long flow is read newest first: until its oldest events are read, its totals cover only the events read.
+  const totalsLabel = () => `${agentScope() ? 'Subagent totals' : 'Session totals'}${pages.complete() ? '' : ' of the events read so far'}`
   const model = createMemo(() => {
     const totals = summary()
-    return flowModel(pages.events(), totals && { total_turns: totals.total_turns, omitted_events: pages.oldest() })
+    return flowModel(pages.events(), totals && { total_turns: totals.total_turns, omitted_events: pages.more() ? Math.max(1, pages.unloaded()) : 0 })
   })
   const steps = createMemo(() => stepsOf(model().events))
   // In a subagent's own flow every step is the subagent's: no span to draw.
@@ -173,13 +175,13 @@ export default function Flow(props: TabProps) {
   // A reference from another tab selects its step, reading older windows until the event is loaded.
   let found: object | undefined
   const reference = createMemo(() => props.entry.flowRef ?? (props.entry.failedAt != null ? { field: 'failed_at', id: String(props.entry.failedAt) } : undefined))
-  createEffect(() => ({ reference: reference(), events: model().events, oldest: pages.oldest(),
+  createEffect(() => ({ reference: reference(), events: model().events, more: pages.more(),
     failed: pages.problem(), ready: read()?.data != null }), current => {
     const reference = current.reference
     if (!reference || !current.ready || found === reference) return
     const event = current.events.find(item => matchesReference(item, reference))
     if (event) { found = reference; setMissing(false); show(event); return }
-    if (current.oldest > 0 && !current.failed) void pages.loadOlder()
+    if (current.more && !current.failed) void pages.loadOlder()
     else setMissing(true)
   })
 
@@ -216,7 +218,7 @@ export default function Flow(props: TabProps) {
     show(events.find(event => event.type === 'user_message' && Math.abs(event.ts - mark.ts) < 1e-3)
       ?? events.find(event => event.ts >= mark.ts))
   }
-  const older = () => { if (pages.oldest() > 0 && !pages.loading() && !pages.problem()) void pages.loadOlder() }
+  const older = () => { if (pages.more() && !pages.loading() && !pages.problem()) void pages.loadOlder() }
   const range = (first: number, last: number) => {
     const list = shownRows()
     const start = list[first], end = list[last]
@@ -279,8 +281,8 @@ export default function Flow(props: TabProps) {
     </Show>
 
     <Show when={summary()}>{totals =>
-      <Box boxes={boxes} id="totals" label={agentScope() ? 'Subagent totals' : 'Session totals'} class={styles.strip} controls={['fold', 'hide']} corner>
-        <dl class={styles.figures} aria-label={agentScope() ? 'Subagent totals' : 'Session totals'}>
+      <Box boxes={boxes} id="totals" label={totalsLabel()} class={styles.strip} controls={['fold', 'hide']} corner>
+        <dl class={styles.figures} aria-label={totalsLabel()}>
           <For each={scopeFigures(totals(), agentScope())}>{figure =>
             <div title={figure.title}><dt>{figure.label}</dt><dd data-tone={figure.tone}>{figure.value}</dd></div>
           }</For>
@@ -385,12 +387,14 @@ export default function Flow(props: TabProps) {
               </span>
             </Show>
           </Show>
-          <span class={styles.count} aria-live="polite">{fmtN(Math.max(0, pages.matched() - pages.oldest()))} of {fmtN(pages.matched())} {filtered() ? 'matching ' : ''}events loaded</span>
+          <span class={styles.count} aria-live="polite">{pages.complete()
+            ? `${fmtN(Math.max(0, pages.matched() - pages.oldest()))} of ${fmtN(pages.matched() - pages.first())} ${filtered() ? 'matching ' : ''}events loaded`
+            : `${fmtN(Math.max(0, pages.matched() - pages.oldest()))} ${filtered() ? 'matching ' : ''}events loaded; older events are read on demand`}</span>
           <div class={styles.paging}>
-            <Show when={pages.oldest() > 0}>
+            <Show when={pages.more()}>
               <button type="button" class={styles.button} disabled={pages.loading()} onClick={() => void pages.loadOlder()}>
-                <Icon glyph="up" small />{`Load older (${fmtN(pages.oldest())} events not loaded)`}</button>
-              <button type="button" class={styles.button} disabled={pages.loading()} onClick={() => void pages.loadOlder(0)}>Load all</button>
+                <Icon glyph="up" small />{pages.complete() ? `Load older (${fmtN(pages.unloaded())} events not loaded)` : 'Load older'}</button>
+              <button type="button" class={styles.button} disabled={pages.loading()} onClick={() => void pages.loadOlder(-Infinity)}>Load all</button>
             </Show>
             <Tooltip label="Jump to newest" text="Scroll to the newest step" class={styles.iconButton}
               disabled={!rows().length} onClick={() => {

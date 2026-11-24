@@ -3978,15 +3978,16 @@ class TestAgentTranscript:
         t = NOW - DAY
         _seed_flow(db, t)
         builds = []
-        real = flow_projection._session_flow_build
-        monkeypatch.setattr(flow_projection, "_session_flow_build", lambda *a, **kw: (builds.append(1), real(*a, **kw))[1])
+        real = flow_projection._read_segment
+        monkeypatch.setattr(flow_projection, "_read_segment", lambda *a, **kw: (builds.append(a[2]), real(*a, **kw))[1])
         _, first = flow_projection.agent_transcript(db, "flow-s", now=NOW)
         flow_projection.agent_transcript(db, "flow-s", now=NOW, turn=first["turns"][0]["ts"])
         flow_projection.agent_flow(db, "flow-s", now=NOW)
         assert len(builds) == 1
         _prompt(db, t + 900, "flow-s", "claude-code", "/p", text="One more")
         _, again = flow_projection.agent_transcript(db, "flow-s", now=NOW)
-        assert len(builds) == 2 and again["summary"]["total_turns"] == first["summary"]["total_turns"] + 1
+        # Only the segment that changed is read again, from the start of its turn.
+        assert len(builds) in (2, 3) and again["summary"]["total_turns"] == first["summary"]["total_turns"] + 1
 
     def test_stored_reply_text_is_the_turns_response(self, db):
         _seed_flow(db, NOW - DAY, reply="Done. **Fixed** the parser.")

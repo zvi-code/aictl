@@ -31,6 +31,10 @@
     "omitted_events": {"type": "integer"},
     "offset": {"type": "integer"},
     "matched_events": {"type": "integer"},
+    "first_offset": {"type": "integer", "description": "Position of the oldest event read so far. Positions count from where the flow's first read started, so older events have negative positions."},
+    "older_events": {"type": "boolean", "description": "Older events exist that are not read yet; a window before first_offset reads them."},
+    "complete": {"type": "boolean", "description": "Every event of the range is read, and the totals cover the whole range."},
+    "flow_epoch": {"type": "string", "description": "Changes when the server reads the flow again from its newest events; positions of another epoch do not fit."},
     "turn_marks": {"type": "array", "items": {"$ref": "turn-mark.schema.json"}}
   },
   "required": [
