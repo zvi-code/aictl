@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 import pytest
 from kusto_replay import SeededStore
 
-from aictl.dashboard import board_routes, insights, insights_work
+from aictl.dashboard import board_routes, insights, insights_flows
 from aictl.dashboard.board_filters import Filters
 from aictl.dashboard.projections.history import HistoryScope
 
@@ -151,7 +151,7 @@ def _flow_rows(sessions=40, no_change=12):
 
 
 def test_flows_shape_applies_the_evidence_rule():
-    body = insights_work.flows(_flow_rows())
+    body = insights_flows.flows(_flow_rows())
     # Transitions out of ask (3 calls) are too few to show as shares.
     assert [item["from_step"] for item in body["transitions"]] == ["edit"]
     assert body["transitions"][0]["next"][0] == {"to_step": "test", "calls": 30, "share": 0.6}
@@ -170,12 +170,12 @@ def test_flows_shape_applies_the_evidence_rule():
 
 
 def test_flows_of_too_few_sessions_state_no_finding():
-    summary = insights_work.flows(_flow_rows(sessions=9, no_change=9))["summary"]
+    summary = insights_flows.flows(_flow_rows(sessions=9, no_change=9))["summary"]
     assert summary["enough"] is False
 
 
 def test_flows_of_an_empty_period_report_nothing_as_zero():
-    body = insights_work.flows([{"row_type": "meta", "first_ts": None, "last_ts": None, "computed_at": 1.0}])
+    body = insights_flows.flows([{"row_type": "meta", "first_ts": None, "last_ts": None, "computed_at": 1.0}])
     summary = body["summary"]
     assert (summary["cost_usd"], summary["no_change_share"], summary["no_change_cost"], summary["cycle_share"]) == (None,) * 4
     assert body["endings"]["no_change"]["cost_usd"] is None and body["sessions"] == []
@@ -255,7 +255,7 @@ def test_skills_shape_applies_the_evidence_rule():
             {"row_type": "meta", "priced": 100, "cost_usd": 4000.0, "first_ts": 1.0, "last_ts": 2.0, "computed_at": 3.0},
             {"row_type": "project", "project_name": "alpha", "uses": 190, "skills": 2, "sessions": 150},
             {"row_type": "project", "project_name": "beta", "uses": 4, "skills": 1, "sessions": 4}]
-    body = insights_work.skills(rows)
+    body = insights_flows.skills(rows)
     # A skill of 4 uses never leads, however costly its turns.
     assert [item["name"] for item in body["skills"]] == ["big", "cheap"] and body["summary"]["small_skills"] == 1
     assert body["summary"]["top"]["name"] == "big" and body["summary"]["top"]["cost_share"] == pytest.approx(0.325)
@@ -324,7 +324,7 @@ def _server_row(server, calls, sessions, sum_ms, **values):
 def test_mcp_shape_applies_the_evidence_rule():
     rows = [_server_row("big", 1000, 13, 3_600_000.0), _server_row("slow", 19, 5, 9_000_000.0),
             {"row_type": "meta", "calls": 10_000, "sum_ms": 36_000_000.0, "first_ts": 1.0, "last_ts": 2.0, "computed_at": 3.0}]
-    body = insights_work.mcp(rows)
+    body = insights_flows.mcp(rows)
     # 19 calls never lead, however slow.
     assert [item["server"] for item in body["servers"]] == ["big"] and body["summary"]["top"]["server"] == "big"
     assert body["servers"][0]["failure_share"] == pytest.approx(0.1) and body["small_servers"][0]["failure_share"] is None
@@ -415,11 +415,11 @@ def test_kql_shape_applies_the_evidence_rule():
             {"row_type": "project", "project_name": "alpha", "runs": 15, "sessions": 4},
             {"row_type": "project", "project_name": "beta", "runs": 4, "sessions": 1},
             {"row_type": "coverage", "tool": "copilot-cli", "runs": 19, "unrecognised": 7, "mcp": 19, "cli": 0, "script": 0}]
-    summary = insights_work.kql(rows)["summary"]
+    summary = insights_flows.kql(rows)["summary"]
     # 19 runs: no finding, no failure share, no top failure or shape.
     assert (summary["enough"], summary["failure_share"], summary["top_failure"], summary["top_shape"]) == (False, None, None, None)
     assert summary["small_projects"] == ["beta"] and summary["unrecognised"] == 7
-    enough = insights_work.kql([_kql_meta(40, 5), *rows[1:]])
+    enough = insights_flows.kql([_kql_meta(40, 5), *rows[1:]])
     assert enough["summary"]["failure_share"] == 0.1 and enough["summary"]["top_failure"] == {"failure": "syntax", "runs": 4}
     assert [item["project"] for item in enough["projects"]] == ["alpha"]
 

@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable
 from typing import Any
 
-from . import insights_work
+from . import insights_flows
 from .board_filters import Filters
 from .panel_kql import query_block
 from .projection_utils import _label
@@ -857,10 +857,10 @@ SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "autonomy": work_per_instruction,
     "verified": verified_commits,
     "models": model_report,
-    "flows": insights_work.flows,
-    "skills": insights_work.skills,
-    "mcp": insights_work.mcp,
-    "kql": insights_work.kql,
+    "flows": insights_flows.flows,
+    "skills": insights_flows.skills,
+    "mcp": insights_flows.mcp,
+    "kql": insights_flows.kql,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
