@@ -134,23 +134,26 @@ export function serverTools(body: McpBody) {
   return { kept: kept.slice(0, SHOWN_TOOLS), small: every.length - kept.length, more: Math.max(0, kept.length - SHOWN_TOOLS) }
 }
 
+/** A server tool's bar, with its server and tool as the answer names them (what its name opens). */
+export type McpToolRow = BarRow & { server: string; tool_name: string }
+
 /** Per server tool: its calls split into succeeded and failed, with its median and 95th percentile time in the hover. */
-export const toolCallRows = (body: McpBody, repo = false): BarRow[] => serverTools(body).kept.map(tool => {
+export const toolCallRows = (body: McpBody, repo = false): McpToolRow[] => serverTools(body).kept.map(tool => {
   const name = `${tool.server} · ${tool.tool_name}`
   const hover = `${callHover(name, tool)}; ${timeText(tool)}; results ${bytes(tool.output_bytes)}, carried up to ${bytes(tool.carried_bytes)}`
   const row = callRow(body.repo_order, `${tool.server}:${tool.tool_name}`, name, tool, `${plural(tool.sessions, 'session')}`, repo, hover)
-  return { ...row, text: `${row.text} · median ${millis(tool.p50_ms)} · p95 ${millis(tool.p95_ms)}` }
+  return { ...row, text: `${row.text} · median ${millis(tool.p50_ms)} · p95 ${millis(tool.p95_ms)}`, server: tool.server, tool_name: tool.tool_name }
 })
 
 export const listedLegend: BarLegend = [{ tone: 'c1', label: 'Sessions that called the server' }, { tone: 'muted', label: 'Sessions that did not' }]
 
 /** Per listed server: the sessions that listed it, split into those that called it and those that did not. */
-export const listedRows = (body: McpBody, label: Label, repo = false): BarRow[] => body.listed.slice(0, SHOWN).map(item => {
+export const listedRows = (body: McpBody, label: Label, repo = false): (BarRow & { server: string })[] => body.listed.slice(0, SHOWN).map(item => {
   const not = Math.max(0, item.sessions - item.called_sessions)
   const hover = `${item.server} (${label(item.tool)}): ${plural(item.listed_tools, 'tool')} listed in ${plural(item.sessions, 'session')}, ` +
     `called in ${fmtNum(item.called_sessions)}; listing tokens ${fmtN(item.list_tokens)}, of which ${fmtN(item.unused_tokens)} in ` +
     'sessions that did not call it (estimated from size)'
-  return { key: `${item.tool}:${item.server}`, name: item.server, sub: `${plural(item.listed_tools, 'tool')} · ${label(item.tool)}`, hover,
+  return { key: `${item.tool}:${item.server}`, server: item.server, name: item.server, sub: `${plural(item.listed_tools, 'tool')} · ${label(item.tool)}`, hover,
     parts: repo && item.repos?.length ? repoBarParts(body.repo_order, item.repos, 'sessions', value => plural(value, 'session'),
       `${item.server}, sessions that listed it`, 'sessions that listed it', hover, segment => `Called in ` +
         `${fmtNum(segmentValue(segment, 'called_sessions') ?? 0)} of them; ${fN(segmentValue(segment, 'unused_tokens'))} listing tokens in those that did not.`)
@@ -168,6 +171,12 @@ export const mcpProjectRows = (body: McpBody, repo = false): BarRow[] => body.pr
     `${fmtNum(row.failures)} failed (${share(item.failure_share)}); tool time ${hours(row.sum_ms)}; results ${bytes(row.output_bytes)}`
   return callRow(body.repo_order, row.project, name, item, `${plural(row.servers, 'server')} · ${plural(row.sessions, 'session')}`, repo, hover)
 })
+
+/** The id the MCP server detail reads a server by: `mcp:<server>`, as the board's MCP panel groups its calls. */
+export const mcpServerId = (server: string) => server ? `mcp:${server}` : ''
+/** The name the store keeps a server tool's calls under, for the tool detail: `mcp__<server>__<tool>`. The answer names
+ * only the server and the tool; a call stored under another name (a source that reports the server apart) is not found. */
+export const mcpToolName = (server: string, tool: string) => server && tool ? `mcp__${server}__${tool}` : ''
 
 /** Which tools report MCP listings, and the groups too small to compare, in one line. */
 export function mcpCoverage(body: McpBody, label: Label) {

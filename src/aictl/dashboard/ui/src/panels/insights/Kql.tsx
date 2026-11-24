@@ -2,25 +2,35 @@ import { For, Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
 import { CodeView } from '../../ui/CodeView'
 import { BarChart } from './FlowsBars'
+import { opening, opens, type Opens } from './charts/Open'
 import { ColourBy, useColourBy, drawnBy, type ColourMode } from './charts/ColourBy'
 import { axisText, barTop, type BarLegend, type BarRow } from './flowBarModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { bytes, hours, share, toolLabel, type Label } from './insightsModel'
 import {
   failureRows, kindLegend, kindName, kindRows, kqlCoverage, kqlFinding, kqlHero, kqlMeasured, kqlProjectRows, kqlSplit, largeRows, routeRows,
-  runLegend, shapeLegend, shapeRows, targetRows, type KqlBody,
+  runLegend, shapeLegend, shapeRows, targetRows, type KqlBody, type KqlLarge,
 } from './kqlModel'
 import { RepoLegend } from './RepoLegend'
+import { sessionName } from './sessionName'
 import styles from './CallsViews.module.css'
 import insights from './Insights.module.css'
 
 const runs = (rows: BarRow[]) => axisText('runs', fmtNum(barTop(rows)))
 
+/** A run of 100 KB or more is one call of one session: its name opens that session at its tool calls. Routes, failure kinds,
+ * kinds, clusters and query shapes name nothing to open; a project is named by its last folder only, and the page narrows
+ * only to a whole project path. */
+const links = (open: Opens) => ({
+  large: (rows: (BarRow & { run: KqlLarge })[]) => opening(rows, row => open.session(row.run.session_id, sessionName(row.run), 'tools')),
+})
+type Links = ReturnType<typeof links>
+
 /** The runs that brought 100 KB or more into the context: their bytes as bars, then the full query text of each on expand. */
-function Large(props: { body: KqlBody; label: Label; repo: boolean; along: string }) {
+function Large(props: { body: KqlBody; label: Label; repo: boolean; along: string; link: Links }) {
   return <Show when={props.body.large.length}>
     <section class={styles.group} data-large>
-      <BarChart data="large" title="Results of 100 KB or more, per run" rows={largeRows(props.body, props.label, props.repo)}
+      <BarChart data="large" title="Results of 100 KB or more, per run" rows={props.link.large(largeRows(props.body, props.label, props.repo))}
         axis={axisText('bytes returned', bytes(barTop(largeRows(props.body, props.label)))) + props.along} />
       <For each={props.body.large.slice(0, 6)}>{run => <details class={insights.disclosure}>
         <summary>{bytes(run.output_bytes)} · {kindName(run.kind, run.verb)} · <code>{run.snippet || 'text not kept'}</code></summary>
@@ -33,7 +43,7 @@ function Large(props: { body: KqlBody; label: Label; repo: boolean; along: strin
 }
 
 /** Rankings side by side, one scale each: routes, failure kinds and kinds; targets and projects; then shapes and large results. */
-function Visual(props: { body: KqlBody; label: Label; by: ColourMode; setBy: (value: ColourMode) => void }) {
+function Visual(props: { body: KqlBody; label: Label; by: ColourMode; setBy: (value: ColourMode) => void; link: Links }) {
   const split = () => kqlSplit(props.body)
   const repo = () => drawnBy(props.by, split()) === 'repo'
   const along = () => repo() ? ' A segment per repository.' : ''
@@ -59,7 +69,7 @@ function Visual(props: { body: KqlBody; label: Label; by: ColourMode; setBy: (va
     </div>
     <BarChart data="shapes" title="Query shapes run most (literals as ?)" rows={shapeRows(props.body, repo())} legend={legend(shapeLegend)}
       axis={runs(shapeRows(props.body)) + along()} empty="No run kept its query text." />
-    <Large body={props.body} label={props.label} repo={repo()} along={along()} />
+    <Large body={props.body} label={props.label} repo={repo()} along={along()} link={props.link} />
     <p class={styles.note} data-coverage>{kqlCoverage(props.body, props.label)}</p>
     <details class={styles.totals} data-totals><summary>Totals of the period</summary><p>{kqlFinding(props.body)}</p></details>
   </div>
@@ -71,10 +81,11 @@ export default function Kql(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   const [by, setBy] = useColourBy()
+  const link = links(opens(ctx))
   return <InsightCard<KqlBody> {...props} card="kql" tab="tools"
     hero={kqlHero}
     finding={() => kqlMeasured}
-    visual={body => <Visual body={body} label={label} by={by()} setBy={setBy} />}
+    visual={body => <Visual body={body} label={label} by={by()} setBy={setBy} link={link} />}
     note={'A run is recognised from the call: an MCP tool whose server or tool name contains kusto, kql or adx; a command line ' +
       'that runs Kusto.Cli, kusto-cli, kql, az kusto query or az kusto script (az kusto cluster and database commands manage ' +
       'the Azure resource and run no KQL); or a command line, not a text tool such as grep or sed, that names a Kusto cluster ' +

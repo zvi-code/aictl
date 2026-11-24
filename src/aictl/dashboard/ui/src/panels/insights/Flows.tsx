@@ -1,6 +1,7 @@
 import { Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { opening, opens, type Opens } from './charts/Open'
 import { FlowDiagram } from './charts/FlowDiagram'
 import { HeatGrid } from './charts/HeatGrid'
 import { BarChart } from './FlowsBars'
@@ -27,7 +28,14 @@ function splitBars(body: FlowsBody) {
 const axisOf = (measure: string, top: string, rows: readonly BarRow[]) =>
   axisText(measure, top) + (rows.some(row => row.parts.some(part => part.repo != null)) ? ' A segment per repository.' : '')
 
-function Visual(props: { body: FlowsBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+/** A coding tool's name narrows the page to it. Steps, cycles, paths and endings are kinds of step, not names; a project is
+ * named by its last folder only, and the page narrows only to a whole project path. */
+const links = (open: Opens) => ({
+  product: (rows: BarRow[]) => opening(rows, row => open.product(row.key, row.name)),
+})
+type Links = ReturnType<typeof links>
+
+function Visual(props: { body: FlowsBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void; link: Links }) {
   const split = () => flowsSplit(props.body)
   const byRepo = () => split() && props.mode === 'repo'
   // Coloured by the view's own parts, the bars that have no parts of their own are drawn in one colour.
@@ -35,7 +43,7 @@ function Visual(props: { body: FlowsBody; label: Label; mode: ColourMode; setMod
   const flow = () => endingFlow(props.body)
   const grid = () => transitionGrid(props.body)
   const sessionsAxis = (rows: readonly BarRow[]) => axisOf('sessions', fmtNum(barTop(rows)), rows)
-  const tools = () => flowToolRows(shown(), props.label)
+  const tools = () => props.link.product(flowToolRows(shown(), props.label))
   return <>
     <ColourBy parts="How sessions ended" value={byRepo() ? 'repo' : 'parts'} onChange={props.setMode} split={split()} />
     <Show when={byRepo()}><RepoLegend split={props.body} other={hasOther(splitBars(props.body))} /></Show>
@@ -82,9 +90,10 @@ export default function Flows(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   const [mode, setMode] = useColourBy()
+  const link = links(opens(ctx))
   return <InsightCard<FlowsBody> {...props} card="flows" tab="flow"
     finding={flowsFinding}
-    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} />}
+    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} link={link} />}
     note={'Each tool call is one step, by the first rule that holds: ask the person (AskUserQuestion, ask_user); report done ' +
       '(task_complete); subagent (a call that starts or talks to one); MCP tool (an MCP server\'s tool); skill; test run (the ' +
       'stored test-run flag: the command\'s first program is a test runner); commit (a successful git commit, the rule of ' +

@@ -164,11 +164,11 @@ export function largeHover(run: KqlLarge, label: Label) {
     (run.project_name ? ` in ${projectName(run.project_name)}` : '')
 }
 
-/** The runs that brought 100 KB or more into the context, by bytes. */
-export const largeRows = (body: KqlBody, label: Label, repo = false): BarRow[] => body.large.slice(0, 6).map((run, index) => {
+/** The runs that brought 100 KB or more into the context, by bytes; each row is one run of one session (`run`). */
+export const largeRows = (body: KqlBody, label: Label, repo = false): (BarRow & { run: KqlLarge })[] => body.large.slice(0, 6).map((run, index) => {
   const hover = largeHover(run, label)
   const name = run.snippet || 'text not kept'
-  return { key: `${run.session_id}:${index}`, name, sub: kindName(run.kind, run.verb), hover, text: bytes(run.output_bytes),
+  return { key: `${run.session_id}:${index}`, run, name, sub: kindName(run.kind, run.verb), hover, text: bytes(run.output_bytes),
     parts: repo && run.repos?.length ? repoBarParts(body.repo_order, run.repos, 'output_bytes', value => bytes(value), name, 'bytes returned', hover)
       : [{ value: run.output_bytes, tone: 'c3', hover }] }
 })
