@@ -4,6 +4,7 @@ declare query_parameters(
 );
 // An agent id is unique only within its session (a resumed session copies its subagents):
 // every session that holds the id is returned, and the caller reports more than one as ambiguous.
+// The main agent of a session is named by the session id and matches no row here.
 union
     (agents
     | where agent_id == requested_agent and (all_nodes or node_id == requested_node)
@@ -12,7 +13,10 @@ union
     | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
     | where not(coalesce(column_ifexists('_deleted', false), false))
     | project node_id, agent_id, session_id, priority=0, ts=started_at),
+    // agent_id and session_id are in a request tombstone's scope: filtering on them before the
+    // versions are reduced keeps its tombstones, and reads only the requests of this agent id.
     (requests
+    | where agent_id == requested_agent and session_id != requested_agent
     | where all_nodes or node_id == requested_node
     | where isempty(requested_project) or ['project'] == requested_project
     | where isempty(requested_session) or session_id == requested_session
