@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 from pathlib import Path
 
 import pytest
@@ -18,7 +19,7 @@ from aictl.dashboard import board_routes, insights
 from aictl.dashboard.board_filters import Filters
 from aictl.dashboard.projections.history import HistoryScope
 from aictl.stores.base import ReadResult, StoreError
-from aictl.stores.kusto.reader import _CACHE_TTL_S, _VIEWS
+from aictl.stores.kusto.reader import _CACHE_TTL_S, _INSIGHT_CONCURRENCY, _VIEWS, KustoReader, _Turns
 from aictl.stores.kusto.tables import TABLES
 
 QUERIES = Path(__file__).resolve().parent.parent / "src" / "aictl" / "stores" / "kusto" / "queries"
@@ -46,6 +47,65 @@ def test_every_insight_view_is_registered_cached_and_bounded():
         # The work cards (insights_work.py) also take the page's tool and model filters.
         assert _VIEWS[view][0].split()[:4] == ["all_nodes", "requested_node", "since", "until"]
         assert 0 < _CACHE_TTL_S[view] <= 300
+
+
+def test_insight_reads_take_turns_so_the_screen_does_not_starve_the_cluster():
+    # The screen asks for every card at once; run together on a small cluster they time out.
+    reader = KustoReader(object(), "db")
+    lock, started, release = threading.Lock(), threading.Semaphore(0), threading.Event()
+    running = peak = 0
+
+    def execute(view, props, limit, restricted=False):
+        nonlocal running, peak
+        if not view.startswith("insights."):
+            return ReadResult([], truncated=False)
+        with lock:
+            running += 1
+            peak = max(peak, running)
+        started.release()
+        release.wait()
+        with lock:
+            running -= 1
+        return ReadResult([], truncated=False)
+
+    reader._execute = execute
+    views = sorted(insights.CARDS.values())
+    assert len(views) > _INSIGHT_CONCURRENCY
+    threads = [threading.Thread(target=reader._cached_read, args=(view, (), 60.0, None, 10)) for view in views]
+    for thread in threads:
+        thread.start()
+    for _ in range(_INSIGHT_CONCURRENCY):
+        started.acquire()
+    assert reader._insight_turns.free == 0  # every turn is taken by a running card
+    reader._cached_read("health.series", (), 30.0, None, 10)  # a read of another screen does not wait for a turn
+    release.set()
+    for thread in threads:
+        thread.join()
+    assert peak == _INSIGHT_CONCURRENCY
+
+
+def test_the_cheapest_waiting_insight_read_goes_first():
+    turns, order, hold = _Turns(1), [], threading.Event()
+
+    def read(cost, wait=None):
+        with turns.turn(cost):
+            order.append(cost)
+            if wait:
+                wait.wait()
+
+    first = threading.Thread(target=read, args=(99.0, hold))
+    first.start()
+    while turns.free:  # the first read holds the only turn
+        pass
+    waiters = [threading.Thread(target=read, args=(cost,)) for cost in (30.0, 5.0, 10.0)]
+    for thread in waiters:
+        thread.start()
+    while turns.waiting < len(waiters):
+        pass
+    hold.set()
+    for thread in [first, *waiters]:
+        thread.join()
+    assert order == [99.0, 5.0, 10.0, 30.0]
 
 
 def test_pause_tax_buckets_pauses_within_one_session_and_agent(kusto_store):

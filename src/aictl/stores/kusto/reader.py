@@ -10,6 +10,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import Mapping
 from concurrent.futures import Future
+from contextlib import contextmanager, nullcontext
 from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import timedelta
@@ -495,6 +496,46 @@ _MAX_ROWS = 20_000
 _VIEW_MAX_ROWS = {"tools.activity_rows": 100_000}
 # Insights read months of rows: a short lifetime lets the screen and its retries share one answer.
 _INSIGHT_TTL_S = 120.0
+# The Insights screen asks for every card at once. Run together the cards starve a small cluster and time out, so at
+# most this many run at a time; the others wait their turn (the wait is not part of a query's own time limit).
+_INSIGHT_CONCURRENCY = 2
+
+
+class _Turns:
+    """Turns for the Insights reads: at most `limit` run, and of those waiting the cheapest goes first, so most of the
+    screen is filled before its slowest card starts."""
+
+    def __init__(self, limit: int) -> None:
+        self._changed = threading.Condition()
+        self._free = limit
+        self._waiting: list[tuple[float, int]] = []
+        self._arrivals = 0
+
+    @property
+    def free(self) -> int:
+        return self._free
+
+    @property
+    def waiting(self) -> int:
+        return len(self._waiting)
+
+    @contextmanager
+    def turn(self, cost: float):
+        with self._changed:
+            self._arrivals += 1
+            mine = (cost, self._arrivals)
+            self._waiting.append(mine)
+            while not (self._free and min(self._waiting) == mine):
+                self._changed.wait()
+            self._waiting.remove(mine)
+            self._free -= 1
+            self._changed.notify_all()
+        try:
+            yield
+        finally:
+            with self._changed:
+                self._free += 1
+                self._changed.notify_all()
 _CACHE_TTL_S = {
     "health.totals": 300.0, "health.series": 30.0, "health.flows": 30.0, "nodes.reports": 5.0, "nodes.status": 5.0,
     "insights.pause_tax": _INSIGHT_TTL_S, "insights.context_carry": _INSIGHT_TTL_S, "insights.subagents": _INSIGHT_TTL_S,
@@ -615,6 +656,7 @@ class KustoReader:
         self._lock = threading.Lock()
         self._cache: OrderedDict[tuple, _CachedRead] = OrderedDict()
         self._inflight: dict[tuple, Future[ReadResult]] = {}
+        self._insight_turns = _Turns(_INSIGHT_CONCURRENCY)
         self._queries = 0
         self._failures = 0
         self._last_latency_ms: float | None = None
@@ -767,7 +809,8 @@ class KustoReader:
 
         entry = entry or _CachedRead()
         try:
-            result = self._execute(view, props, limit, restricted)
+            with self._insight_turns.turn(self._usual_ms(view)) if view.startswith("insights.") else nullcontext():
+                result = self._execute(view, props, limit, restricted)
         except BaseException as exc:  # noqa: BLE001 - resolve waiters even if the leader is interrupted
             now = time.monotonic()
             if isinstance(exc, StoreError):
@@ -790,6 +833,12 @@ class KustoReader:
                     self._cache.popitem(last=False)
                 del self._inflight[key]
         return deepcopy(pending.result())
+
+    def _usual_ms(self, view: str) -> float:
+        """What this view has cost per query since the daemon started; 0 when it has not run yet."""
+        with self._lock:
+            queries, _failures, total, *_rest = self._view_timings.get(view) or (0, 0, 0.0)
+        return total / queries if queries else 0.0
 
     def _execute(self, view: str, props, limit: int, restricted: bool = False) -> ReadResult:
         start = time.monotonic()

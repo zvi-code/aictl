@@ -92,6 +92,11 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
     expect(modelHero(later, label)?.label).toContain('Their periods do not overlap')
   })
 
+  it('leaves a card without an entry as it came: its lists are not rows per tool', () => {
+    const body = { card: 'skills', tools: [{ tool: BIG, uses: 9 }], skills: [{ name: 'review', uses: 9 }] }
+    expect(withEvidence(body)).toEqual({ body, few: [] })
+  })
+
   it('draws no cell and no column for the small group and names it under the chart', () => {
     const body = {
       card: 'problems', view: 'insights.problem_sessions', range: { since: 0, until: 10 }, data_range: { first_ts: 1, last_ts: 2 }, computed_at: 3,

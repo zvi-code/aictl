@@ -70,7 +70,8 @@ export function splitTools<T extends Row>(card: string, tools: readonly T[]): { 
  * every per-tool list (and their models, skills, files and bins with them), with the groups taken out.
  */
 export function withEvidence<T extends { card: string; tools?: unknown }>(body: T): { body: T; few: Few[] } {
-  if (!Array.isArray(body.tools)) return { body, few: [] }
+  // A card with no entry in the table applies its own rule in the store: its rows are not grouped by tool here.
+  if (!EVIDENCE[body.card] || !Array.isArray(body.tools)) return { body, few: [] }
   const { kept, few } = splitTools(body.card, body.tools as Row[])
   const names = new Set(kept.map(tool => tool.tool))
   const keep = (rows: unknown) => Array.isArray(rows) ? (rows as Row[]).filter(row => names.has(row.tool)) : rows
