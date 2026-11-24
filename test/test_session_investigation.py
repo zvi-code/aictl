@@ -214,10 +214,9 @@ class TestYearLongCallFields:
 
     def test_program_names_and_hosts(self):
         assert program_name("FOO=1 BAR=2 make test") == "make"
-        assert program_name(r"C:\Python311\python.exe -m pytest") == "python.exe"
-        assert (
-            program_name('"C:\\Program Files\\Git\\bin\\git.exe" status') == "Program"
-        )  # quoted paths with spaces stop at the first word
+        # The program actually run, as the board reads a command (test_program_name.py has the Windows cases).
+        assert program_name(r"C:\Python311\python.exe -m pytest") == "pytest"
+        assert program_name('"C:\\Program Files\\Git\\bin\\git.exe" status') == "git"
         assert program_name("") == ""
         assert url_host("not a url") == ""
 

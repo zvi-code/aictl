@@ -180,7 +180,8 @@ def _read(words: list[_Word], call: bool, depth: int):
     if not first.quoted and lower in _ENDS:
         return "setup"
     if not first.quoted and first.text.startswith("$"):
-        sets = (len(words) > 1 and words[1].text == "=") or re.match(r"^\$[\w:]+\s*=", first.text)
+        # Board addition: PowerShell's ``$env:PATH += ";C:\x"`` also only sets a variable.
+        sets = (len(words) > 1 and words[1].text in ("=", "+=")) or re.match(r"^\$[\w:]+\s*\+?=", first.text)
         if sets:
             return "setup"
         # Board addition: an interpreter in a variable, ``$PY -m pytest``, plainly names its module.
@@ -219,12 +220,17 @@ def _read(words: list[_Word], call: bool, depth: int):
 def _first(command: str, depth: int) -> tuple[str, tuple[str, ...]] | None:
     for words, call in _parts(_tokenize(command)):
         read = _read(words, call, depth)
-        if read == "setup":
+        # Board addition: cmd's ``set A=b &&`` only sets a variable, as ``run_label`` already reads it.
+        if _setup_part(read):
             continue
         if read == "unknown":
             return None
         if read[0] == "inner":
-            return _first(read[1], depth + 1)
+            # Board addition: ``cmd /c "a && b"`` passes one quoted command; read inside the quotes (as _label_words).
+            inner = read[1].strip()
+            if len(inner) > 1 and inner[0] == inner[-1] and inner[0] in "'\"":
+                inner = inner[1:-1]
+            return _first(inner, depth + 1)
         return read[1], tuple(read[2])
     return None
 

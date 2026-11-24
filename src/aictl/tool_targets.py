@@ -64,17 +64,39 @@ _PREFIX_WORDS = frozenset({"sudo", "env", "time", "nohup", "command", "exec", "n
 
 
 def program_name(command: str) -> str:
-    """The program a command line runs: its first word without folder, quotes or arguments.
+    """The program a command line runs, as the board reads a shell command (``dashboard.shell_program``).
 
-    Leading variable settings (``FOO=1 make``), ``sudo``/``env``/``time`` and ``cd dir &&`` are skipped.
+    Setup parts are skipped: ``cd``/``Set-Location``, assignments (``FOO=1``, PowerShell's ``$env:PATH="..."``,
+    cmd's ``set``), prefixes (``sudo``, ``env``, ``time``); PowerShell's call operator ``& "C:\\x\\python.exe"`` and
+    ``bash -c``/``cmd /c``/``pwsh -Command`` are read through, and ``python -m X`` names X. When the command names
+    no plain program (a loop header, a variable), the first word is kept, so a view can group it as a shell construct.
     """
+    from .dashboard.shell_program import first_program
+
+    word = _first_word(command)
+    # A polling loop stays a waiting command, though its condition runs a program (``while ! curl ...``).
+    if word.lower() in _WAITING_WORDS:
+        return word
+    found = first_program(command)
+    return re.sub(r"[^\w.+-]", "", found[0])[:64] if found is not None else word
+
+
+_WAITING_WORDS = frozenset({"while", "until"})
+
+
+def _first_word(command: str) -> str:
+    """The first word of the first part that is not setup, without folder, quotes or punctuation; a variable or an
+    expression keeps its sigil (``$``), so it is not read as a program name."""
     for part in re.split(r"&&|\|\||;", command):
         words = part.strip().split()
-        while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[0]) or words[0] in _PREFIX_WORDS):
+        while words and (re.match(r"^[A-Za-z_][A-Za-z0-9_]*=|^\$[\w:]+\+?=", words[0]) or words[0] in _PREFIX_WORDS):
             words.pop(0)
         if not words or (words[0] == "cd" and part is not command):
             continue
         first = words[0].strip("\"'`()")
+        if first.startswith(("$", "[", "@", "{")):
+            # A variable or an expression, not a program: keep its sigil so it reads as a shell construct.
+            return (first[0] + re.sub(r"[^\w.+-]", "", first.split("=", 1)[0]))[:64]
         return re.sub(r"[^\w.+-]", "", first.replace("\\", "/").rsplit("/", 1)[-1])[:64]
     return "cd" if command.strip().startswith("cd") else ""
 
