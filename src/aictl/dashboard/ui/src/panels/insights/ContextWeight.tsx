@@ -4,9 +4,11 @@ import { Bars } from './Bars'
 import { Columns, toneClass } from './charts/Columns'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
 import { MarkStrip } from './charts/MarkStrip'
+import { Name, opening, opens, type Opens } from './charts/Open'
 import charts from './charts/Charts.module.css'
 import {
-  CONTEXT_LEGEND, CONTEXT_REFS, contextColumns, contextLine, contextSmallRows, contextSplit, contextStripRows, SMALL_TITLE,
+  CONTEXT_LEGEND, CONTEXT_REFS, contextColumns, contextLine, contextSmallRows, contextSplit, contextStripRows, SMALL_TITLE, toolAction,
+  type ToolNamed,
 } from './costModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { contextHero, CONTEXT_LABELS, money, SMALL_STEP_OUTPUT, share, tokens, toolLabel, type ContextBody, type Label } from './insightsModel'
@@ -15,7 +17,14 @@ import { hasOther } from './repoSplit'
 
 const NONE = 'Token counts not reported by this source.'
 
-function Visual(props: { body: ContextBody; label: Label; by: ColourMode; setBy: (by: ColourMode) => void }) {
+/** What the names open: a coding tool narrows the page to it. */
+const links = (open: Opens, label: Label) => ({
+  product: (tool: string) => open.product(tool, label(tool)),
+  tools: <T extends ToolNamed>(rows: T[]) => opening(rows, row => row.tool ? open.product(row.tool, label(row.tool)) : undefined),
+})
+type Links = ReturnType<typeof links>
+
+function Visual(props: { body: ContextBody; label: Label; link: Links; by: ColourMode; setBy: (by: ColourMode) => void }) {
   const split = () => contextSplit(props.body)
   const by = (): ColourMode => split() ? props.by : 'parts'
   const repo = () => by() === 'repo'
@@ -29,7 +38,7 @@ function Visual(props: { body: ContextBody; label: Label; by: ColourMode; setBy:
         ...props.body.tools.map(tool => ({ repos: tool.small_repos }))])} />
     </Show>
     <For each={props.body.tools}>{tool => <section class={charts.group} data-tool={tool.tool} aria-label={props.label(tool.tool)}>
-      <h2 class={charts.groupTitle}>{props.label(tool.tool)}</h2>
+      <h2 class={charts.groupTitle}><Name text={props.label(tool.tool)} open={props.link.product(tool.tool)} /></h2>
       <Show when={tool.reported} fallback={<p class={charts.note} data-no-tokens>{NONE}</p>}>
         <div class={charts.grid}>
           <Columns name={`context-requests-${tool.tool}`} title="Requests by context size"
@@ -45,10 +54,10 @@ function Visual(props: { body: ContextBody; label: Label; by: ColourMode; setBy:
       <MarkStrip name="context-percentiles" title="Context per request: median and 90th percentile"
         axis={`Tokens, one axis from 0 for every tool; dashed lines at the bucket boundaries${repo() ? '; not split by repository' : ''}.`}
         legend={[{ label: 'Median', shape: 'dot' }, { label: '90th percentile', shape: 'tick' }]} refs={CONTEXT_REFS}
-        format={value => fmtN(value)} rows={contextStripRows(props.body, by(), props.label)} />
+        format={value => fmtN(value)} rows={props.link.tools(contextStripRows(props.body, by(), props.label))} />
       <Bars name="context-small" title={SMALL_TITLE}
         axis={`Requests, one scale from 0${perRepo()}; beside it their cost at list price.`}
-        rows={contextSmallRows(props.body, by(), props.label)} />
+        rows={props.link.tools(contextSmallRows(props.body, by(), props.label))} />
     </div>
   </>
 }
@@ -59,10 +68,12 @@ export default function ContextWeight(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   const [by, setBy] = useColourBy()
+  const open = opens(ctx)
+  const link = links(open, label)
   return <InsightCard<ContextBody> {...props} card="context" tab="context"
     hero={contextHero}
     finding={contextLine}
-    visual={body => <Visual body={body} label={label} by={by()} setBy={setBy} />}
+    visual={body => <Visual body={body} label={label} link={link} by={by()} setBy={setBy} />}
     note={'Context of a request: input + cache read + cache write tokens, everything the model read for it. A bucket ' +
       'includes its lower bound: 200k tokens is in 200k–500k. Columns of 200k tokens or more have their own colour. A request ' +
       'with no token counts (or all zero) is not reported, not a request of 0 tokens. Cost is list price, not a bill; a cache ' +
@@ -73,16 +84,16 @@ export default function ContextWeight(props: CardProps) {
     table={{
       label: 'Context weight by tool and bucket',
       rows: body => body.tools.flatMap(tool => tool.buckets.map((cell): Row => ({
-        id: `${tool.tool}:${cell.bucket}`, tool: label(tool.tool), bucket: CONTEXT_LABELS[cell.bucket], requests: cell.requests,
+        id: `${tool.tool}:${cell.bucket}`, tool: label(tool.tool), tool_id: tool.tool, bucket: CONTEXT_LABELS[cell.bucket], requests: cell.requests,
         request_share: cell.request_share ?? undefined, cost_usd: cell.cost_usd ?? undefined, cost_share: cell.cost_share ?? undefined,
         p50: tool.p50_context ?? undefined, p90: tool.p90_context ?? undefined,
       }))),
-      fields: [textField('tool', 'Tool'), textField('bucket', 'Context'), numberField('requests', 'Requests', fmtNum),
+      fields: [{ ...textField('tool', 'Tool'), action: toolAction<Row>(open, label, 'tool_id') }, textField('bucket', 'Context'), numberField('requests', 'Requests', fmtNum),
         numberField('request_share', 'Share of requests', value => share(value)),
         numberField('cost_usd', 'Cost (list price)', value => money(value)), numberField('cost_share', 'Share of cost', value => share(value)),
         numberField('p50', 'Tool median context', value => tokens(value)), numberField('p90', 'Tool 90th percentile', value => tokens(value))],
     }}
-    sessionFields={[textField('tool', 'Tool', row => label(String(row.tool ?? ''))),
+    sessionFields={[{ ...textField('tool', 'Tool', row => label(String(row.tool ?? ''))), action: toolAction(open, label, 'tool') },
       numberField('requests', 'Requests of 200k tokens or more', fmtNum),
       numberField('cost_usd', 'Their cost (list price)', value => money(value))]} />
 }

@@ -34,9 +34,9 @@ const toolCost = (tool: SubagentBody['tools'][number]) => tool.main.cost_usd == 
   : (tool.main.cost_usd ?? 0) + (tool.subagents.cost_usd ?? 0)
 
 /** Per tool one bar, its parts the main agent's and the subagents' cost (or requests). */
-export function sideRows(body: SubagentBody, label: Label, of: 'cost' | 'requests'): BarRow[] {
+export function sideRows(body: SubagentBody, label: Label, of: 'cost' | 'requests'): (BarRow & { tool: string })[] {
   return body.tools.map(tool => ({
-    key: tool.tool, label: label(tool.tool),
+    key: tool.tool, label: label(tool.tool), tool: tool.tool,
     sub: of === 'cost' ? `${plural(tool.subagents.agents, 'subagent')} · ${share(tool.subagent_share)} of cost in subagents` : undefined,
     total: of === 'cost' ? money(toolCost(tool)) : plural(tool.main.requests + tool.subagents.requests, 'request'),
     parts: (['main', 'subagents'] as const).map(side => ({
@@ -48,11 +48,11 @@ export function sideRows(body: SubagentBody, label: Label, of: 'cost' | 'request
 }
 
 /** Per tool and side one bar, its parts the repositories; a side the answer did not split is one grey part. */
-export function sideRepoRows(body: SubagentBody, label: Label, of: 'cost' | 'requests'): BarRow[] {
+export function sideRepoRows(body: SubagentBody, label: Label, of: 'cost' | 'requests'): (BarRow & { tool: string })[] {
   const key = of === 'cost' ? 'cost_usd' : 'requests'
   const format = (value: number) => of === 'cost' ? money(value) : fmtNum(value)
   return body.tools.flatMap(tool => (['main', 'subagents'] as const).filter(side => (tool[side][key] ?? 0) > 0).map(side => ({
-    key: `${tool.tool}:${side}`, label: `${label(tool.tool)}: ${SIDES[side]}`,
+    key: `${tool.tool}:${side}`, label: `${label(tool.tool)}: ${SIDES[side]}`, tool: tool.tool,
     sub: side === 'subagents' ? plural(tool.subagents.agents, 'subagent') : undefined,
     total: of === 'cost' ? money(tool[side].cost_usd) : plural(tool[side].requests, 'request'),
     parts: tool[side].repos?.length
@@ -67,10 +67,10 @@ export function sideRepoRows(body: SubagentBody, label: Label, of: 'cost' | 'req
 export const sessionRepos = (row: InsightSession) => Array.isArray(row.repos) ? row.repos as RepoSegment[] : undefined
 
 /** The sessions with the largest subagent cost, coloured as subagents, or by their repository. */
-export function sessionRows(body: SubagentBody, label: Label, mode: ColourMode): BarRow[] {
+export function sessionRows(body: SubagentBody, label: Label, mode: ColourMode): (BarRow & { session: string; sessionName: string })[] {
   return [...body.sessions].filter(row => typeof row.cost_usd === 'number')
     .sort((a, b) => Number(b.cost_usd) - Number(a.cost_usd)).slice(0, SUBAGENT_SESSIONS).map(row => ({
-      key: row.session_id, label: sessionLabel(row, label), title: sessionHover(row),
+      key: row.session_id, label: sessionLabel(row, label), title: sessionHover(row), session: row.session_id, sessionName: sessionName(row),
       sub: `${plural(Number(row.agents ?? 0), 'subagent')} · ${plural(Number(row.requests ?? 0), 'request')}`,
       total: money(Number(row.cost_usd)),
       parts: mode === 'repo' && sessionRepos(row)?.length ? repoParts(sessionRepos(row), 'cost_usd', body.repo_order, value => money(value),

@@ -2,9 +2,10 @@ import { For, Show, untrack } from 'solid-js'
 import { fmtNum } from '../../design/format'
 import { toneClass } from './charts/Columns'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { Name, opening, opens, type Opens } from './charts/Open'
 import { PairedBars, type Lane } from './charts/PairedBars'
 import charts from './charts/Charts.module.css'
-import { carryLine, carryNameRows, carrySplit, carryToolRows } from './costModel'
+import { carryLine, carryNameRows, carrySplit, carryToolRows, toolAction, type ToolNamed } from './costModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { bytes, carryHero, count, type CarryBody, toolLabel, type Label } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
@@ -13,7 +14,15 @@ import { hasOther } from './repoSplit'
 const LANES: [Lane, Lane] = [{ title: 'Result bytes' }, { title: 'Sent again, estimate (upper bound)', estimate: true }]
 const LEGEND = [{ label: 'Result bytes, recorded', tone: 2 }, { label: 'Sent again, estimate (upper bound)', tone: 0 }]
 
-function CarryBars(props: { body: CarryBody; label: Label; by: ColourMode; setBy: (by: ColourMode) => void }) {
+/** What the names open: a tool name opens the tool, a coding tool narrows the page to it. */
+const links = (open: Opens, label: Label) => ({
+  product: (tool: string) => open.product(tool, label(tool)),
+  tools: <T extends ToolNamed>(rows: T[]) => opening(rows, row => row.tool ? open.product(row.tool, label(row.tool)) : undefined),
+  names: <T extends { toolName: string }>(rows: T[]) => opening(rows, row => open.tool(row.toolName)),
+})
+type Links = ReturnType<typeof links>
+
+function CarryBars(props: { body: CarryBody; label: Label; link: Links; by: ColourMode; setBy: (by: ColourMode) => void }) {
   const split = () => carrySplit(props.body)
   const by = (): ColourMode => split() ? props.by : 'parts'
   const axis = (what: string) => `${what}; each lane on its own scale from 0${by() === 'repo' ? '; a segment per repository' : ''}.`
@@ -26,23 +35,28 @@ function CarryBars(props: { body: CarryBody; label: Label; by: ColourMode; setBy
     </Show>
     <PairedBars name="carry-names" title="Per tool name, the 10 with the largest estimate" lanes={LANES} scale="each"
       axis={axis('Bytes as recorded; estimate = result bytes × later requests of the same session and agent')}
-      rows={carryNameRows(props.body, by(), props.label)} />
+      rows={props.link.names(carryNameRows(props.body, by(), props.label))} />
     <PairedBars name="carry-tools" title="Per tool" lanes={LANES} scale="each" axis={axis('Bytes as recorded')}
-      rows={carryToolRows(props.body, by(), props.label)} />
+      rows={props.link.tools(carryToolRows(props.body, by(), props.label))} />
     <Show when={props.body.summary.not_reported.length}>
-      <p class={charts.note} data-not-reported>Result size not reported by: {props.body.summary.not_reported.map(props.label).join(', ')}.</p>
+      <p class={charts.note} data-not-reported>Result size not reported by: <For each={props.body.summary.not_reported}>{(tool, i) =>
+        <>{i() ? ', ' : ''}<Name text={props.label(tool)} open={props.link.product(tool)} /></>}</For>.</p>
     </Show>
   </>
 }
+
+type Row = Record<string, unknown>
 
 export default function ContextCarry(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   const [by, setBy] = useColourBy()
+  const open = opens(ctx)
+  const link = links(open, label)
   return <InsightCard<CarryBody> {...props} card="carry" tab="context"
     hero={carryHero}
     finding={carryLine}
-    visual={body => <CarryBars body={body} label={label} by={by()} setBy={setBy} />}
+    visual={body => <CarryBars body={body} label={label} link={link} by={by()} setBy={setBy} />}
     note={'Upper bound: bytes carried = result bytes × the later requests of the same session and agent. Compaction and ' +
       'truncation of the context are not taken into account, so the real figure is lower. The estimate lane is hatched and ' +
       'its values are marked as estimates. Bytes as the source recorded them, not tokens or cost. Only requests and calls in ' +
@@ -51,18 +65,21 @@ export default function ContextCarry(props: CardProps) {
     table={{
       label: 'Context carry by tool name',
       rows: body => [
-        ...body.tool_names.map(row => ({ id: `${row.tool}:${row.tool_name}`, tool: label(row.tool), name: row.tool_name,
+        ...body.tool_names.map(row => ({ id: `${row.tool}:${row.tool_name}`, tool: label(row.tool), tool_id: row.tool, name: row.tool_name,
+          tool_name: row.tool_name,
           calls: row.calls, output_bytes: row.output_bytes, avg_later: row.avg_later_requests ?? undefined, carried_bytes: row.carried_bytes })),
-        ...body.tools.map(row => ({ id: `${row.tool}:*`, tool: label(row.tool), name: 'All tool names', calls: row.calls,
+        ...body.tools.map(row => ({ id: `${row.tool}:*`, tool: label(row.tool), tool_id: row.tool, name: 'All tool names', calls: row.calls,
           output_bytes: row.output_bytes ?? undefined, carried_bytes: row.carried_bytes ?? undefined,
           reported: row.reported })),
       ],
-      fields: [textField('tool', 'Tool'), textField('name', 'Tool name'), numberField('calls', 'Calls', fmtNum),
+      fields: [{ ...textField('tool', 'Tool'), action: toolAction<Row>(open, label, 'tool_id') },
+        { ...textField('name', 'Tool name'), action: {
+          label: (row: Row) => open.tool(String(row.tool_name ?? ''))?.label ?? '', run: (row: Row) => open.tool(String(row.tool_name ?? ''))?.run() } }, numberField('calls', 'Calls', fmtNum),
         numberField('reported', 'Calls with a size', fmtNum), numberField('output_bytes', 'Result bytes', value => bytes(value)),
         numberField('avg_later', 'Later requests (average)', value => count(value)),
         numberField('carried_bytes', 'Bytes carried (upper bound)', value => bytes(value))],
     }}
-    sessionFields={[textField('tool', 'Tool', row => label(String(row.tool ?? ''))),
+    sessionFields={[{ ...textField('tool', 'Tool', row => label(String(row.tool ?? ''))), action: toolAction(open, label, 'tool') },
       numberField('calls', 'Calls', fmtNum), numberField('output_bytes', 'Result bytes', value => bytes(value)),
       numberField('carried_bytes', 'Bytes carried (upper bound)', value => bytes(value))]} />
 }

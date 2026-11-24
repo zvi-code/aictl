@@ -4,6 +4,7 @@
 import { fmtDur, fmtN, fmtNum, fmtShare, fmtTimes, projectName, toolDisplayName } from '../../design/format'
 import type { BarPart, BarRow } from './Bars'
 import type { Column } from './charts/Columns'
+import type { Opens } from './charts/Open'
 import type { PairedRow } from './charts/PairedBars'
 import type { StripRow } from './charts/MarkStrip'
 import {
@@ -21,6 +22,19 @@ const ratio = (part: number | null, whole: number | null) => part != null && who
 const sum = (values: readonly (number | null | undefined)[]) => values.some(value => value != null)
   ? values.reduce<number>((total, value) => total + (value ?? 0), 0) : null
 const anyRepos = (rows: readonly ({ repos?: readonly RepoSegment[] } | undefined)[]) => rows.some(row => row?.repos?.length)
+
+// ─── What a name opens ────────────────────────────────────────────────────────────────
+// A row that names a coding tool carries its id (`tool`), one that names a tool by its stored name `toolName`, a skill
+// `skill`, a project folder `project`: the view turns these into what the name opens (charts/Open).
+
+/** A row that names a coding tool: its id, for the page narrowed to it. */
+export type ToolNamed = { tool?: string }
+
+/** A data-table field's action: the coding tool whose id the row holds in `key` narrows the page to it. */
+export function toolAction<T extends object>(open: Opens, label: Label, key: string) {
+  const of = (row: T) => { const tool = String((row as Record<string, unknown>)[key] ?? ''); return open.product(tool, label(tool)) }
+  return { label: (row: T) => of(row)?.label ?? '', run: (row: T) => of(row)?.run() }
+}
 
 // ─── Pause tax ───────────────────────────────────────────────────────────────────────
 
@@ -69,19 +83,19 @@ export function pauseColumns(body: PauseBody, tool: PauseTool, measure: PauseMea
 }
 
 /** Per tool, its cost after pauses of 5 minutes or more by recorded cause (100% bars), or per tool and cause by repository. */
-export function pauseCauseRows(body: PauseBody, by: ColourMode, label: Label): BarRow[] {
+export function pauseCauseRows(body: PauseBody, by: ColourMode, label: Label): (BarRow & ToolNamed)[] {
   const all = causeText(body.summary.cause).trim()
   const bars = pauseCauseBars(body)
   if (by === 'repo') {
     return bars.flatMap(bar => bar.causes.filter(row => row.repos?.length).map(row => ({
-      key: `${bar.tool}:${row.cause}`, label: `${label(bar.tool)}: ${CAUSE_LABELS[row.cause]}`,
+      key: `${bar.tool}:${row.cause}`, label: `${label(bar.tool)}: ${CAUSE_LABELS[row.cause]}`, tool: bar.tool,
       sub: `${plural(row.requests, 'request')} (${fmtNum(row.priced)} priced)`, total: money(row.cost_usd),
       parts: repoParts(row.repos, 'cost_usd', body.repo_order, value => money(value), `${label(bar.tool)}, ${CAUSE_LABELS[row.cause]}, cost`,
         'cost after pauses with this cause', pauseCauseHover(row, bar.total, label)),
     })))
   }
   return bars.map(bar => ({
-    key: bar.tool, label: label(bar.tool), sub: plural(bar.requests, 'request'), total: money(bar.total),
+    key: bar.tool, label: label(bar.tool), tool: bar.tool, sub: plural(bar.requests, 'request'), total: money(bar.total),
     parts: bar.causes.map(row => ({
       key: row.cause, label: CAUSE_LABELS[row.cause], value: row.cost_usd, tone: CAUSE_TONE[row.cause],
       text: `${money(row.cost_usd)} · ${share(row.share)}`, hover: [pauseCauseHover(row, bar.total, label), all].filter(Boolean).join(' '),
@@ -97,7 +111,7 @@ export function pauseTotalsText(body: PauseBody) {
 }
 
 /** Per tool: measured cost after pauses of 5 minutes or more, beside the estimate (not measured), on one scale. */
-export function pauseEstimateRows(body: PauseBody, by: ColourMode, label: Label): PairedRow[] {
+export function pauseEstimateRows(body: PauseBody, by: ColourMode, label: Label): (PairedRow & ToolNamed)[] {
   const totals = pauseTotalsText(body)
   return body.tools.filter(tool => tool.cache_reported && pauseEstimate(tool).requests > 0).map(tool => {
     const e = pauseEstimate(tool)
@@ -106,7 +120,7 @@ export function pauseEstimateRows(body: PauseBody, by: ColourMode, label: Label)
     const measured = `${pauseMeasuredHover(tool, label)} ${totals}`
     const estimate = `${pauseEstimateHover(tool, label)} ${totals}`
     return {
-      key: tool.tool, label: label(tool.tool), sub: `${plural(e.requests, 'request')} · estimate ${fmtNum(e.priced)} × ${money(e.average)}`,
+      key: tool.tool, label: label(tool.tool), tool: tool.tool, sub: `${plural(e.requests, 'request')} · estimate ${fmtNum(e.priced)} × ${money(e.average)}`,
       cells: [
         { total: money(e.cost), parts: repos?.length
           ? repoParts(repos, 'cost_usd', body.repo_order, value => money(value), `${name}, measured cost`,
@@ -122,12 +136,12 @@ export function pauseEstimateRows(body: PauseBody, by: ColourMode, label: Label)
 }
 
 /** The projects with the largest measured cost minus the estimate after long pauses, every other project summed. */
-export function pauseProjectRows(body: PauseBody, by: ColourMode): BarRow[] {
+export function pauseProjectRows(body: PauseBody, by: ColourMode): (BarRow & { project?: string })[] {
   const split = pauseProjects(body)
   const repo = by === 'repo' && split.top.some(row => row.repos.length)
   return [
-    ...split.top.map((row): BarRow => ({
-      key: row.project, label: projectName(row.project), title: row.project, sub: `${plural(row.sessions, 'session')} · ${plural(row.requests, 'request')}`,
+    ...split.top.map((row): BarRow & { project?: string } => ({
+      key: row.project, label: projectName(row.project), title: row.project, project: row.project, sub: `${plural(row.sessions, 'session')} · ${plural(row.requests, 'request')}`,
       total: money(row.extra), parts: repo && row.repos.length ? repoParts(row.repos, 'extra_usd', body.repo_order, value => money(value),
         `${projectName(row.project)}, measured cost minus the estimate`, 'measured cost minus the estimate', pauseProjectHover(row, 0))
         : [{ key: 'difference', label: 'measured minus estimate', value: row.extra, tone: 1, text: money(row.extra), hover: pauseProjectHover(row, 0) }],
@@ -140,11 +154,11 @@ export function pauseProjectRows(body: PauseBody, by: ColourMode): BarRow[] {
 }
 
 /** The calls still running through a pause of 5 minutes or more, by the cost of the requests after those pauses. */
-export function pauseCallRows(body: PauseBody, by: ColourMode, label: Label): BarRow[] {
+export function pauseCallRows(body: PauseBody, by: ColourMode, label: Label): (BarRow & { toolName: string })[] {
   return (body.cause_tools ?? []).map((row, i) => {
     const name = `${row.tool_name ?? 'unnamed call'}${row.program ? ` (${row.program})` : ''}`
     return {
-      key: `${row.tool}:${row.tool_name ?? ''}:${row.program ?? ''}:${i}`, label: name,
+      key: `${row.tool}:${row.tool_name ?? ''}:${row.program ?? ''}:${i}`, label: name, toolName: row.tool_name ?? '',
       sub: `${label(row.tool)} · ${plural(row.requests, 'pause')} · ran ${fmtDur(row.p50_call_s)} median, ${fmtDur(row.max_call_s)} at most`,
       total: money(row.cost_usd),
       parts: by === 'repo' && row.repos?.length ? repoParts(row.repos, 'cost_usd', body.repo_order, value => money(value),
@@ -191,12 +205,12 @@ function carryCell(body: CarryBody, row: CarrySizes, of: 'output' | 'carried', b
 }
 
 /** Per tool name (the 10 with the largest estimate): result bytes beside the bytes sent again, each lane on its own scale. */
-export function carryNameRows(body: CarryBody, by: ColourMode, label: Label): PairedRow[] {
+export function carryNameRows(body: CarryBody, by: ColourMode, label: Label): (PairedRow & { toolName: string })[] {
   const totals = carryTotalsText(body)
   return body.tool_names.map(row => {
     const name = `${toolDisplayName(row.tool_name)} (${label(row.tool)})`
     return {
-      key: `${row.tool}:${row.tool_name}`, label: toolDisplayName(row.tool_name),
+      key: `${row.tool}:${row.tool_name}`, label: toolDisplayName(row.tool_name), toolName: row.tool_name,
       sub: `${label(row.tool)} · ${plural(row.calls, 'call')} · ≈ ${count(row.avg_later_requests)} later requests`,
       cells: [carryCell(body, row, 'output', by, name, carryHover(row, label)),
         carryCell(body, row, 'carried', by, name, `${carryHover(row, label)} ${totals}`)],
@@ -205,10 +219,10 @@ export function carryNameRows(body: CarryBody, by: ColourMode, label: Label): Pa
 }
 
 /** Per tool: result bytes beside the bytes sent again; a tool that reports no result size is a row with no bar. */
-export function carryToolRows(body: CarryBody, by: ColourMode, label: Label): PairedRow[] {
+export function carryToolRows(body: CarryBody, by: ColourMode, label: Label): (PairedRow & ToolNamed)[] {
   const totals = carryTotalsText(body)
   return body.tools.map(row => ({
-    key: row.tool, label: label(row.tool), sub: `${fmtNum(row.reported)} of ${plural(row.calls, 'call')} with a size`,
+    key: row.tool, label: label(row.tool), tool: row.tool, sub: `${fmtNum(row.reported)} of ${plural(row.calls, 'call')} with a size`,
     cells: [carryCell(body, row, 'output', by, label(row.tool), carryToolHover(row, label)),
       carryCell(body, row, 'carried', by, label(row.tool), `${carryToolHover(row, label)} ${totals}`)],
   }))
@@ -272,9 +286,9 @@ export function contextColumns(body: ContextBody, tool: ContextTool, of: 'reques
 }
 
 /** Per tool with token counts: its median and 90th percentile context on one axis of tokens. */
-export function contextStripRows(body: ContextBody, by: ColourMode, label: Label): StripRow[] {
+export function contextStripRows(body: ContextBody, by: ColourMode, label: Label): (StripRow & ToolNamed)[] {
   return body.tools.filter(tool => tool.reported).map(tool => ({
-    key: tool.tool, label: label(tool.tool), sub: plural(tool.reported, 'request'),
+    key: tool.tool, label: label(tool.tool), tool: tool.tool, sub: plural(tool.reported, 'request'),
     total: `${tool.p50_context == null ? 'not reported' : fmtN(tool.p50_context)} · ${tool.p90_context == null ? 'not reported' : fmtN(tool.p90_context)}`,
     marks: (['p50', 'p90'] as const).map(which => {
       const value = which === 'p50' ? tool.p50_context : tool.p90_context
@@ -285,13 +299,13 @@ export function contextStripRows(body: ContextBody, by: ColourMode, label: Label
 }
 
 /** Per tool: its small steps (under the output limit, no thinking time); a segment per repository when `by` is repo. */
-export function contextSmallRows(body: ContextBody, by: ColourMode, label: Label): BarRow[] {
+export function contextSmallRows(body: ContextBody, by: ColourMode, label: Label): (BarRow & ToolNamed)[] {
   const s = body.summary
   const all = `All tools: ${count(s.small_requests)} small steps, ${money(s.small_cost_usd)} at list price.`
   return body.tools.map(tool => {
     const hover = `${smallStepHover(tool, label)} ${all}`
     return {
-      key: tool.tool, label: label(tool.tool),
+      key: tool.tool, label: label(tool.tool), tool: tool.tool,
       total: tool.small_requests == null ? 'not reported' : `${plural(tool.small_requests, 'request')} · ${money(tool.small_cost_usd)}`,
       parts: tool.small_requests == null ? [] : by === 'repo' && tool.small_repos?.length
         ? repoPartsWith(tool.small_repos, 'small_requests', body.repo_order, value => plural(value, 'request'),
@@ -319,14 +333,14 @@ export const fixedSplit = (body: FixedBody) => anyRepos([...body.tools, ...body.
  * Per tool, its average fixed context per session stacked by kind on one scale; or, coloured by repository, per tool its
  * average in a segment per repository, then each kind's average the same way (a repository's tokens / all the tool's sessions).
  */
-export function fixedKindRows(body: FixedBody, by: ColourMode, label: Label): BarRow[] {
+export function fixedKindRows(body: FixedBody, by: ColourMode, label: Label): (BarRow & ToolNamed)[] {
   if (by === 'repo') {
     return body.tools.filter(tool => tool.repos?.length).flatMap(tool => [
-      { key: tool.tool, label: label(tool.tool), sub: `all kinds · ${plural(tool.sessions, 'session')}`, total: `average ${tokens(tool.avg_tokens)}`,
+      { key: tool.tool, label: label(tool.tool), tool: tool.tool, sub: `all kinds · ${plural(tool.sessions, 'session')}`, total: `average ${tokens(tool.avg_tokens)}`,
         parts: repoPartsWith(tool.repos, 'avg_tokens', body.repo_order, value => tokens(value), `${label(tool.tool)}, average fixed context`,
           'average fixed context', fixedToolHover(tool, label), segment => fixedRepoMore(tool, segment)) },
       ...tool.kinds.filter(cell => cell.reported && cell.repos?.length).map(cell => ({
-        key: `${tool.tool}:${cell.kind}`, label: `${label(tool.tool)}: ${FIXED_LABELS[cell.kind]}`, total: `average ${tokens(cell.avg_tokens)}`,
+        key: `${tool.tool}:${cell.kind}`, label: `${label(tool.tool)}: ${FIXED_LABELS[cell.kind]}`, tool: tool.tool, total: `average ${tokens(cell.avg_tokens)}`,
         parts: repoPartsWith(cell.repos, 'avg_tokens', body.repo_order, value => tokens(value),
           `${label(tool.tool)}, ${FIXED_LABELS[cell.kind].toLowerCase()}, average per session`, 'average per session',
           `${fixedKindHover(tool, cell, label)} ${notSplitNote('median')}`, segment => fixedRepoMore(tool, segment)),
@@ -336,7 +350,7 @@ export function fixedKindRows(body: FixedBody, by: ColourMode, label: Label): Ba
   return body.tools.map(tool => {
     const missing = tool.kinds.filter(cell => !cell.reported).map(cell => FIXED_LABELS[cell.kind])
     return {
-      key: tool.tool, label: label(tool.tool),
+      key: tool.tool, label: label(tool.tool), tool: tool.tool,
       sub: plural(tool.sessions, 'session') + (tool.estimated ? ' · estimated' : '') +
         (missing.length ? ` · ${NOT_REPORTED}: ${missing.join(', ')}` : ''),
       total: `average ${tokens(tool.avg_tokens)}`,
@@ -349,7 +363,7 @@ export function fixedKindRows(body: FixedBody, by: ColourMode, label: Label): Ba
 }
 
 /** Per tool: the median, 90th percentile and average of a session's whole fixed context on one axis of tokens. */
-export function fixedStripRows(body: FixedBody, by: ColourMode, label: Label): StripRow[] {
+export function fixedStripRows(body: FixedBody, by: ColourMode, label: Label): (StripRow & ToolNamed)[] {
   return body.tools.filter(tool => tool.p50_tokens != null || tool.avg_tokens != null).map(tool => {
     const whole = fixedToolHover(tool, label)
     const marks = [
@@ -358,7 +372,7 @@ export function fixedStripRows(body: FixedBody, by: ColourMode, label: Label): S
       { key: 'avg', label: 'average', value: tool.avg_tokens, shape: 'ring' as const },
     ]
     return {
-      key: tool.tool, label: label(tool.tool), sub: plural(tool.sessions, 'session'),
+      key: tool.tool, label: label(tool.tool), tool: tool.tool, sub: plural(tool.sessions, 'session'),
       total: `${short(tool.p50_tokens) || NOT_REPORTED} · ${short(tool.p90_tokens) || NOT_REPORTED}`,
       marks: marks.map(mark => ({ ...mark, text: tokens(mark.value),
         hover: `${label(tool.tool)}, ${mark.label} fixed context per session: ${tokens(mark.value)}${tool.estimated ? ' (estimated)' : ''}. ` +
@@ -370,10 +384,10 @@ export function fixedStripRows(body: FixedBody, by: ColourMode, label: Label): S
 const unsplit = (on: boolean, hover: string) => on ? `${hover} ${NOT_SPLIT}` : hover
 
 /** Per tool reporting its skill listing: the listing tokens of the skills used and not used in the period (100%). */
-export function fixedListingRows(body: FixedBody, by: ColourMode, label: Label): BarRow[] {
+export function fixedListingRows(body: FixedBody, by: ColourMode, label: Label): (BarRow & ToolNamed)[] {
   const repo = by === 'repo'
   return body.skills.filter(row => row.listing_tokens != null).map(row => ({
-    key: row.tool, label: label(row.tool), sub: `${count(row.used)} of ${count(row.listed)} skills used`, total: tokens(row.listing_tokens),
+    key: row.tool, label: label(row.tool), tool: row.tool, sub: `${count(row.used)} of ${count(row.listed)} skills used`, total: tokens(row.listing_tokens),
     parts: [
       { key: 'used', label: 'skills used', value: row.listing_tokens! - (row.unused_tokens ?? 0), tone: 2,
         text: short(row.listing_tokens! - (row.unused_tokens ?? 0)), hover: unsplit(repo, fixedListingHover(row, 'used', label)) },
@@ -393,9 +407,9 @@ export function fixedFileRows(body: FixedBody, by: ColourMode, label: Label): Ba
   }))
 }
 
-export function fixedSkillRows(body: FixedBody, by: ColourMode, label: Label): BarRow[] {
+export function fixedSkillRows(body: FixedBody, by: ColourMode, label: Label): (BarRow & { skill: string })[] {
   return body.top_skills.map(row => ({
-    key: `${row.tool}:${row.name}`, label: row.name, sub: `${label(row.tool)} · ${plural(row.sessions, 'session')}`,
+    key: `${row.tool}:${row.name}`, label: row.name, skill: row.name, sub: `${label(row.tool)} · ${plural(row.sessions, 'session')}`,
     total: `${tokens(row.tokens)} · ${row.uses ? plural(row.uses, 'use') : 'no use in the period'}`,
     parts: [{ key: 'tokens', label: 'listing tokens', value: row.tokens, tone: row.uses && by !== 'repo' ? 1 : 7, text: short(row.tokens),
       hover: unsplit(by === 'repo', fixedSkillHover(row, label)) }],

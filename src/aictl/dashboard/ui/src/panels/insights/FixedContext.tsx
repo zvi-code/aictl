@@ -1,18 +1,29 @@
-import { Show, untrack } from 'solid-js'
+import { For, Show, untrack } from 'solid-js'
 import { fmtN, fmtNum } from '../../design/format'
 import { Bars } from './Bars'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
 import { MarkStrip } from './charts/MarkStrip'
+import { Name, opening, opens, type Opens } from './charts/Open'
 import charts from './charts/Charts.module.css'
 import {
-  FIXED_LEGEND, fixedFileRows, fixedKindRows, fixedLine, fixedListingRows, fixedSkillRows, fixedSplit, fixedStripRows,
+  FIXED_LEGEND, fixedFileRows, fixedKindRows, fixedLine, fixedListingRows, fixedSkillRows, fixedSplit, fixedStripRows, toolAction,
+  type ToolNamed,
 } from './costModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { FIXED_LABELS, fixedHero, NOT_REPORTED, share, tokens, toolLabel, type FixedBody, type Label } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
 import { hasOther } from './repoSplit'
 
-function Visual(props: { body: FixedBody; label: Label; by: ColourMode; setBy: (by: ColourMode) => void }) {
+/** What the names open: a coding tool narrows the page to it, a skill opens its detail. A file is drawn as the last part of
+ * its path only, so it has no path to open and stays text. */
+const links = (open: Opens, label: Label) => ({
+  product: (tool: string) => open.product(tool, label(tool)),
+  tools: <T extends ToolNamed>(rows: T[]) => opening(rows, row => row.tool ? open.product(row.tool, label(row.tool)) : undefined),
+  skills: <T extends { skill: string }>(rows: T[]) => opening(rows, row => open.skill(row.skill)),
+})
+type Links = ReturnType<typeof links>
+
+function Visual(props: { body: FixedBody; label: Label; link: Links; by: ColourMode; setBy: (by: ColourMode) => void }) {
   const split = () => fixedSplit(props.body)
   const by = (): ColourMode => split() ? props.by : 'parts'
   const repo = () => by() === 'repo'
@@ -26,17 +37,17 @@ function Visual(props: { body: FixedBody; label: Label; by: ColourMode; setBy: (
       legend={repo() ? undefined : FIXED_LEGEND}
       axis={repo() ? 'Estimated tokens per session, one scale from 0; a segment per repository (its tokens / all the tool\'s sessions); ' +
         'under each tool its kinds.' : 'Estimated tokens per session, one scale from 0 for every tool.'}
-      rows={fixedKindRows(props.body, by(), props.label)} />
+      rows={props.link.tools(fixedKindRows(props.body, by(), props.label))} />
     <div class={charts.gridWide}>
       <MarkStrip name="fixed-spread" title="Fixed context per session: median, 90th percentile, average"
         axis={`Estimated tokens, one axis from 0 for every tool; beside it the median and 90th percentile${unsplit()}.`}
         legend={[{ label: 'Median', shape: 'dot' }, { label: '90th percentile', shape: 'tick' }, { label: 'Average', shape: 'ring' }]}
-        format={value => fmtN(value)} rows={fixedStripRows(props.body, by(), props.label)} />
+        format={value => fmtN(value)} rows={props.link.tools(fixedStripRows(props.body, by(), props.label))} />
       <Show when={fixedListingRows(props.body, by(), props.label).length}>
         <Bars name="fixed-listing" title="Skill listing: skills used and not used" scale="whole"
           legend={[{ label: 'Skills used', tone: 2 }, { label: 'Skills not used', tone: 7 }]}
           axis={`Bar: the tool's listing tokens in the period (100%, estimated)${unsplit()}.`}
-          rows={fixedListingRows(props.body, by(), props.label)} />
+          rows={props.link.tools(fixedListingRows(props.body, by(), props.label))} />
       </Show>
       <Show when={props.body.files.length} fallback={<p class={charts.note}>No instruction or memory file in this period.</p>}>
         <Bars name="fixed-files" title="Instruction and memory files with the most tokens"
@@ -44,12 +55,12 @@ function Visual(props: { body: FixedBody; label: Label; by: ColourMode; setBy: (
       </Show>
       <Show when={props.body.top_skills.length} fallback={<p class={charts.note}>No tool in this period reports the skills it lists.</p>}>
         <Bars name="fixed-skills" title={repo() ? 'Skills by listing tokens' : 'Skills by listing tokens (grey: no use in the period)'}
-          axis={`Estimated listing tokens in all sessions, one scale from 0${unsplit()}.`} rows={fixedSkillRows(props.body, by(), props.label)} />
+          axis={`Estimated listing tokens in all sessions, one scale from 0${unsplit()}.`} rows={props.link.skills(fixedSkillRows(props.body, by(), props.label))} />
       </Show>
     </div>
     <Show when={props.body.summary.listing_not_reported.length}>
-      <p class={charts.note} data-listing-not-reported>Skill listing {NOT_REPORTED} by {props.body.summary.listing_not_reported
-        .map(props.label).join(', ')}; their uses are not compared.</p>
+      <p class={charts.note} data-listing-not-reported>Skill listing {NOT_REPORTED} by <For each={props.body.summary.listing_not_reported}>
+        {(tool, i) => <>{i() ? ', ' : ''}<Name text={props.label(tool)} open={props.link.product(tool)} /></>}</For>; their uses are not compared.</p>
     </Show>
   </>
 }
@@ -60,10 +71,12 @@ export default function FixedContext(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   const [by, setBy] = useColourBy()
+  const open = opens(ctx)
+  const link = links(open, label)
   return <InsightCard<FixedBody> {...props} card="fixed" tab="context"
     hero={fixedHero}
     finding={fixedLine}
-    visual={body => <Visual body={body} label={label} by={by()} setBy={setBy} />}
+    visual={body => <Visual body={body} label={label} link={link} by={by()} setBy={setBy} />}
     note={'A session\'s fixed context is what the tool puts in its main agent\'s context before any work: memory and ' +
       'instruction files, the skill listing, MCP instructions, custom agents, the deferred tool list and the other system ' +
       'prompt sections. Each item counts once, as its newest record; an item removed, or recorded before a later reset of ' +
@@ -79,17 +92,17 @@ export default function FixedContext(props: CardProps) {
     table={{
       label: 'Fixed context by tool and kind',
       rows: body => body.tools.flatMap(tool => tool.kinds.map((cell): Row => ({
-        id: `${tool.tool}:${cell.kind}`, tool: label(tool.tool), kind: FIXED_LABELS[cell.kind],
+        id: `${tool.tool}:${cell.kind}`, tool: label(tool.tool), tool_id: tool.tool, kind: FIXED_LABELS[cell.kind],
         sessions: cell.sessions ?? undefined, session_share: cell.session_share ?? undefined, p50: cell.p50_tokens ?? undefined,
         avg: cell.avg_tokens ?? undefined, items: cell.p50_items ?? undefined,
       }))),
-      fields: [textField('tool', 'Tool'), textField('kind', 'Kind'), numberField('sessions', 'Sessions that report it', fmtNum),
+      fields: [{ ...textField('tool', 'Tool'), action: toolAction<Row>(open, label, 'tool_id') }, textField('kind', 'Kind'), numberField('sessions', 'Sessions that report it', fmtNum),
         numberField('session_share', 'Share of the tool\'s sessions', value => share(value)),
         numberField('p50', 'Median tokens (estimated)', value => tokens(value)),
         numberField('avg', 'Average per session (estimated)', value => tokens(value)),
         numberField('items', 'Median items', fmtNum)],
     }}
-    sessionFields={[textField('tool', 'Tool', row => label(String(row.tool ?? ''))),
+    sessionFields={[{ ...textField('tool', 'Tool', row => label(String(row.tool ?? ''))), action: toolAction(open, label, 'tool') },
       numberField('tokens', 'Fixed context (estimated tokens)', fmtNum),
       numberField('skills', 'Skills listed', fmtNum)]} />
 }

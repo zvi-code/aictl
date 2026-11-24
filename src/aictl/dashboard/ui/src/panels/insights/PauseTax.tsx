@@ -3,10 +3,12 @@ import { fmtNum } from '../../design/format'
 import { Bars } from './Bars'
 import { Columns, toneClass } from './charts/Columns'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { Name, opening, opens, type Opens } from './charts/Open'
 import { PairedBars } from './charts/PairedBars'
 import charts from './charts/Charts.module.css'
 import {
   CAUSE_TONE, PAUSE_LEGEND, pauseCallRows, pauseCauseRows, pauseColumns, pauseEstimateRows, pauseLine, pauseProjectRows, pauseSplit,
+  toolAction, type ToolNamed,
 } from './costModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
@@ -18,7 +20,16 @@ import { hasOther } from './repoSplit'
 const REPO_AXIS = 'a segment per repository'
 const perRepo = (on: boolean) => on ? `; ${REPO_AXIS}` : ''
 
-function Visual(props: { body: PauseBody; label: Label; by: ColourMode; setBy: (by: ColourMode) => void }) {
+/** What the names open: a coding tool narrows the page, a project narrows it to the project, a call opens its tool. */
+const links = (open: Opens, label: Label) => ({
+  product: (tool: string) => open.product(tool, label(tool)),
+  tools: <T extends ToolNamed>(rows: T[]) => opening(rows, row => row.tool ? open.product(row.tool, label(row.tool)) : undefined),
+  projects: <T extends { project?: string }>(rows: T[]) => opening(rows, row => row.project ? open.project(row.project) : undefined),
+  calls: <T extends { toolName: string }>(rows: T[]) => opening(rows, row => open.tool(row.toolName)),
+})
+type Links = ReturnType<typeof links>
+
+function Visual(props: { body: PauseBody; label: Label; link: Links; by: ColourMode; setBy: (by: ColourMode) => void }) {
   const split = () => pauseSplit(props.body)
   const by = (): ColourMode => split() ? props.by : 'parts'
   const repo = () => by() === 'repo'
@@ -35,7 +46,7 @@ function Visual(props: { body: PauseBody; label: Label; by: ColourMode; setBy: (
         ...(props.body.projects ?? []), ...(props.body.causes ?? []), ...(props.body.cause_tools ?? [])])} />
     </Show>
     <For each={props.body.tools}>{tool => <section class={charts.group} data-tool={tool.tool} aria-label={props.label(tool.tool)}>
-      <h2 class={charts.groupTitle}>{props.label(tool.tool)}</h2>
+      <h2 class={charts.groupTitle}><Name text={props.label(tool.tool)} open={props.link.product(tool.tool)} /></h2>
       <Show when={!tool.cache_reported}><p class={charts.note} data-no-cache>This source reports no cache writes.</p></Show>
       <div class={charts.grid}>
         <Columns name={`pause-requests-${tool.tool}`} title="Requests by pause length"
@@ -54,22 +65,22 @@ function Visual(props: { body: PauseBody; label: Label; by: ColourMode; setBy: (
         <Bars name="pause-causes" title="Cost after pauses of 5 min or more, by recorded cause" scale={repo() ? 'shared' : 'whole'}
           legend={repo() ? undefined : shownCauses().map(cause => ({ label: CAUSE_LABELS[cause], tone: CAUSE_TONE[cause] }))}
           axis={repo() ? `Cost at list price, one scale from $0${perRepo(true)}.` : 'Bar: the tool\'s cost after these pauses (100%).'}
-          rows={causes()} />
+          rows={props.link.tools(causes())} />
       </Show>
       <PairedBars name="pause-estimate" title="Cost after pauses of 5 min or more: measured and estimate"
         lanes={[{ title: 'Measured' }, { title: 'Estimate, not measured', estimate: true }]} scale="shared"
         axis={'Cost at list price, one scale from $0. Estimate: priced requests × the tool\'s average cost per request after a ' +
           `pause under 1 min${perRepo(repo())}.`}
-        rows={pauseEstimateRows(props.body, by(), props.label)} />
+        rows={props.link.tools(pauseEstimateRows(props.body, by(), props.label))} />
       <Show when={pauseProjects(props.body).top.length}>
         <Bars name="pause-projects" title="Measured cost minus the estimate, per project"
           axis={`Dollars at list price, one scale from $0; the five largest projects, the rest summed${perRepo(repo())}.`}
-          rows={pauseProjectRows(props.body, by())} />
+          rows={props.link.projects(pauseProjectRows(props.body, by()))} />
       </Show>
       <Show when={props.body.cause_tools?.length}>
         <Bars name="pause-calls" title="Calls still running through a long pause"
           axis={`Cost at list price of the requests after those pauses, one scale from $0${perRepo(repo())}.`}
-          rows={pauseCallRows(props.body, by(), props.label)} />
+          rows={props.link.calls(pauseCallRows(props.body, by(), props.label))} />
       </Show>
     </div>
   </>
@@ -81,10 +92,13 @@ export default function PauseTax(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   const [by, setBy] = useColourBy()
+  const open = opens(ctx)
+  const link = links(open, label)
+  const product = toolAction<Row>(open, label, 'tool_id')
   return <InsightCard<PauseBody> {...props} card="pause" tab="flow"
     hero={pauseHero}
     finding={pauseLine}
-    visual={body => <Visual body={body} label={label} by={by()} setBy={setBy} />}
+    visual={body => <Visual body={body} label={label} link={link} by={by()} setBy={setBy} />}
     note={'Pause: from the end of the previous request of the same session and agent to the start of this one; buckets are under ' +
       '1 minute, 1 to under 5 minutes, 5 to under 60 minutes and 60 minutes or more. The prompt cache of these tools expires ' +
       'after 5 minutes, so the columns of pauses of 5 minutes or more have their own colour. Only requests in the period count, ' +
@@ -101,16 +115,16 @@ export default function PauseTax(props: CardProps) {
     table={{
       label: 'Pause tax by tool and pause',
       rows: body => body.tools.flatMap(tool => tool.buckets.map((cell): Row => ({
-        id: `${tool.tool}:${cell.bucket}`, tool: label(tool.tool), pause: BUCKET_LABELS[cell.bucket], requests: cell.requests,
+        id: `${tool.tool}:${cell.bucket}`, tool: label(tool.tool), tool_id: tool.tool, pause: BUCKET_LABELS[cell.bucket], requests: cell.requests,
         cache_hit_share: cell.cache_hit_share ?? undefined, avg_cost_usd: cell.avg_cost_usd ?? undefined,
         cost_usd: cell.cost_usd ?? undefined, cache: tool.cache_reported ? 'reported' : 'not reported',
       }))),
-      fields: [textField('tool', 'Tool'), textField('pause', 'Pause'), numberField('requests', 'Requests', fmtNum),
+      fields: [{ ...textField('tool', 'Tool'), action: product }, textField('pause', 'Pause'), numberField('requests', 'Requests', fmtNum),
         numberField('cache_hit_share', 'Cache hits (share of input)', value => share(value)),
         numberField('avg_cost_usd', 'Average cost (list price)', value => money(value)),
         numberField('cost_usd', 'Cost (list price)', value => money(value)), textField('cache', 'Cache writes')],
     }}
-    sessionFields={[textField('tool', 'Tool', row => label(String(row.tool ?? ''))),
+    sessionFields={[{ ...textField('tool', 'Tool', row => label(String(row.tool ?? ''))), action: toolAction(open, label, 'tool') },
       numberField('requests', 'Requests after a pause of 5 min or more', fmtNum),
       numberField('cost_usd', 'Their cost (list price)', value => money(value))]} />
 }

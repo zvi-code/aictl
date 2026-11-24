@@ -802,8 +802,8 @@ describe('INS-NAME · the subagent sessions and every card session table name a 
     const names = [...card(host, 'subagents').querySelectorAll('[data-chart="subagent-sessions"] [data-row] > span:first-child')]
     expect(names.map(name => name.firstChild!.textContent)).toEqual(['claude-code · Fix the login page · on feature/login',
       'claude-code · fedcba98'])
-    expect(names[0].getAttribute('title')).toBe('Fix the login page\nBranch: feature/login\nFolder: /work/app\nNode: host-b\n' +
-      'Session id: abcdef12-3456-7890-abcd-ef1234567890')
+    // The name opens the session, so its hover is what a click does (Bars draws an opening name's label, not the row title).
+    expect(names[0].querySelector('[data-open]')!.getAttribute('title')).toBe('Open session Fix the login page')
     const sessions = card(host, 'subagents').querySelector<HTMLDetailsElement>('[data-sessions]')!
     sessions.open = true
     flush()
