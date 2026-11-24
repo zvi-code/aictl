@@ -1,0 +1,24 @@
+// The session files a node's transcript reader last reported on disk (session_sources), one row per
+// node, tool and session. A daemon writes the row of every file it finds after it starts, so a row
+// indexed before seen_since (the node's daemon start) is a file that daemon did not find. Pages by after_row.
+declare query_parameters(all_nodes:bool=true, requested_node:string='', seen_since:real=0.0, after_row:string='',
+    row_limit:long);
+let cursor_row = parse_json(after_row);
+session_sources
+| where all_nodes or node_id == requested_node
+| summarize arg_max(_v, *) by ['project'], node_id, source_file
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| where indexed_at >= seen_since
+| summarize files=count(), size_bytes=sum(size_bytes), bytes_read=sum(bytes_read),
+    complete=countif(status == 'complete'), reading=countif(status == 'reading'),
+    waiting=countif(status == 'waiting'), outside_window=countif(status == 'outside_window'),
+    newest=max(mtime), oldest=min(mtime), indexed_at=max(indexed_at), sample_file=min(source_file)
+    by node_id, tool, session_id
+| where isempty(after_row) or case(
+    node_id != tostring(cursor_row[0]), strcmp(node_id, tostring(cursor_row[0])) > 0,
+    tool != tostring(cursor_row[1]), strcmp(tool, tostring(cursor_row[1])) > 0,
+    strcmp(session_id, tostring(cursor_row[2])) > 0)
+| order by node_id asc, tool asc, session_id asc
+| take row_limit
+| project node_id, tool, session_id, files, size_bytes, bytes_read, complete, reading, waiting, outside_window,
+    newest, oldest, indexed_at, sample_file, _page_cursor=tostring(pack_array(node_id, tool, session_id))

@@ -543,6 +543,28 @@ def reread(ctx, tools, since, sessions, every, dry_run, types):
     _queue_reread(ctx, selection, copilot_store=copilot_store, dry_run=dry_run)
 
 
+@db.command("index")
+@click.option("-r", "--root", "roots", multiple=True, help="Project folder to discover in (repeat for several; default: here)")
+@click.option("--project", "projects", multiple=True, help="Only stored sessions and project folders of this exact project path")
+@click.option("--no-store", is_flag=True, help="Do not read stored sessions: what is on disk only")
+@click.option("--ids", is_flag=True, help="List the session ids of each gap")
+@click.option("--json", "as_json", is_flag=True, help="Print the breakdown as JSON")
+def index_cmd(roots, projects, no_store, ids, as_json):
+    """Everything this node's readers find: tool homes, session locations, projects and context folders,
+    and the sessions on disk against the sessions stored.
+
+    Works with the daemon stopped: the transcript reader's saved read positions give how far each file
+    was read. The Index screen of the dashboard shows the same, live from the running daemon.
+    """
+    from ..index_breakdown import format_text, offline_breakdown
+
+    node = offline_breakdown(roots or ["."], read_store=not no_store, project_filter=projects)
+    if as_json:
+        click.echo(json.dumps(node, indent=1, default=str))
+    else:
+        click.echo(format_text(node, ids=ids))
+
+
 @db.command("reimport-sessions")
 @click.argument("session_ids", nargs=-1)
 @click.option("--resumed", is_flag=True,

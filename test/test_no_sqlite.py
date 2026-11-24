@@ -66,6 +66,7 @@ def _dashboard_requests(root):
         "/api/copilot-sessions": "/api/copilot-sessions",
         "/api/copilot-sessions/{id}": "/api/copilot-sessions/capture-missing-session",
         "/api/board/nodes": "/api/board/nodes?view=health&scope=fleet",
+        "/api/board/index": "/api/board/index",
         "/api/board/machine": "/api/board/machine?scope=fleet",
         "/api/board/agent/kql": "/api/board/agent/kql",
         "/api/board/terminal/events": "/api/board/terminal/events",

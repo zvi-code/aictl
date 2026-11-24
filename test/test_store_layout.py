@@ -956,11 +956,12 @@ def test_every_restart_directory_call_site_goes_through_the_epoch_check():
         "commands/admin.py": "sync_data_epoch after open_store",
         "stores/kusto/maintenance.py": "restart_state / sync_data_epoch",
         "dashboard/ingester_runner.py": "doctor: shows a checkpoint's time, connects to nothing, changes nothing",
+        "index_breakdown.py": "aictl db index: reads the reader's saved positions to show read states, changes nothing",
     }
     users = {str(p.relative_to(root)).replace(os.sep, "/") for p in root.rglob("*.py")
              if "restart_directory(" in p.read_text(encoding="utf-8")}
     assert users <= allowed.keys(), f"new restart_directory callers: {users - allowed.keys()}"
-    for name in users - {"state_file.py", "dashboard/ingester_runner.py"}:
+    for name in users - {"state_file.py", "dashboard/ingester_runner.py", "index_breakdown.py"}:
         assert "sync_data_epoch" in (root / name).read_text(encoding="utf-8") or \
             "restart_state(" in (root / name).read_text(encoding="utf-8"), name
 

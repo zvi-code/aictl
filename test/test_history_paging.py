@@ -263,6 +263,7 @@ BOUNDED = {
     "board.search_hits": "one row per session of the board",
     "board.sessions": "one row per requested session",
     "board.sources": "one row per (tool, source)",
+    "index.snapshot": "one row per node: its newest published index breakdown",
     "context.daily": "one row per node, calendar day, model and tool",
     "context.growth": "one row per node and growth bucket (growth_points)",
     "context.telemetry": "one row per node and tool",

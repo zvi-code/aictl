@@ -166,6 +166,25 @@ class BoardRoutes:
             return
         self._send_body(json.dumps(body).encode("utf-8"), "application/json", cache_control="no-store", cors=False)
 
+    def _serve_board_index(self) -> None:
+        """Everything the daemon found and indexed: this node live, another node or the fleet from the store.
+
+        ``project`` (repeatable) keeps the stored sessions and project folders of those exact project values."""
+        from ..index_breakdown import breakdown
+
+        params = parse_qs(urlparse(self.path).query, keep_blank_values=True)
+        try:
+            scope = parse_scope(params)
+            body = breakdown(self.server, scope, project_filter=[p for p in params.get("project", []) if p and p != "all"])
+        except ScopeError as exc:
+            self._json_response({"error": str(exc), "reason": exc.reason}, status=exc.status)
+            return
+        except Exception as exc:  # noqa: BLE001 — contain a failed read in this request
+            logger.exception("Could not build the index breakdown")
+            self._json_response({"error": f"Could not build the index breakdown: {type(exc).__name__}: {exc}"}, status=503)
+            return
+        self._send_body(json.dumps(body, default=str).encode("utf-8"), "application/json", cache_control="no-store", cors=False)
+
     def _serve_board_agent_kql(self) -> None:
         from .drawer_kql import kql_templates
 

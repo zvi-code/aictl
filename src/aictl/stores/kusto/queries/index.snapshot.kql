@@ -1,0 +1,11 @@
+// The index breakdown each node's daemon publishes (index_breakdown.py): one row per node, the
+// newest version. maintenance_state takes no delete rows.
+declare query_parameters(all_nodes:bool=true, requested_node:string='', row_limit:long);
+maintenance_state
+| where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
+| summarize arg_max(_v, *) by ['project'], node_id, key
+| where not(coalesce(column_ifexists('_deleted', false), false))
+| summarize arg_max(value, text) by node_id
+| order by node_id asc
+| take row_limit
+| project node_id, computed_at=value, text

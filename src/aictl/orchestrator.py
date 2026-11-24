@@ -997,6 +997,12 @@ def start_server(
 
     server.ingesters = start_ingesters(store)
     server.attach_live_ingesters()
+    # Other nodes' Index screens read this node's breakdown from the store.
+    writer = getattr(getattr(store, "history_store", None), "writer", None)
+    if writer is not None:
+        from .index_breakdown import Publisher
+
+        server.index_publisher = Publisher(server, writer).start()
 
     url = f"http://{host}:{port}"
     print(f"  aictl daemon serve — dashboard at {url}", file=sys.stderr)

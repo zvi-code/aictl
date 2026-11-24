@@ -56,6 +56,7 @@ GET_ROUTES = {
     "/api/session-evidence": "_serve_session_evidence",
     "/api/board/nodes": "_serve_board_nodes",
     "/api/board/context": "_serve_board_context",
+    "/api/board/index": "_serve_board_index",
     "/api/board/agent/kql": "_serve_board_agent_kql",
     "/api/board/agent/flow": "_serve_board_agent_flow",
     "/api/board/agent/transcript": "_serve_board_agent_transcript",
@@ -215,7 +216,9 @@ class _DashboardHandler(SessionRoutes, SettingsRoutes, MetricsRoutes, RequestMet
                     self._json_response({"error": str(exc), "reason": exc.reason}, status=exc.status)
                     return
                 if scope.kind != "local":
-                    if path in _SCOPED_BOARD_ROUTES:
+                    if path == "/api/board/index":
+                        self._serve_board_index()
+                    elif path in _SCOPED_BOARD_ROUTES:
                         self._serve_board(path)
                     else:
                         self._json_response({"error": "Available only on This node", "reason": "local_only"}, status=422)

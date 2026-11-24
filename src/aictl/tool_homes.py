@@ -134,7 +134,8 @@ class _Finder:
             return list(self._homes)
 
 
-def _all_homes() -> list[ToolHome]:
+def _named_homes() -> list[ToolHome]:
+    """The homes named now: the default, aictl's environment and the running tool processes."""
     homes: list[ToolHome] = []
     for tool, variable in HOME_VARIABLES.items():
         homes.append(ToolHome(tool, default_home(tool), "default"))
@@ -145,6 +146,17 @@ def _all_homes() -> list[ToolHome]:
         homes += scan_processes()
     except Exception:  # noqa: BLE001 - a failed scan must not stop the readers
         log.debug("tool homes: process scan failed", exc_info=True)
+    return homes
+
+
+def candidates() -> list[ToolHome]:
+    """Every home a source names, before duplicates are merged, with the homes of the known-homes
+    file, also one that no longer exists (the readers skip those). Scans now; uses no cache."""
+    return _named_homes() + [ToolHome(h.tool, h.path, f"known-homes file ({h.found_by})") for h in _load_known()]
+
+
+def _all_homes() -> list[ToolHome]:
+    homes = _named_homes()
     known = _load_known()
     homes += [h for h in known if h.path.is_dir()]
     out: list[ToolHome] = []

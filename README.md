@@ -781,6 +781,7 @@ Details: [how-to](HOWTO.md#find-a-copilot-session-and-its-files).
 | `aictl db retention set CLASS PERIOD` | Keep a class for a period, such as `24h` or `365d` |
 | `aictl db trim-text` | Soft-delete records from text tables for this node |
 | `aictl db reread --all` | Read session files again and store their rows again (`--tool`, `--since`, `--session`, `--dry-run`, `--dry-run --types`). See [Reading the session files again](#reading-the-session-files-again) |
+| `aictl db index` | Everything this node's readers find: tool homes, session locations and how far each file was read, the sessions on disk against the sessions stored (`--ids` lists the gaps), projects and context folders (`--root`, `--project`, `--no-store`, `--json`). Works with the daemon stopped; the dashboard's Index screen shows the same live |
 | `aictl db reimport-sessions --resumed` | Read again only the files of resumed Claude Code sessions and the sessions they replay (or of the sessions named) |
 | `aictl db reset` | Delete this node's stored data and start it again (`--node ID`, `--all-nodes`). Prefer `aictl db migrate` when it applies |
 | `aictl build-ui` | Build the dashboard frontend (npm install + Vite build) |

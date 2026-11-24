@@ -224,6 +224,12 @@ _VIEWS = {
     ),
     "board.activity_facts": ("all_nodes requested_node", "tool fact"),
     "board.sources": ("all_nodes requested_node", "tool source last_ts"),
+    "index.stored_sessions": ("all_nodes requested_node after_row",
+                              "node_id session_id tool source project_path started_at last_activity_at"),
+    "index.disk_sessions": ("all_nodes requested_node seen_since after_row",
+                            "node_id tool session_id files size_bytes bytes_read complete reading waiting outside_window "
+                            "newest oldest indexed_at sample_file"),
+    "index.snapshot": ("all_nodes requested_node", "node_id computed_at text"),
     "prompts.files": (f"{_TIME} restrict_sessions session_keys", "node_id session_id path project_path uses last_ts"),
     "requests.records": (
         f"{_SCOPE} requested_session example_limit",
@@ -391,6 +397,7 @@ _PARAMETER_TYPES = {
     "errors_only": bool,
     "since": float,
     "until": float,
+    "seen_since": float,
     "step": float,
     "min_cost": float,
     "now_ts": float,
@@ -446,6 +453,7 @@ _PAGED_VIEWS = {
     "files.artifacts", "files.inventory", "prompts.page", "requests.long", "sequence.context", "sequence.flow", "sequence.otel",
     "sequence.skills", "sessions.commits", "skills.detail", "skills.window", "tools.activity_rows", "tools.detail",
     "memory.changes", "memory.versions", "memory.recalls", "checkpoints.session", "checkpoints.files", "sessions.config",
+    "index.stored_sessions", "index.disk_sessions",
 }
 
 

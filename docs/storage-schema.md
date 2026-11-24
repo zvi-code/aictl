@@ -2289,20 +2289,22 @@ The catalog of dashboard data points, from `data/datapoint-catalog.yaml` and `da
 
 ### maintenance_state
 
-Defined for maintenance cursors. No current aictl code writes it.
+One row per node and key. Key `index_breakdown`: the node's Index breakdown (tool homes, session locations, the
+sessions on disk against the sessions stored, projects, context folders), published by its daemon every 15
+minutes so that the Index screen of another node can show it. Read by the view `index.snapshot`.
 
 - Key: `project`, `node_id`, `key`
 - Version column: `_v`
 - Tombstone column: none
 - Ingestion: `streaming`
 - Retention class: `metrics` (default 365d)
-- Written by: none in current code
+- Written by: `index_breakdown.Publisher` (the daemon)
 
 | column | type | meaning |
 |---|---|---|
-| `key` | string | meaning not established: no current aictl code writes this table |
-| `value` | real | meaning not established: no current aictl code writes this table |
-| `text` | string | meaning not established: no current aictl code writes this table |
+| `key` | string | What the row holds: `index_breakdown` |
+| `value` | real | When the breakdown was computed (epoch seconds) |
+| `text` | string | The breakdown as JSON, with its session id lists and file lists cut to stay under 700 KB |
 | `project` | string | Part of the key. No current writer sets it |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
