@@ -373,6 +373,38 @@ def fail_low_memory():
     )
 
 
+def test_after_a_memory_refusal_the_probe_stays_in_groups_for_a_while(monkeypatch):
+    from aictl.stores.kusto.live_reader import GROUPED_PROBE_S, _QueryMemoryError
+
+    clock = [1000.0]
+    monkeypatch.setattr("aictl.stores.kusto.live_reader.time.monotonic", lambda: clock[0])
+    reader = SharedKustoReader(SETTINGS, client=FakeSDK(), tables={"sessions": TABLE}, table_names=("sessions",),
+                               config=ReaderConfig(tables_per_probe=2))
+    names = ["a", "b", "c"]
+    asked: list[object] = []
+
+    def probe_all(tables, previews):
+        asked.append("all")
+        raise _QueryMemoryError("E_LOW_MEMORY_CONDITION")
+
+    reader._frontier = dict.fromkeys(names, "behind")  # every table has rows to look for
+    monkeypatch.setattr(reader, "_due_tables", lambda now: (names, []))
+    monkeypatch.setattr(reader, "_probe_all", probe_all)
+    monkeypatch.setattr(reader, "_read_cursor", lambda: ("upper", "now"))
+    monkeypatch.setattr(reader, "_detect", lambda group, upper: asked.append(tuple(group)))
+
+    assert reader._tick_step()
+    assert asked == ["all", ("a", "b"), ("c",)]  # refused in one query, so probed in groups
+    del asked[:]
+    clock[0] += reader.config.idle_poll_s
+    assert reader._tick_step()
+    assert asked == [("a", "b"), ("c",)]  # the refused query is not asked again on the next poll
+    del asked[:]
+    clock[0] += GROUPED_PROBE_S
+    assert reader._tick_step()
+    assert asked[0] == "all"  # after a while the one-query probe is tried again
+
+
 def test_memory_failure_splits_batch_backs_off_one_table_and_lets_others_pass_watermark(monkeypatch):
     clock = [1000.0]
     monkeypatch.setattr("aictl.stores.kusto.live_reader.time.monotonic", lambda: clock[0])

@@ -67,3 +67,15 @@ def log_failure(
         body,
         exc_info=(type(error), error, error.__traceback__),
     )
+
+
+def log_memory_refusal(*, cluster: str, database: str, client_request_id: str | None, elapsed_s: float) -> None:
+    """One line for a query the cluster refused for lack of memory (E_LOW_MEMORY_CONDITION, a memory budget).
+
+    The refusal says how loaded the cluster is, not that the request is wrong: its caller repeats it in smaller
+    parts or reports a narrower read. The client request ID finds the query in ``.show queries``."""
+    log.warning(
+        "Kusto had no memory for a query after %.3f s; the reader repeats it in smaller parts. "
+        "Cluster: %s, database: %s, client request ID: %s",
+        elapsed_s, cluster, database, client_request_id or "unavailable",
+    )

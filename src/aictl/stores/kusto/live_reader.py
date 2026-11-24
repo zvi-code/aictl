@@ -33,6 +33,8 @@ from .client import ROWID, VERSION, KustoClientFactory, Result, kql_literal, quo
 from .tables import TABLES, Table
 
 DELETED = "_deleted"
+# How long table-mode polls probe in groups after the cluster refused the one-query probe for lack of memory.
+GROUPED_PROBE_S = 300.0
 NODE = "node_id"
 
 # Tables this node's daemon writes on a timer whether or not any AI tool is working: a change in
@@ -337,6 +339,8 @@ class SharedKustoReader:
         # Table mode: when the next probe and reconciliation are due, and until when the store is busy.
         self._tick_next = 0.0
         self._busy_until = 0.0
+        # Until when every table-mode poll probes in groups: the cluster refused the one-query probe for memory.
+        self._grouped_until = 0.0
         self._slow_next = self._background_next = self._local_next = 0.0
         self._still = False
         # Until when each table this process wrote to is probed (and previewed) on every poll.
@@ -1060,10 +1064,16 @@ class SharedKustoReader:
                 self._tick_next = time.monotonic() + (self.config.busy_poll_s if busy else self.config.idle_poll_s)
                 return True
         before = self._last_cursor
+        grouped = time.monotonic() < self._grouped_until
         try:
+            if grouped:
+                raise _QueryMemoryError("The cluster refused the one-query probe a short while ago")
             self._probe_all(names, previews)
         except _QueryMemoryError:
-            # Too large for one query: capture the cursor alone and probe in groups this time.
+            # Too large for one query: capture the cursor alone and probe in groups, now and for the next
+            # GROUPED_PROBE_S, so a cluster short of memory is not asked the refused query again on every poll.
+            if not grouped:
+                self._grouped_until = time.monotonic() + GROUPED_PROBE_S
             upper, anchor = self._read_cursor()
             with self._lock:
                 self._last_cursor, self._server_now = upper, anchor

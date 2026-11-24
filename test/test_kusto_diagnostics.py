@@ -248,3 +248,26 @@ def test_retry_attempts_use_distinct_correlatable_request_ids():
             client.execute("history", "events | count", properties)
     assert len(set(seen)) == 2
     assert all(request_id.startswith("KPC.aictl;") for request_id in seen)
+
+
+def test_a_memory_refusal_is_one_line_without_the_query_or_a_traceback(caplog):
+    # A reader answers a refusal for memory itself (a smaller probe, a narrower read): the log names it, no more.
+    kql = "print " + ", ".join(f"hit_{n}=toscalar(t{n} | take 1)" for n in range(40))
+    body = json.dumps({"error": {"code": "LowMemoryCondition", "message": "bad allocation (E_LOW_MEMORY_CONDITION)",
+                                 "@permanent": False}})
+    error = KustoServiceError("Query execution lacks memory resources to complete (80DA0007)", http_response(body))
+    properties = ClientRequestProperties()
+    properties.client_request_id = "aictl.live.probe;1"
+
+    def fail(*_args):
+        raise error
+
+    client = ObservedKustoClient(SimpleNamespace(execute=fail), cluster=CLUSTER)
+    with pytest.raises(KustoServiceError):
+        client.execute("history", kql, properties)
+    (record,) = [r for r in caplog.records if r.name == "aictl.stores.kusto.diagnostics"]
+    message = record.getMessage()
+    assert record.levelname == "WARNING" and record.exc_info is None
+    assert "\n" not in message and "hit_0" not in message
+    assert "no memory for a query" in message and "aictl.live.probe;1" in message and CLUSTER in message
+    assert client.reads.snapshot()["failed"] == 1

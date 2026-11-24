@@ -386,7 +386,8 @@ class ObservedKustoClient:
         request: str | None = None,
         client_request_id: str | None = None,
     ) -> Any:
-        from .stores.kusto.diagnostics import log_failure
+        from .stores.kusto.client import query_memory_error
+        from .stores.kusto.diagnostics import log_failure, log_memory_refusal
 
         self._responses.active = True
         self._responses.value = None
@@ -394,6 +395,12 @@ class ObservedKustoClient:
         try:
             return call()
         except Exception as exc:  # noqa: BLE001 - diagnostics must preserve every SDK failure
+            if query_memory_error(exc):
+                # The cluster had no memory for this query just now. Every reader answers that itself (a smaller
+                # probe, a narrower read), so the request text and the traceback would only bury the log.
+                log_memory_refusal(cluster=self.cluster, database=database, client_request_id=client_request_id,
+                                   elapsed_s=time.monotonic() - started)
+                raise
             log_failure(
                 exc,
                 cluster=self.cluster,
