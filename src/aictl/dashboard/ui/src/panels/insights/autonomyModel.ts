@@ -71,13 +71,28 @@ export const runTop = (tools: readonly AutonomyTool[]) => Math.max(1, ...tools.m
   return run ? Math.max(run.p50, run.p90 ?? 0) : 0
 }))
 
-/** "median 88 · 90th pct 286 tool calls in a row without you", written at the bar. */
+/** "median 88 · 90th pct 286 tool calls in a row", written at the bar. */
 export function runText(tool: AutonomyTool) {
   const run = runRange(tool)
   if (!run) return NOT_REPORTED
-  const text = `median ${fmtNum(run.p50)} · 90th pct ${count(run.p90)} tool calls in a row without you`
+  const text = `median ${fmtNum(run.p50)} · 90th pct ${count(run.p90)} tool calls in a row`
   return run.all ? `all sessions: ${text} (too few sessions with 2 or more instructions for their own median: ` +
     `${fmtNum(tool.multi_sessions)}, ${fmtNum(MIN_MULTI)} needed)` : text
+}
+
+/** The hover of a tool's run bar: both medians, percentiles and means, the sessions behind them and the rule. */
+export function runHover(tool: AutonomyTool, label: Label) {
+  const run = runRange(tool)
+  const name = label(tool.tool)
+  const multi = `Sessions with 2 or more instructions (${fmtNum(tool.multi_sessions)} of ${fmtNum(tool.sessions)}): median ` +
+    `${count(tool.p50_multi)}, 90th percentile ${count(tool.p90_multi)}, mean ${count(tool.mean_multi)} tool calls.`
+  const all = `All ${plural(tool.sessions, 'session')}: median ${count(tool.p50_longest)}, 90th percentile ${count(tool.p90_longest)}, ` +
+    `mean ${count(tool.mean_longest)} tool calls.`
+  const drawn = !run ? 'No bar: not reported.' : run.all
+    ? `Bar drawn from all sessions: fewer than ${fmtNum(MIN_MULTI)} sessions with 2 or more instructions.`
+    : `Bar drawn from sessions with 2 or more instructions (${fmtNum(MIN_MULTI)} or more needed).`
+  return `${name}: longest run of main-agent tool calls between two turns of a person, one value per session. ${multi} ${all} ` +
+    `Bar to the median, thin line on to the 90th percentile. ${drawn}`
 }
 
 /** Tool calls per instruction, the average over the period; null with no instruction. */
@@ -104,11 +119,31 @@ export function waitSplit(tool: AutonomyTool): { under: number; over: number; sh
 /** The line written at the wait bar, or why there is no bar. */
 export function waitText(tool: AutonomyTool) {
   if (tool.p50_wait_s == null) return NOT_REPORTED
-  if (!enoughWaits(tool)) return `only ${plural(tool.waits, 'wait')} measured, too few for a median (${fmtNum(MIN_WAITS)} needed)`
+  if (!enoughWaits(tool)) return `${plural(tool.waits, 'wait')} measured, too few for a median (${fmtNum(MIN_WAITS)} needed)`
   const split = waitSplit(tool)
   const parts = split ? `${fmtNum(split.under)} answered within 5 min · ${fmtNum(split.over)} after more than 5 min ` +
     `(${fmtShare(split.share)}) · ` : ''
   return `${parts}median wait ${fmtDur(tool.p50_wait_s)}`
+}
+
+/** The hover of one part of a tool's wait bar: the count, its share of the answered waits, the median and the rules. */
+export function waitHover(tool: AutonomyTool, part: 'under' | 'over', label: Label) {
+  const split = waitSplit(tool)
+  if (!split) return `${label(tool.tool)}: ${waitText(tool)}`
+  const n = part === 'under' ? split.under : split.over
+  const when = part === 'under' ? 'within 5 minutes' : 'after more than 5 minutes'
+  return `${label(tool.tool)}: ${fmtNum(n)} of ${fmtNum(tool.waits)} answered waits (${fmtShare(n / tool.waits)}) ended ${when}. ` +
+    `Median wait ${fmtDur(tool.p50_wait_s)} over ${plural(tool.waits, 'wait')}; ${plural(tool.turns_answered, 'answered turn')}; ` +
+    `${plural(tool.queued, 'prompt')} queued (sent less than 2 s after the agent stopped, not a wait); ` +
+    `${plural(tool.resumed, 'gap')} over 24 hours counted as resumed, not a wait. A wait runs from the agent's stop to the person's next prompt.`
+}
+
+/** The hover of a trend dot: the bin, its median and 90th percentile and the sessions behind them, and the rule. */
+export function trendHover(row: AutonomyBin, unit: BinUnit | null) {
+  const bin = unit === 'day' || unit == null ? `${binDay(row.bin_ts)} (UTC day)` : `${unit} starting ${binDay(row.bin_ts)} (UTC)`
+  return `${bin}: median ${count(row.p50_multi)}, 90th percentile ${count(row.p90_multi)} tool calls in the longest run, over ` +
+    `${plural(row.multi_sessions, 'session')} with 2 or more instructions (${plural(row.sessions, 'session')} in all). ` +
+    `A ${unit ?? 'bin'} is drawn with ${fmtNum(MIN_TREND_SESSIONS)} or more such sessions.`
 }
 
 /** "38 instructions were typed while the agent was still working"; empty when the tool reports no waits at all. */
@@ -130,8 +165,8 @@ export function autonomyHero(body: AutonomyBody, tool: AutonomyTool | undefined,
       `sessions with 2 or more instructions (n=${fmtNum(tool.multi_sessions)}); 90th percentile ${calls(tool.p90_multi)}` }
   }
   return { value: `too few sessions (n=${fmtNum(tool.multi_sessions)})`, label: `${label(tool.tool)} sessions with 2 or more ` +
-    `instructions. All ${plural(tool.sessions, 'session')}: median ${calls(tool.p50_longest)}, including single-instruction ` +
-    'sessions, which may be scripted' }
+    `instructions. All ${plural(tool.sessions, 'session')}: median ${calls(tool.p50_longest)}, including ` +
+    `${plural(tool.one_instruction, 'single-instruction session')}` }
 }
 
 /** The change over the bins a trend may use. It is stated as a change only when every one of them moves the same way;
@@ -172,8 +207,8 @@ export function autonomyFinding(body: AutonomyBody, tool: AutonomyTool | undefin
     : !enoughWaits(tool) ? ` Too few measured waits for a median wait (n=${fmtNum(tool.waits)}).`
     : ` People answered in a median ${fmtDur(tool.p50_wait_s)} (${fmtNum(tool.over_5m ?? 0)} of ${fmtNum(tool.waits)} over 5 minutes; ` +
       `${plural(tool.queued, 'prompt')} ${tool.queued === 1 ? 'was' : 'were'} queued while the agent worked).`
-  const single = tool.one_instruction * 2 > tool.sessions
-    ? ` Most sessions had a single instruction and may be scripted (${fmtNum(tool.one_instruction)} of ${fmtNum(tool.sessions)}).` : ''
+  const single = tool.one_instruction
+    ? ` ${fmtNum(tool.one_instruction)} of ${fmtNum(tool.sessions)} ${name} sessions had a single instruction.` : ''
   return runs + wait + single
 }
 
