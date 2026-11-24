@@ -36,6 +36,16 @@ const Settings = lazy(() => import('./Settings'))
 const Index = lazy(() => import('./Index'))
 const Drawer = lazy(() => import('../drawer/DrawerView'))
 const screenNames = { board: 'Overview', health: 'Health', insights: 'Insights', thinking: 'Thinking', index: 'Index', settings: 'Settings' }
+// The top row names three places. Health holds the store's index and the settings as its parts, and Insights holds
+// the search of thinking text: each part keeps its own address (`screen=`), so links to it still open it.
+const places: { id: Screen; holds: Screen[] }[] = [
+  { id: 'board', holds: ['board'] },
+  { id: 'health', holds: ['health', 'index', 'settings'] },
+  { id: 'insights', holds: ['insights', 'thinking'] },
+]
+const partNames: Partial<Record<Screen, string>> = {
+  health: 'Nodes and store', index: 'Index', settings: 'Settings', insights: 'Cards', thinking: 'Thinking text',
+}
 const screenGlyphs: Record<Screen, Glyph> = { board: 'top', health: 'health', insights: 'spark', thinking: 'search', index: 'sources', settings: 'settings' }
 const sectionGlyphs: Record<string, Glyph> = {
   top: 'top', usage: 'usage', agents: 'agents', sessions: 'clock', prompts: 'prompts', context: 'context', tools: 'tools',
@@ -347,6 +357,7 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   }
   // The screens whose data is per project. Health (this daemon and the store) and Settings (tool
   // configuration on disk) are not: the chosen projects stay in the address but do not apply there.
+  const place = () => places.find(item => item.holds.includes(screen())) ?? places[0]
   const projectScreen = () => screen() === 'board' || screen() === 'insights' || screen() === 'thinking'
   const sourceRows = createMemo(() => scope() === 'local' ? statuses(client) : [])
   const stream = () => {
@@ -369,8 +380,12 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
   }
   const actions = <div class={`${styles.controls} ${styles.headerControls}`}>
     <span class={styles.status}>
-      <span class={styles.live} data-tone={liveTone()} role="status" title={`${scopeLabel(scope(), nodeId())} · ${liveStatus()}`}>
-        {scopeLabel(scope(), nodeId())} · {liveStatus()}</span>
+      {/* The node picker beside it names the scope. For reported nodes the sentence is on hover only: it never
+          changes, and written out it pushed the top row onto a second line. */}
+      <span class={styles.live} data-tone={liveTone()} role="status" data-live-status
+        title={`${scopeLabel(scope(), nodeId())} · ${liveStatus()}`}
+        aria-label={`${scopeLabel(scope(), nodeId())} · ${liveStatus()}`}>
+        {scope() === 'local' ? liveStatus() : ''}</span>
       <Show when={scope() === 'local' && liveStatus() === 'Collector snapshot is stale'}>
         <Freshness compact updatedAt={stream()?.snapshot_ts} />
       </Show>
@@ -404,13 +419,20 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
       text={density() === 'comfortable' ? 'Use compact rows' : 'Use comfortable rows'}
       onClick={() => setDensity(old => old === 'comfortable' ? 'compact' : 'comfortable')}><Icon glyph="density" /></Tooltip>
     <Tooltip class={styles.iconButton} label="Shortcuts" text="Keyboard shortcuts (?)" onClick={() => setShortcuts(true)}><Icon glyph="keys" /></Tooltip>
-    <button class={styles.commandButton} type="button" aria-keyshortcuts="Control+K Meta+K" onClick={() => setPalette(true)}>
-      <Icon glyph="search" /><span>Commands</span><kbd aria-hidden="true">Ctrl K</kbd></button>
+    <button class={styles.commandButton} type="button" aria-keyshortcuts="Control+K Meta+K" title="Commands (Ctrl K)"
+      onClick={() => setPalette(true)}>
+      <Icon glyph="search" /><span class={styles.srOnly}>Commands</span><kbd aria-hidden="true">Ctrl K</kbd></button>
   </div>
-  return <AppShell title="aictl" actions={actions}
-    navigation={<nav class={styles.screens} aria-label="Screens"><For each={Object.keys(screenNames) as Screen[]}>{id =>
-      <button class={styles.screen} type="button" aria-current={screen() === id ? 'page' : undefined}
-        onClick={() => changeScreen(id)}><Icon glyph={screenGlyphs[id]} />{screenNames[id]}</button>}</For></nav>}>
+  // The board's search and filters sit in the middle of the top row, so the page below starts with its content.
+  const center = <Show when={screen() === 'board'}>
+    <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} text={findText()} search={searchFor}
+      rail={rail()} toggleRail={() => setRail(old => !old)} />
+  </Show>
+  return <AppShell title="aictl" actions={actions} center={center}
+    navigation={<nav class={styles.screens} aria-label="Screens"><For each={places}>{place =>
+      <button class={styles.screen} type="button" aria-current={place.holds.includes(screen()) ? 'page' : undefined}
+        onClick={() => { if (!place.holds.includes(screen())) changeScreen(place.id) }}>
+        <Icon glyph={screenGlyphs[place.id]} />{screenNames[place.id]}</button>}</For></nav>}>
     <div class={styles.work} data-rail={rail() && screen() === 'board' ? '' : undefined}>
         <Show when={screen() === 'board'}>
           <nav class={styles.sections} id="overview-sections" aria-label="Overview sections" hidden={!rail()}>
@@ -427,9 +449,10 @@ function Shell(props: { client: LiveClient; startedAt: number; notice?: string }
         </Show>
         <div class={styles.canvas}>
         <ProjectChips ctx={ctx} applies={projectScreen()} />
-        <Show when={screen() === 'board'}>
-          <BoardControls ctx={ctx} find={element => { find = element }} clear={clear} text={findText()} search={searchFor}
-            rail={rail()} toggleRail={() => setRail(old => !old)} />
+        <Show when={place().holds.length > 1}>
+          <nav class={styles.parts} aria-label={`Parts of ${screenNames[place().id]}`}><For each={place().holds}>{id =>
+            <button class={styles.part} type="button" aria-current={screen() === id ? 'page' : undefined}
+              onClick={() => changeScreen(id)}>{partNames[id]}</button>}</For></nav>
         </Show>
         <Loading fallback={<PanelState state="loading" />}>
           <Switch>

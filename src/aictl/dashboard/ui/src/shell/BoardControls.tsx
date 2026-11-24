@@ -78,8 +78,10 @@ export function BoardControls(props: {
       <Show when={canClear(ctx.filters(), ctx.tools())}>
         <button class={styles.small} type="button" onClick={() => props.clear()}><Icon glyph="close" small />Clear filters</button>
       </Show>
-      <Show when={scope()}>
-        <span class={styles.count}>{scope()!.shown_agents} of {scope()!.all_agents} agents</span>
+      {/* Said only while a filter hides agents: with none hidden the two numbers are the same. */}
+      <Show when={scope() && scope()!.shown_agents !== scope()!.all_agents}>
+        <span class={styles.count} title="Agents the filters show, of all agents in the period">
+          {scope()!.shown_agents} of {scope()!.all_agents} agents</span>
       </Show>
     </div>
   </>

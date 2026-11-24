@@ -29,6 +29,11 @@
 .screen { composes: button focus from "../ui/control.module.css"; color: var(--color-muted); }
 .screen:hover:not(:disabled) { color: var(--color-text); }
 .screen[aria-current="page"], .screen[aria-current="page"]:hover { background: var(--color-selected); color: var(--color-selected-text); }
+/* The parts of a place (Health: nodes and store, index, settings), above its content. */
+.parts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin-block-end: var(--space-5); }
+.part { composes: button small focus from "../ui/control.module.css"; color: var(--color-muted); }
+.part:hover:not(:disabled) { color: var(--color-text); }
+.part[aria-current="page"], .part[aria-current="page"]:hover { background: var(--color-selected); color: var(--color-selected-text); }
 
 .live {
   display: block;
@@ -56,7 +61,6 @@
 .commandButton {
   composes: button focus from "../ui/control.module.css";
   gap: var(--space-3);
-  min-inline-size: calc(var(--panel-sm) - var(--space-6));
   justify-content: start;
   margin-inline-start: var(--space-2);
   border-color: var(--color-border-subtle);
@@ -74,13 +78,13 @@
   font: var(--text-xs)/1.5 var(--font-mono);
 }
 
+/* The board's search and filters, in the middle of the top row. */
 .filters {
   display: flex;
-  flex-wrap: wrap;
+  flex: 1 1 auto;
   align-items: center;
+  justify-content: center;
   gap: var(--space-3);
-  padding-block-end: var(--space-4);
-  border-block-end: var(--border-size) solid var(--color-border-subtle);
 }
 .filter, .search {
   display: inline-flex;
@@ -112,7 +116,8 @@
 .filter[data-active] select { color: inherit; }
 .filter select option { background: var(--color-surface); color: var(--color-text); }
 .filter svg { pointer-events: none; }
-.search { flex: 0 1 var(--panel-lg); min-inline-size: var(--panel-sm); }
+.search { flex: 1 1 var(--panel-sm); min-inline-size: calc(var(--panel-sm) / 2); max-inline-size: var(--panel-lg); }
+.search input { flex: 1 1 0; inline-size: 0; }
 .search input { flex: 1; cursor: text; font-weight: inherit; }
 .search input::placeholder { color: var(--color-muted); }
 .search input::-webkit-search-cancel-button { cursor: pointer; }
@@ -133,7 +138,7 @@
   font-size: var(--text-sm);
 }
 .chipClose { composes: iconButton small focus from "../ui/control.module.css"; color: inherit; }
-.count { margin-inline-start: auto; color: var(--color-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
+.count { white-space: nowrap; color: var(--color-muted); font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 
 .sections:not([hidden]) { display: flex; flex-wrap: wrap; gap: var(--space-1); }
 .sections a {

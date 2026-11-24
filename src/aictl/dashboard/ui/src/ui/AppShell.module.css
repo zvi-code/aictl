@@ -22,7 +22,16 @@
   border-block-end: var(--border-size) solid var(--color-border);
 }
 .title { font-size: var(--text-lg); }
-.actions { flex: 1 1 0; display: flex; justify-content: flex-end; }
+/* The middle takes the room between the navigation and the actions; empty, it still pushes the actions to the end.
+   It is never narrower than its content: with too little room the header wraps it onto a second row. */
+.center { flex: 1 1 0; display: flex; justify-content: center; }
+/* Below this width the three groups do not fit one row: the middle goes under the navigation and the actions, which
+   stay together on the first row. */
+@media (max-width: 102rem) {
+  .center { order: 1; flex-basis: 100%; }
+  .center:empty { display: none; }
+}
+.actions { flex: 0 1 auto; display: flex; justify-content: flex-end; margin-inline-start: auto; }
 .main { min-inline-size: 0; padding: var(--space-7); }
 .footer { border-block-start: var(--border-size) solid var(--color-border); color: var(--color-muted); }
 .skip {
@@ -38,5 +47,5 @@
 .skip:focus { transform: none; }
 @media (max-width: 48rem) {
   .header { gap: var(--space-2) var(--space-4); padding-block: var(--space-3); }
-  .actions { display: contents; }
+  .actions, .center { display: contents; }
 }

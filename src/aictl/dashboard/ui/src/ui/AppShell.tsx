@@ -5,6 +5,8 @@ import styles from './AppShell.module.css'
 export function AppShell(props: {
   title: string
   navigation?: JSX.Element
+  /** What sits in the middle of the top row, between the navigation and the actions: the screen's own search and filters. */
+  center?: JSX.Element
   actions?: JSX.Element
   status?: JSX.Element
   children: JSX.Element
@@ -21,6 +23,7 @@ export function AppShell(props: {
     <header class={styles.header} ref={header => headerSize.observe(header)}>
       <strong class={styles.title}>{props.title}</strong>
       {props.navigation}
+      <div class={styles.center}>{props.center}</div>
       <div class={styles.actions}>{props.actions}</div>
     </header>
     <main id={main} tabindex={-1} class={styles.main}>{props.children}</main>
