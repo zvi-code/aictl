@@ -3,7 +3,7 @@ import { render } from '@solidjs/web'
 import { boardLiveRequest, boardRangePatch, clearedFilters, filtersToParams, parseFilters, RANGES, readScreen, type Screen } from '../data/filters'
 import type { LiveClient } from '../data/live'
 import { isRuntimeSession } from '../data/runtimeAgents'
-import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, toolsToParams, writeUrl, type UrlPatch } from '../data/urlState'
+import { agentLinkOf, boardNodeScope, CLEAR_SETTINGS_PARAMS, loadToolFilter, mergeSearch, redirectOf, scopeParam, toolsToParams, writeUrl, type UrlPatch } from '../data/urlState'
 import { agentView, selectAgentWatch, supportsLiveAgent } from '../drawer/liveAgent'
 import { drawerStack } from '../drawer/navigation'
 import { at, detailPath, json, panelData, statuses, topic } from '../panels/data'
@@ -47,8 +47,8 @@ type Theme = 'light' | 'dark'
 type Density = 'compact' | 'comfortable'
 type Decision = { title: string; lead: string; command: string; label: string; apply(): Promise<string> }
 
-function Shell(props: { client: LiveClient; startedAt: number }) {
-  const { client, startedAt } = untrack(() => props)
+function Shell(props: { client: LiveClient; startedAt: number; notice?: string }) {
+  const { client, startedAt, notice: opening } = untrack(() => props)
   const [address, setAddress] = createSignal(location.pathname + location.search + location.hash)
   const query = createMemo(() => new URL(address(), location.origin))
   const search = createMemo(() => query().search)
@@ -109,7 +109,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     setStack([])
     setOrder(sections.board.map(section => section.id))
     const patch = { ...CLEAR_SETTINGS_PARAMS, ...clearDrawer, screen: next === 'board' ? null : next,
-      scope: scope() === 'local' ? null : scope() }
+      scope: scopeParam(scope()) }
     const search = mergeSearch(location.search, patch)
     // The board has no range such as Insights' "all": its address says the range it shows.
     go(location.pathname + (next === 'board' ? mergeSearch(search, boardRangePatch(search) ?? {}) : search))
@@ -125,6 +125,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     noticeOf({ text, undo })
     noticeTimer = setTimeout(() => noticeOf(undefined), undo ? 8000 : 5000)
   }
+  if (opening) onNotice(opening)
   const refresh = () => {
     if (scope() === 'local') client.resync()
     bump(i => i + 1)
@@ -200,7 +201,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
     landOnFlow = false
     setDecision(undefined)
     setStack([])
-    navigate({ ...clearDrawer, scope: next === 'local' ? null : next, node_id: next === 'node' ? id : null,
+    navigate({ ...clearDrawer, scope: scopeParam(next), node_id: next === 'node' ? id : null,
       row: null, cell: null, session: null, session_id: null })
   }
   const clear = () => {
@@ -472,9 +473,9 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
   </AppShell>
 }
 
-export function mount(app: HTMLElement, client: LiveClient, startedAt: number) {
+export function mount(app: HTMLElement, client: LiveClient, startedAt: number, notice?: string) {
   const redirect = redirectOf(location.search)
   if (redirect !== null) history.replaceState(history.state, '', location.pathname + redirect + location.hash)
-  const dispose = render(() => <Shell client={client} startedAt={startedAt} />, app)
+  const dispose = render(() => <Shell client={client} startedAt={startedAt} notice={notice} />, app)
   window.addEventListener('pagehide', event => { if (!event.persisted) { client.stop(); dispose() } })
 }
