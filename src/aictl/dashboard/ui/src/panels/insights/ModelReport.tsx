@@ -1,9 +1,9 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtN, fmtNum, fmtRate, fmtUsdEach } from '../../design/format'
 import type { Field } from '../../ui/tableModel'
-import type { PanelContext } from '../types'
 import { BarGrid } from './charts/BarGrid'
 import { ColourBy, useColourBy } from './charts/ColourBy'
+import { Name, opening, opens, type Opens } from './charts/Open'
 import { Scatter } from './charts/Scatter'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { money, NOT_REPORTED, plural, toolLabel, type Label } from './insightsModel'
@@ -37,11 +37,16 @@ const TOKEN_LEGEND: [TokenPart['id'], string][] = [['input', 'Input not from cac
 /** Per tool: a grid of its models' measures (each column on its own linear scale from 0, every value written) and,
  * beside it, a scatter of cost per priced request against failure share. One switch colours the bars by token kind or
  * by repository; one legend at a time. */
-function ModelCharts(props: { body: ModelBody; label: Label; ctx: PanelContext }) {
+function ModelCharts(props: { body: ModelBody; label: Label; open: Opens }) {
   const [mode, setMode] = useColourBy()
   const split = () => modelsSplit(props.body)
   const shown = () => split() ? mode() : 'parts'
   const models = () => props.body.tools.flatMap(tool => tool.models)
+  // A model's name (a grid row, a dot) narrows the page to the model; a coding tool's heading to the tool.
+  const model = <R extends { key: string }>(rows: R[]) => {
+    const open = props.open
+    return opening(rows, row => open.model(row.key))
+  }
   return <div class={styles.view}>
     <div class={styles.controls}>
       <ColourBy parts="Token kind" value={mode()} onChange={setMode} split={split()} />
@@ -54,18 +59,18 @@ function ModelCharts(props: { body: ModelBody; label: Label; ctx: PanelContext }
     <For each={props.body.tools.filter(tool => tool.models.length)}>{tool => {
       const name = () => props.label(tool.tool)
       return <section class={styles.tool} data-tool={tool.tool}>
-        <h3>{name()}<small>{plural(tool.requests, 'request')}{tool.sessions == null ? '' : ` · ${plural(tool.sessions, 'session')}`}
+        <h3><Name text={name()} open={props.open.product(tool.tool, name())} /><small>{plural(tool.requests, 'request')}{tool.sessions == null ? '' : ` · ${plural(tool.sessions, 'session')}`}
           {' '}· {plural(tool.models.length, 'model')} compared</small></h3>
         <div class={styles.charts}>
           <div class={styles.grid}>
             <BarGrid name={`models-${tool.tool}`} label={`${name()}: requests, cost, failure share, tokens and thinking per model`}
-              head="Model" columns={modelColumns(tool)} rows={modelGridRows(tool, name(), shown(), props.body.repo_order)} />
+              head="Model" columns={modelColumns(tool)} rows={model(modelGridRows(tool, name(), shown(), props.body.repo_order))} />
           </div>
           <Show when={scatterPoints(tool, name()).length >= 2}>
             <div class={styles.scatter}>
               <Scatter name={`models-${tool.tool}`} title="Cost per priced request against failure share"
                 x={{ label: 'cost per priced request, $ at list price', format: fmtUsdEach }}
-                y={{ label: 'tool calls marked failed', format: fmtRate }} points={scatterPoints(tool, name())}
+                y={{ label: 'tool calls marked failed', format: fmtRate }} points={model(scatterPoints(tool, name()))}
                 note="One dot per model with both figures; hollow: the failure share is a floor." />
             </div>
           </Show>
@@ -86,6 +91,7 @@ const tokenCell = (id: string, label: string): Field<Row> => ({
   format: value => typeof value === 'number' ? fmtN(value) : String(value),
 })
 
+/** `tool_id`, `model_id`: the coding tool and the model as the answer names them, for what their names open. */
 function figureRow(id: string, kind: string, tool: string, name: string, row: ModelFigures, extra: Row): Row {
   return {
     id, kind, tool, model: name, dates: datesText(row), requests: row.requests, sessions: row.sessions, priced: row.priced,
@@ -106,15 +112,16 @@ function tableRows(body: ModelBody, label: Label): Row[] {
   return body.tools.flatMap(tool => [
     ...tool.models.flatMap(model => [
       figureRow(`${tool.tool}:${model.model}`, 'model', label(tool.tool), model.model, model, {
+        tool_id: tool.tool, model_id: model.model,
         with_calls: model.calls == null ? 'calls not recorded' : `${fmtNum(model.call_sessions)} / ${fmtNum(model.recorded_sessions)}`,
         failing: model.failing.map(item => `${item.tool_name} ${fmtNum(item.failures)}`).join(', '),
         efforts: model.efforts.map(effort => effort.effort).join(', '),
       }),
       ...model.efforts.map(effort => figureRow(`${tool.tool}:${model.model}:${effort.effort}`, 'effort', label(tool.tool),
-        `${model.model} · ${effort.effort}`, effort, { with_calls: '', failing: '', efforts: '' })),
+        `${model.model} · ${effort.effort}`, effort, { tool_id: tool.tool, model_id: model.model, with_calls: '', failing: '', efforts: '' })),
     ]),
     {
-      id: `${tool.tool}:total`, kind: 'tool total', tool: label(tool.tool), model: '', requests: tool.requests,
+      id: `${tool.tool}:total`, kind: 'tool total', tool: label(tool.tool), tool_id: tool.tool, model: '', requests: tool.requests,
       sessions: tool.sessions, priced: tool.priced, calls: tool.calls ?? undefined, failures: tool.failures ?? undefined,
       refused: tool.refused ?? undefined, unknown: tool.exit_unknown ?? undefined, failing: toolFooter(tool),
     },
@@ -124,9 +131,12 @@ function tableRows(body: ModelBody, label: Label): Row[] {
 export default function ModelReport(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const open = opens(ctx)
+  const product = (row: Row) => open.product(String(row.tool_id ?? ''), String(row.tool ?? ''))
+  const model = (row: Row) => open.model(String(row.model_id ?? ''))
   return <InsightCard<ModelBody> {...props} card="models" tab="flow"
     finding={body => body.tools.some(tool => tool.requests) ? MODELS_LINE : 'No model request in this period.'}
-    visual={body => <ModelCharts body={body} label={label} ctx={ctx} />}
+    visual={body => <ModelCharts body={body} label={label} open={open} />}
     note={'Requests count in the period their time falls in; each tool call is attributed to the request just before it in ' +
       'the same session and agent (it agrees with Claude Code\'s stored link and Copilot\'s turn model in almost every case; in ' +
       'Copilot in VS Code a chat-title model can take a few calls). Model names are ' +
@@ -156,7 +166,8 @@ export default function ModelReport(props: CardProps) {
     table={{
       label: 'Model report by tool and model',
       rows: body => tableRows(body, label),
-      fields: [textField('tool', 'Tool'), textField('kind', 'Row'), textField('model', 'Model'), textField('dates', 'Dates used'),
+      fields: [{ ...textField('tool', 'Tool'), action: { label: row => product(row)?.label, run: row => product(row)?.run() } },
+        textField('kind', 'Row'), { ...textField('model', 'Model'), action: { label: row => model(row)?.label, run: row => model(row)?.run() } }, textField('dates', 'Dates used'),
         numberField('requests', 'Requests', fmtNum), numberField('sessions', 'Sessions', fmtNum), numberField('priced', 'Priced', fmtNum),
         numberField('cost', '$ per priced request', value => perRequest(value)),
         tokenCell('input', 'Input not from cache per request'), tokenCell('write', 'Cache write per request'),

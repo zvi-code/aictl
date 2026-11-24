@@ -2,6 +2,7 @@ import { Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
 import { Bars, type BarRow } from './Bars'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { opening, opens, type Opens } from './charts/Open'
 import { DotRows } from './charts/DotRows'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
@@ -39,10 +40,17 @@ function repoRows(body: OrientationBody, label: Label, of: 'sessions' | 'never')
   }))
 }
 
+/** The rows of a chart with what their names open: a coding tool or a project narrows the page to it. */
+const links = (open: Opens, label: Label) => ({
+  product: (rows: BarRow[]) => opening(rows, row => open.product(row.key, label(row.key))),
+  project: <R extends { key: string }>(rows: R[]) => opening(rows, row => open.project(row.key)),
+})
+type Links = ReturnType<typeof links>
+
 /** Whether the answer splits any bar by repository, or ranks a repository a project row can take the colour of. */
 const orientationSplit = (body: OrientationBody) => body.tools.some(tool => tool.repos?.length) || !!body.repo_order?.length
 
-function Visual(props: { body: OrientationBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+function Visual(props: { body: OrientationBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void; link: Links }) {
   const byRepo = () => orientationSplit(props.body) && props.mode === 'repo'
   const dots = () => projectDots(props.body, props.label, byRepo())
   return <>
@@ -50,22 +58,22 @@ function Visual(props: { body: OrientationBody; label: Label; mode: ColourMode; 
     <Show when={byRepo()}><RepoLegend split={props.body} other={hasOther(props.body.tools)} /></Show>
     <div class={own.grid}>
       <div class={own.wide}>
-        <DotRows name="orientation-projects" title="Before the first edit, per project" measures={dots().measures} rows={dots().rows}
+        <DotRows name="orientation-projects" title="Before the first edit, per project" measures={dots().measures} rows={props.link.project(dots().rows)}
           empty="No project has 3 or more sessions that edit in this period."
           axis="Medians over the project's sessions that edit; projects with 3 or more such sessions, the 10 with the most. Each measure on its own axis from 0." />
       </div>
       <Show when={byRepo()} fallback={<Bars name="orientation-tools" title="Sessions per tool, with and without an edit" scale="whole"
         legend={[{ label: 'Recorded an edit', tone: 2 }, { label: 'No edit (not in the medians)', tone: 7 }]}
-        axis="Bar: the tool's sessions that started in the period, 100%." rows={toolRows(props.body, props.label)} />}>
+        axis="Bar: the tool's sessions that started in the period, 100%." rows={props.link.product(toolRows(props.body, props.label))} />}>
         <Bars name="orientation-tools-repos" title="Sessions per tool"
           axis="Length: sessions that started in the period, one linear scale from 0; a segment per repository."
-          rows={repoRows(props.body, props.label, 'sessions')} />
+          rows={props.link.product(repoRows(props.body, props.label, 'sessions'))} />
       </Show>
       <Show when={byRepo()} fallback={<Bars name="orientation-never" title="Cost of the sessions with no edit, per tool"
-        axis="Length: list price of their main-agent requests, linear from $0." rows={neverCostRows(props.body, props.label)} />}>
+        axis="Length: list price of their main-agent requests, linear from $0." rows={props.link.product(neverCostRows(props.body, props.label))} />}>
         <Bars name="orientation-never-repos" title="Cost of the sessions with no edit, per tool"
           axis="Length: list price of their main-agent requests, one linear scale from $0; a segment per repository."
-          rows={repoRows(props.body, props.label, 'never')} />
+          rows={props.link.product(repoRows(props.body, props.label, 'never'))} />
       </Show>
     </div>
     <Show when={orientationUnpriced(props.body)}>{text => <p class={styles.note} data-unpriced>{text()}</p>}</Show>
@@ -78,9 +86,12 @@ export default function Orientation(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   const [mode, setMode] = useColourBy()
+  const open = opens(ctx)
+  const link = links(open, label)
+  const project = { label: (row: Row) => open.project(String(row.id ?? ''))?.label, run: (row: Row) => open.project(String(row.id ?? ''))?.run() }
   return <InsightCard<OrientationBody> {...props} card="orientation" tab="flow"
     finding={orientationLine}
-    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} />}
+    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} link={link} />}
     note={'Before the first edit: the requests of the main agent (agent id empty or equal to the session id) up to the ' +
       'session\'s first edit call, by any agent; an edit call is one the board counts as an edit. A session resumed from an ' +
       'earlier one starts oriented, so it shows few requests. A session whose first edit is by a subagent counts the main ' +
@@ -94,7 +105,7 @@ export default function Orientation(props: CardProps) {
         id: row.project_path, project: projectName(row.project_path), path: row.project_path, sessions: row.sessions,
         tools: row.tools.map(label).join(', '), p50_requests: row.p50_requests ?? undefined, p50_cost: row.p50_cost_usd ?? undefined,
       })),
-      fields: [textField('project', 'Project'), textField('path', 'Path'), numberField('sessions', 'Sessions that edit', fmtNum),
+      fields: [{ ...textField('project', 'Project'), action: project }, { ...textField('path', 'Path'), action: project }, numberField('sessions', 'Sessions that edit', fmtNum),
         textField('tools', 'Tools'), numberField('p50_requests', 'Median requests before the first edit', fmtNum),
         numberField('p50_cost', 'Median cost before the first edit', value => money(value))],
     }}

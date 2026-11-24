@@ -4,8 +4,9 @@ import { fmtNum, fmtShare, stamp } from '../../design/format'
 import type { Field } from '../../ui/tableModel'
 import { Tooltip } from '../../ui/Tooltip'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { Name, opening, opens, type Open } from './charts/Open'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { Bars } from './Bars'
+import { Bars, type BarRow } from './Bars'
 import { NOT_REPORTED, plural, toolLabel, type Label } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
 import { hasOther } from './repoSplit'
@@ -31,8 +32,11 @@ function Mark(props: { class: string; style?: JSX.CSSProperties; text: string; h
 
 const width = (part: number, whole: number) => whole ? `${(part / whole * 100).toFixed(2)}%` : '0%'
 
+/** What a coding tool's name opens: the whole page narrowed to that tool. */
+type Product = (tool: string) => Open | undefined
+
 /** Per tool: one 100% bar of its commits by class, with each class's count and share written and on hover. */
-function CommitBars(props: { body: VerifiedBody; label: Label }) {
+function CommitBars(props: { body: VerifiedBody; label: Label; product: Product }) {
   const shown = () => props.body.tools.filter(tool => tool.commits !== 0)
   const parts = (tool: VerifiedTool) => SEGMENTS.filter(segment => segment.count(tool))
   return <figure class={own.figure} data-chart="verified-commits">
@@ -43,7 +47,7 @@ function CommitBars(props: { body: VerifiedBody; label: Label }) {
     <Show when={shown().length} fallback={<p class={styles.note}>No agent commit in this period.</p>}>
       <ol class={styles.bars} aria-label="Agent commits per tool by what test runs saw before each commit">
         <For each={shown()}>{tool => <li class={styles.barRow} data-tool={tool.tool}>
-          <span class={styles.barName}>{props.label(tool.tool)} · {tool.commits == null ? `${NOT_REPORTED} commits` : `${fmtNum(tool.commits)} commits`}
+          <span class={styles.barName}><Name text={props.label(tool.tool)} open={props.product(tool.tool)} /> · {tool.commits == null ? `${NOT_REPORTED} commits` : `${fmtNum(tool.commits)} commits`}
             <small data-share>{shareText(tool)}</small>
             <Show when={tool.commits != null && tool.passed == null}><small data-pass>{passMissingText(tool)}</small></Show>
           </span>
@@ -67,7 +71,7 @@ function CommitBars(props: { body: VerifiedBody; label: Label }) {
 }
 
 /** Per tool: the sessions that changed source files, split by whether a recognised test ran in them. */
-function SessionBars(props: { body: VerifiedBody; label: Label }) {
+function SessionBars(props: { body: VerifiedBody; label: Label; product: Product }) {
   const rows = () => props.body.tools
   return <figure class={own.figure} data-chart="verified-sessions">
     <figcaption class={own.title}>Sessions that changed source files, by test run</figcaption>
@@ -77,7 +81,7 @@ function SessionBars(props: { body: VerifiedBody; label: Label }) {
     </ul>
     <ol class={styles.bars} aria-label="Sessions that changed source files, per tool, by whether a recognised test ran">
       <For each={rows()}>{tool => <li class={styles.barRow} data-sessions-tool={tool.tool}>
-        <span class={styles.barName}>{props.label(tool.tool)}
+        <span class={styles.barName}><Name text={props.label(tool.tool)} open={props.product(tool.tool)} />
           <small>{tool.edit_sessions == null ? NOT_REPORTED : plural(tool.edit_sessions, 'session')}</small></span>
         <span class={styles.barTrack}>
           <Show when={sessionSplit(tool)} fallback={<span class={own.untested} data-untested>{untestedText(tool)}</span>}>{split =>
@@ -99,27 +103,32 @@ function SessionBars(props: { body: VerifiedBody; label: Label }) {
 /** Whether the answer splits any bar by repository: the view then offers the colour switch. */
 const verifiedSplit = (body: VerifiedBody) => body.tools.some(tool => tool.repos?.length || tool.session_repos?.length)
 
-function Visual(props: { body: VerifiedBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+function Visual(props: { body: VerifiedBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void; product: Product }) {
   const byRepo = () => verifiedSplit(props.body) && props.mode === 'repo'
   const idle = () => props.body.tools.filter(tool => tool.commits === 0)
+  const product = (rows: BarRow[]) => {
+    const open = props.product
+    return opening(rows, row => open(row.key))
+  }
   return <>
     <ColourBy parts="What test runs saw" value={byRepo() ? 'repo' : 'parts'} onChange={props.setMode} split={verifiedSplit(props.body)} />
     <Show when={byRepo()}>
       <RepoLegend split={props.body} other={hasOther([...props.body.tools, ...props.body.tools.map(tool => ({ repos: tool.session_repos }))])} />
     </Show>
     <div class={own.grid}>
-      <Show when={byRepo()} fallback={<CommitBars body={props.body} label={props.label} />}>
+      <Show when={byRepo()} fallback={<CommitBars body={props.body} label={props.label} product={props.product} />}>
         <Bars name="verified-commits-repos" title="Agent commits per tool"
           axis="Length: agent commits, one linear scale from 0; a segment per repository. Hover a segment for its commits by class."
-          rows={commitRepoRows(props.body, props.label)} />
+          rows={product(commitRepoRows(props.body, props.label))} />
       </Show>
-      <Show when={byRepo()} fallback={<Show when={props.body.tools.length}><SessionBars body={props.body} label={props.label} /></Show>}>
+      <Show when={byRepo()} fallback={<Show when={props.body.tools.length}><SessionBars body={props.body} label={props.label} product={props.product} /></Show>}>
         <Bars name="verified-sessions-repos" title="Sessions that changed source files, per tool"
-          axis="Length: sessions, one linear scale from 0; a segment per repository." rows={sessionRepoRows(props.body, props.label)} />
+          axis="Length: sessions, one linear scale from 0; a segment per repository." rows={product(sessionRepoRows(props.body, props.label))} />
       </Show>
     </div>
     <Show when={idle().length}>
-      <p class={styles.note} data-idle>No commit in this period by {idle().map(tool => props.label(tool.tool)).join(', ')}.</p>
+      <p class={styles.note} data-idle>No commit in this period by <For each={idle()}>{(tool, i) => <>{i() ? ', ' : ''}<Name
+        text={props.label(tool.tool)} open={props.product(tool.tool)} /></>}</For>.</p>
     </Show>
     <For each={verifiedNotes(props.body, props.label)}>{note => <p class={styles.note} data-verified-note>{note}</p>}</For>
   </>
@@ -170,10 +179,12 @@ export default function VerifiedCommits(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
   const [mode, setMode] = useColourBy()
+  const open = opens(ctx)
+  const product: Product = tool => open.product(tool, label(tool))
   return <InsightCard<VerifiedBody> {...props} card="verified" tab="flow"
     hero={verifiedHero}
     finding={verifiedLine}
-    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} />}
+    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} product={product} />}
     note={NOTE}
     table={{
       label: 'Verified before commit by tool',
@@ -181,7 +192,8 @@ export default function VerifiedCommits(props: CardProps) {
         ...tool, id: tool.tool, tool: label(tool.tool),
         text: tool.commands == null ? NOT_REPORTED : `${fmtNum(tool.commands_with_text)} of ${fmtNum(tool.commands)}`,
       })),
-      fields: [textField('tool', 'Tool'), countField('commits', 'Commits'), countField('passed', 'Tested, passed'),
+      fields: [{ ...textField('tool', 'Tool'), action: { label: row => product(String(row.id ?? ''))?.label, run: row => product(String(row.id ?? ''))?.run() } },
+        countField('commits', 'Commits'), countField('passed', 'Tested, passed'),
         countField('unreported', 'Tested, result not recorded'), countField('failed', 'Tested, failed'),
         countField('changed_after', 'Changed after last test'), countField('never_tested', 'Never tested'),
         countField('no_change', 'No code change'), countField('not_recorded', 'Not classified: edits not recorded'),

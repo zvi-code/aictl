@@ -1,9 +1,9 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum, fmtShare, fmtUsd } from '../../design/format'
-import type { PanelContext } from '../types'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { count, share, toolLabel } from './insightsModel'
 import { BarGrid } from './charts/BarGrid'
+import { Name, opens, type Opens } from './charts/Open'
 import { repoColumns, repoFill, repoGridFoot, repoGridRows, repoRowColour, REPOS_LINE } from './reposModel'
 import { Bars, Columns } from './WorkCharts'
 import { sessionBranch, sessionHover, sessionName } from './sessionName'
@@ -16,8 +16,9 @@ import own from './Work.module.css'
 
 const money = (value: number | null) => value == null ? 'not reported' : fmtUsd(value)
 
-/** What one repository row opens to: its figures, its models, its spend per bin and its costliest sessions. */
-function RepoDetail(props: { repo: Repo; range: RepoBody['range']; ctx: PanelContext }) {
+/** What one repository row opens to: its figures, its models, its spend per bin and its costliest sessions. A model's name
+ * narrows the page to the model, a session's opens its flow, a coding tool's narrows the page to the tool. */
+function RepoDetail(props: { repo: Repo; range: RepoBody['range']; open: Opens }) {
   const repo = () => props.repo
   const facts = (): [string, string][] => [
     ['Folders in it', fmtNum(repo().projects)],
@@ -34,9 +35,13 @@ function RepoDetail(props: { repo: Repo; range: RepoBody['range']; ctx: PanelCon
     ['Spend per commit', repo().cost_per_commit == null ? 'fewer than 3 commits' : fmtUsd(repo().cost_per_commit)],
     ['Spend per changed file', repo().cost_per_file == null ? 'fewer than 5 files' : fmtUsd(repo().cost_per_file)],
   ]
+  const models = () => {
+    const chart = repoModelChart(repo()), open = props.open
+    return { ...chart, rows: chart.rows.map((row, i) => ({ ...row, open: open.model(repo().models[i]?.model ?? '') })) }
+  }
   return <div class={mine.detail} data-repo-detail>
     <dl class={`${own.facts} ${mine.wide}`}><For each={facts()}>{([label, value]) => <div><dt>{label}</dt><dd>{value}</dd></div>}</For></dl>
-    <Bars chart={repoModelChart(repo())} />
+    <Bars chart={models()} />
     <Show when={repo().bins.length} fallback={<p class={styles.note}>No spend or commit in a bin of this period.</p>}>
       <Columns chart={repoBinChart(repo(), props.range)} />
     </Show>
@@ -45,9 +50,9 @@ function RepoDetail(props: { repo: Repo; range: RepoBody['range']; ctx: PanelCon
       <h4 class={own.title}>Sessions by spend</h4>
       <ol class={own.sessions} data-sessions>
         <For each={repo().top_sessions}>{session => <li>
-          <button type="button" title={sessionHover(session)} onClick={() => props.ctx.openAgent(session.session_id, 'flow')}>
+          <button type="button" title={sessionHover(session)} onClick={() => props.open.session(session.session_id, sessionName(session))?.run()}>
             {sessionName(session)}<Show when={sessionBranch(session)}> · on {sessionBranch(session)}</Show></button>
-          <span>{toolLabel(String(session.tool ?? ''))}</span>
+          <span><Name text={toolLabel(String(session.tool ?? ''))} open={props.open.product(String(session.tool ?? ''), toolLabel(String(session.tool ?? '')))} /></span>
           <span>{money(session.cost_usd)} · {fmtNum(session.requests)} requests</span>
           <span>{fmtNum(session.commits)} commits · {fmtNum(session.files)} files · {agentTime(session.agent_ms)} working</span>
           <span>{fmtNum(session.failed)} of {fmtNum(session.calls)} calls failed</span>
@@ -60,10 +65,15 @@ function RepoDetail(props: { repo: Repo; range: RepoBody['range']; ctx: PanelCon
 }
 
 /** The grid of every repository's measures, its totals, then one fold per repository with its detail. */
-function Visual(props: { body: RepoBody; ctx: PanelContext }) {
+function Visual(props: { body: RepoBody; open: Opens }) {
+  // Row i of the grid is the answer's repository i; its name narrows the page to the repository (by its root).
+  const rows = () => {
+    const open = props.open, repos = props.body.repos
+    return repoGridRows(props.body).map((row, i) => ({ ...row, open: open.repo(repos[i]?.repo ?? '') }))
+  }
   return <div class={mine.visual}>
     <BarGrid name="repos" label="Work by repository: spend, sessions, agent working time, commits, changed files, spend per commit"
-      head="Repository or folder" columns={repoColumns(props.body)} rows={repoGridRows(props.body)} foot={repoGridFoot(props.body)} />
+      head="Repository or folder" columns={repoColumns(props.body)} rows={rows()} foot={repoGridFoot(props.body)} />
     <Show when={props.body.repos.length > SHOWN}>
       <p class={styles.note} data-more-repos>{fmtNum(props.body.repos.length - SHOWN)} more in the data table.</p>
     </Show>
@@ -75,10 +85,10 @@ function Visual(props: { body: RepoBody; ctx: PanelContext }) {
           <Show when={repoRowColour(props.body.repo_order, repo.repo) != null}>
             <span class={mine.swatch} style={{ background: repoFill(repoRowColour(props.body.repo_order, repo.repo)) }} />
           </Show>
-          <span class={own.name}>{repo.name}</span><span class={own.kind}>{repo.kind}</span>
+          <span class={own.name}><Name text={repo.name} open={props.open.repo(repo.repo)} /></span><span class={own.kind}>{repo.kind}</span>
           <span class={own.rowText}>{money(repo.cost_usd)} · {count(repo.sessions)} sessions · {fmtNum(repo.commits)} commits</span>
         </summary>
-        <RepoDetail repo={repo} range={props.body.range} ctx={props.ctx} />
+        <RepoDetail repo={repo} range={props.body.range} open={props.open} />
       </details></li>}</For>
     </ol>
   </div>
@@ -109,12 +119,13 @@ const NOTE = 'A session counts when it made a model request or a tool call in th
   'sessions that used it, all their figures).'
 
 export default function Repositories(props: CardProps) {
-  const ctx = untrack(() => props.ctx)
+  const open = opens(untrack(() => props.ctx))
+  const repo = { label: (row: Row) => open.repo(String(row.id ?? ''))?.label, run: (row: Row) => open.repo(String(row.id ?? ''))?.run() }
   return <InsightCard<RepoBody> {...props} card="repos" tab="flow" filtered
     hero={repoHero}
     finding={body => body.summary.sessions ? REPOS_LINE : 'No agent session made a model request or a tool call in this period.'}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>
-      <Visual body={body} ctx={ctx} />
+      <Visual body={body} open={open} />
     </Show>}
     note={NOTE}
     table={{
@@ -127,7 +138,7 @@ export default function Repositories(props: CardProps) {
         test_runs: repo.test_runs, cost_per_commit: repo.cost_per_commit ?? undefined,
         models: repo.models.map(model => model.model ?? 'not reported').join(', '), small: repo.small ? 'too small' : '',
       })),
-      fields: [textField('name', 'Repository or folder'), textField('path', 'Path'),
+      fields: [{ ...textField('name', 'Repository or folder'), action: repo }, { ...textField('path', 'Path'), action: repo },
         numberField('sessions', 'Sessions', fmtNum), numberField('scripted', 'By a script', fmtNum), numberField('person', 'By a person', fmtNum),
         numberField('cost_usd', 'Spend', fmtUsd), numberField('cost_share', 'Share of spend', fmtShare),
         numberField('requests', 'Requests', fmtNum), numberField('agent_ms', 'Agent working time', value => agentTime(value)),

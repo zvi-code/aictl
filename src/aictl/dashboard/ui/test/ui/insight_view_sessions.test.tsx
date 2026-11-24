@@ -287,14 +287,14 @@ describe('What the agents changed view', () => {
     const { host, dispose } = mount(() => <Changes {...props(context(changes))} />)
     const box = host.querySelector('#insight-changes')!
     expect(box.querySelector('[data-chart="files"] [data-bar="shop"] [role="tooltip"]')!.textContent).toBe('shop: 20 distinct files changed, ' +
-      '67% of 30; 80 writes, lines +100 −20; kinds: 16 source · 3 tests · 1 docs.')
+      '67% of 30; 80 writes, lines +100 −20; kinds: 16 source · 3 tests · 1 docs.\nClick: Show only the repository shop (/src/shop) on every view')
     expect(box.querySelector('[data-chart="kind-total"] [role="tooltip"]')!.textContent).toMatch(/^All repositories: 30 changed files: source 22 \(73%\)/)
     expect(box.querySelector('[data-dots="per-commit"] [data-row="shop"] [data-dot="spend"]')!.getAttribute('title'))
       .toBe('shop: $60.00 at list price ÷ 6 commits = $10.00.')
     expect(box.querySelector('[data-dots="per-commit"] [data-row="blog"] [data-dot]')).toBeNull()
     expect(box.querySelector('[data-chart="commits"] [data-column="1700000000"] rect title')!.textContent).toBe('Nov 14: 3 commits, 50 file writes.')
     expect(box.querySelector('[data-chart="reworked"] [data-bar="app.ts"] [role="tooltip"]')!.textContent)
-      .toBe('/src/shop/app.ts (source, shop): 12 writes in 4 sessions, at most 5 in one session.')
+      .toBe('/src/shop/app.ts (source, shop): 12 writes in 4 sessions, at most 5 in one session.\nClick: Open file /src/shop/app.ts')
     dispose()
   })
 

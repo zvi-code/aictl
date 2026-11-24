@@ -320,7 +320,7 @@ describe('What the agents changed', () => {
     expect(commits.querySelector('svg')!.textContent).toContain('8')
     expect(commits.querySelector('[data-column] rect title')!.textContent).toBe('Nov 14: 4 commits, 100 file writes.')
     expect(box.querySelector('[data-chart="reworked"] [data-bar="plan.md"] [role="tooltip"]')!.textContent)
-      .toBe('/src/loop/docs/plan.md (docs, loop): 90 writes in 12 sessions, at most 20 in one session.')
+      .toBe('/src/loop/docs/plan.md (docs, loop): 90 writes in 12 sessions, at most 20 in one session.\nClick: Open file /src/loop/docs/plan.md')
     expect(box.querySelector('[data-small-list]')!.textContent).toBe('Too small to compare (fewer than 20 file writes and 3 commits): t.')
     expect([...box.querySelectorAll('[data-dots="per-commit"] [data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['svc', 'loop', 't'])
     expect(box.querySelector('[data-repo-detail]')).toBeNull()

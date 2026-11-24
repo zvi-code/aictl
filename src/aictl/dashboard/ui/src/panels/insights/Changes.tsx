@@ -1,9 +1,10 @@
-import { Show } from 'solid-js'
+import { Show, untrack } from 'solid-js'
 import { fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import { Bars as SplitBars } from './Bars'
 import { activeRepos, changeLine, changeSplit, filesByKind, inRepoColour, kindTotal, perCommitDots, plainColumns } from './changesModel'
 import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { opens, type Open } from './charts/Open'
 import { DotRows } from './charts/DotRows'
 import { plural, toolLabel } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
@@ -16,26 +17,42 @@ import {
 import styles from './Insights.module.css'
 import own from './Changes.module.css'
 
-/** A one-measure chart split by repository where the server split it, else drawn whole. */
+/** What a name of this view opens: a repository (by its root) narrows the page, a rewritten file opens the file. */
+type Links = { repo: (root: string) => Open | undefined; file: (path: string) => Open | undefined }
+/** Rows with what their names open; row i is item i of the answer (the charts keep the answer's order). */
+const openRows = <R extends object>(rows: readonly R[], open: (i: number) => Open | undefined): (R & { open?: Open })[] =>
+  rows.map((row, i) => ({ ...row, open: open(i) }))
+/** A chart whose rows are repositories `items`, each name narrowing the page to its repository. */
+const repoChart = (chart: BarChart, items: readonly { repo: string }[], link: Links): BarChart =>
+  ({ ...chart, rows: openRows(chart.rows, i => link.repo(items[i]?.repo ?? '')) })
+
+/** A one-measure chart split by repository where the server split it, else drawn whole. `open`: what row i's name opens. */
 function CountBars(props: { chart: BarChart; items: readonly { repos?: RepoSegment[] }[]; order: ChangeBody['repo_order']; measureKey: string
-  unit: string; measure: string }) {
+  unit: string; measure: string; open?: (i: number) => Open | undefined }) {
   const rows = () => {
-    const unit = props.unit
-    return splitRows(props.chart, props.items, props.measureKey, props.order, value => plural(value, unit), props.measure)
+    const unit = props.unit, open = props.open
+    const split = splitRows(props.chart, props.items, props.measureKey, props.order, value => plural(value, unit), props.measure)
+    return split && open ? openRows(split, open) : split
   }
   return <Show when={rows()} fallback={<Bars chart={props.chart} />}>{split => <SplitBars name={props.chart.id} title={props.chart.title}
     axis={`${props.chart.axis} A segment per repository.`} rows={split()} />}</Show>
 }
 
-function Visual(props: { body: ChangeBody; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+function Visual(props: { body: ChangeBody; mode: ColourMode; setMode: (mode: ColourMode) => void; link: Links }) {
   const split = () => changeSplit(props.body)
   const byRepo = () => split() && props.mode === 'repo'
   const shown = () => activeRepos(props.body, SHOWN)
   const order = () => props.body.repo_order
   // Charts whose rows are repositories: by their own parts, or each bar in its repository's colour.
-  const coloured = (chart: BarChart, items = shown()) => byRepo() ? inRepoColour(chart, items, order()) : chart
+  const coloured = (chart: BarChart, items = shown()) => repoChart(byRepo() ? inRepoColour(chart, items, order()) : chart, items, props.link)
   const kinds = () => FILE_KINDS.map(kind => ({ repos: props.body.summary.kind_repos?.[kind.id] }))
-  const dots = () => perCommitDots(props.body, shown(), byRepo())
+  const dots = () => {
+    const repos = shown(), link = props.link, all = perCommitDots(props.body, repos, byRepo())
+    return { ...all, rows: openRows(all.rows, i => link.repo(repos[i]?.repo ?? '')) }
+  }
+  // A rewritten file's name opens the file; a kind of file is many files and stays text.
+  const files = () => props.body.files.slice(0, SHOWN)
+  const fileOpen = (i: number) => props.link.file(files()[i]?.path ?? '')
   const bins = (what: 'commits' | 'writes') => byRepo() ? changeBinChart(props.body, what) : plainColumns(changeBinChart(props.body, what))
   return <>
     <ColourBy parts="Kind of file and commit" value={byRepo() ? 'repo' : 'parts'} onChange={props.setMode} split={split()} />
@@ -43,7 +60,7 @@ function Visual(props: { body: ChangeBody; mode: ColourMode; setMode: (mode: Col
       <RepoLegend split={props.body} other={hasOther([...props.body.repos, ...props.body.files, ...props.body.bins, ...kinds()])} />
     </Show>
     <div class={own.grid}>
-      <Bars chart={byRepo() ? inRepoColour(changeFilesChart(props.body), shown(), order()) : filesByKind(props.body)} />
+      <Bars chart={repoChart(byRepo() ? inRepoColour(changeFilesChart(props.body), shown(), order()) : filesByKind(props.body), shown(), props.link)} />
       <Show when={byRepo()} fallback={<Bars chart={kindTotal(props.body)} />}>
         <CountBars chart={changeKindChart(props.body)} items={kinds()} order={order()} measureKey="files" unit="file" measure="changed files" />
       </Show>
@@ -56,9 +73,9 @@ function Visual(props: { body: ChangeBody; mode: ColourMode; setMode: (mode: Col
       <DotRows name="per-commit" title="Spend and agent working time per commit" measures={dots().measures} rows={dots().rows}
         axis="Each measure on its own linear axis from 0. Spend is list price, not a bill; needs 3 commits." />
       <Show when={props.body.files.length} fallback={<p class={styles.note}>No file was written in 3 sessions or 5 times in one.</p>}>
-        <Show when={byRepo()} fallback={<Bars chart={reworkedChart(props.body)} />}>
-          <CountBars chart={reworkedChart(props.body)} items={props.body.files.slice(0, SHOWN)} order={order()} measureKey="writes" unit="write"
-            measure="writes" />
+        <Show when={byRepo()} fallback={<Bars chart={{ ...reworkedChart(props.body), rows: openRows(reworkedChart(props.body).rows, fileOpen) }} />}>
+          <CountBars chart={reworkedChart(props.body)} items={files()} order={order()} measureKey="writes" unit="write"
+            measure="writes" open={fileOpen} />
         </Show>
       </Show>
     </div>
@@ -90,12 +107,14 @@ const NOTE = 'A change is a file write event of the period that an agent made (a
   'field marks them. The page\'s project, tool and model filters apply.'
 
 export default function Changes(props: CardProps) {
+  const open = opens(untrack(() => props.ctx))
+  const link: Links = { repo: open.repo, file: open.file }
   const [mode, setMode] = useColourBy()
   return <InsightCard<ChangeBody> {...props} card="changes" tab="flow" filtered
     hero={changeHero}
     finding={changeLine}
     visual={body => <Show when={body.repos.length} fallback={<p class={styles.note}>No session in this period.</p>}>
-      <Visual body={body} mode={mode()} setMode={setMode} />
+      <Visual body={body} mode={mode()} setMode={setMode} link={link} />
     </Show>}
     note={NOTE}
     table={{
@@ -107,7 +126,9 @@ export default function Changes(props: CardProps) {
         config: repo.kinds.config, cost_per_commit: repo.cost_per_commit ?? undefined, uncommitted_sessions: repo.uncommitted_sessions,
         small: repo.small ? 'too small' : '',
       })),
-      fields: [textField('name', 'Repository or folder'), numberField('files', 'Files changed', fmtNum),
+      fields: [{ ...textField('name', 'Repository or folder'),
+        action: { label: row => open.repo(String(row.id ?? ''))?.label, run: row => open.repo(String(row.id ?? ''))?.run() } },
+        numberField('files', 'Files changed', fmtNum),
         numberField('writes', 'Writes', fmtNum), numberField('committed_share', 'Committed', fmtShare),
         numberField('lines_added', 'Lines added', fmtNum), numberField('lines_removed', 'Lines removed', fmtNum),
         numberField('reworked', 'Reworked files', fmtNum), numberField('commits', 'Commits', fmtNum),
