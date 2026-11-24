@@ -4,13 +4,12 @@ import threading
 
 import pytest
 
-from aictl.records import CallFacts, SessionStepRow, ToolInvocationRow
+from aictl.records import CallFacts, SessionStepRow
 from aictl.session_facts import SessionFacts
 from aictl.stores.base import InvalidRowError, StoreError
 from aictl.stores.kusto import client
 from aictl.stores.kusto.writer import KustoWriter
 from aictl.stores.testing import MemoryWriter
-from aictl.tool_calls import write_size_fills
 
 
 class Sink:
@@ -190,18 +189,6 @@ def test_transcript_handoff_paces_writer_before_queue_drops_rows(monkeypatch):
     writer.flush()
     assert stats(writer, "session_steps")["rows_dropped"] == 0
     assert stats(writer, "session_steps")["rows_sent"] == 10
-
-    rows = [
-        ToolInvocationRow(
-            ts=float(i), session_id="sid", tool="copilot-cli", tool_name="view",
-            source="transcript", dedup_key=f"t-{i}", input_bytes=10, output_bytes=20,
-        )
-        for i in range(10)
-    ]
-    write_size_fills(writer, rows)
-    writer.flush()
-    assert stats(writer, "tool_invocation_sizes")["rows_dropped"] == 0
-    assert stats(writer, "tool_invocation_sizes")["rows_sent"] == 10
 
     sink.error = RuntimeError("kusto unavailable")
     with pytest.raises(StoreError, match="kusto unavailable"):

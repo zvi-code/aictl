@@ -45,6 +45,12 @@ _LAYOUT_COLUMNS = ("kind", "node_id", "version", "compatible_since", "data_epoch
 LAYOUT_QUERY = f"{quote(LAYOUT_TABLE)} | project {', '.join(quote(c) for c in _LAYOUT_COLUMNS)} | take 100000"
 # Tables earlier aictl versions created. They belong to aictl, and a reset drops them.
 LEGACY_OWNED = frozenset({"aictl_information_schema"})
+# Logical tables aictl defined before and nothing writes or reads now. aictl still owns them, so a
+# reset drops their node tables and the function sync drops their functions; nothing creates them.
+RETIRED_TABLES = COMPANIONS | frozenset({
+    "tool_invocation_coverage", "tool_invocation_sizes", "files_text", "projects", "tool_invocations_observations_text",
+    "agents_observations_text",
+})
 NODE_TABLES = "node_tables"  # the registry step of the database-wide copy that made the node tables (layout 3)
 _TYPES = {
     "System.Int32": "int",
@@ -64,7 +70,7 @@ def logical_tables() -> frozenset[str]:
     """Every logical table aictl defines, the shared ones included."""
     from .otel import TABLES as OTEL_TABLES
 
-    return frozenset(TABLES) | {t.name for t in OTEL_TABLES} | COMPANIONS
+    return frozenset(TABLES) | {t.name for t in OTEL_TABLES} | RETIRED_TABLES
 
 
 def owned_tables() -> frozenset[str]:
@@ -461,13 +467,13 @@ def function_commands(state: LayoutState, logical: Iterable[str]) -> list[str]:
     included = [node for node in state.nodes.values() if node.included]
     commands = []
     for name in sorted(set(logical) - N.SHARED_TABLES):
-        if name not in TABLES:
-            continue  # a table a newer aictl added: its nodes keep its function
-        legs = sorted(node.tables[name] for node in included if name in node.tables)
-        if "_observations" in name and not legs:
+        if name in RETIRED_TABLES:
             if name in state.functions:
                 commands.append(f".drop function {quote(name)} ifexists")
             continue
+        if name not in TABLES:
+            continue  # a table a newer aictl added: its nodes keep its function
+        legs = sorted(node.tables[name] for node in included if name in node.tables)
         collector = name if name in N.COLLECTOR_TABLES and name in state.have else None
         body = N.function_body(logical_columns(name), legs, collector)
         if N.normalized_body(state.functions.get(name)) != N.normalized_body(body):
@@ -647,8 +653,7 @@ def ensure_schema(
     key = N.node_key(node_id)
     have, details = state.have, state.details
     specs = {name: logical_columns(name) for name, table in tables.items()
-             if name not in N.SHARED_TABLES and ("_observations" not in name or N.physical(name, key) in have
-                                                    or name in have or N.legacy_name(name) in have)}
+             if name not in N.SHARED_TABLES}
     mapping = {name: N.physical(name, key) for name in specs}
     for name, columns in [*((mapping[n], c) for n, c in specs.items()),
                           (LAYOUT_TABLE, TABLES[LAYOUT_TABLE].columns)]:

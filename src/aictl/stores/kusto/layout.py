@@ -124,7 +124,9 @@ CHANGES: tuple[Change, ...] = (
         "session_turns: a tombstone column _deleted. New columns: requests.api_call_id, session_steps.prompt_id, "
         "turn_request_links.prompt_id, session_prompts.prompt_id, skill_uses.tool_call_id and prompt_id, "
         "session_commits.basis, source_event_id, agent_id and prompt_id, sessions.merged_into (set on tombstones only). "
-        "tool_invocations.request_id (long, always 0) is dropped.",
+        "tool_invocations.request_id (long, always 0) is dropped. The tables that nothing wrote or read back are removed: "
+        "tool_invocation_coverage, tool_invocation_sizes, files_text, projects, and the *_observations and "
+        "*_observations_text tables of an older aictl; a reset drops their node tables and stored functions.",
         breaks=True,
     ),
 )

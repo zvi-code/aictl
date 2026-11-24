@@ -55,7 +55,6 @@ AUTO_INLINE_TABLES = frozenset(
     {
         "schema_version",
         "tools",
-        "projects",
         "processes",
         "sessions",
         "session_processes",

@@ -74,7 +74,6 @@ class ToolCalls:
         self._calls: OrderedDict[str, tuple[Row, Row]] = OrderedDict()
         self._sessions: dict[str, set[str]] = defaultdict(set)
         self._coverage: OrderedDict[str, float] = OrderedDict()
-        self._coverage_pending: dict[str, Row] = {}
         self._pending: OrderedDict[tuple[str, str, str, str], tuple[float, ToolInvocationRow]] = OrderedDict()
 
     def record(self, rows: Iterable[ToolInvocationRow]) -> int:
@@ -155,24 +154,12 @@ class ToolCalls:
             self._coverage.move_to_end(sid)
             if len(self._coverage) > self._limit:
                 self._coverage.popitem(last=False)
-            self._coverage_pending[sid] = {"project": project, "session_id": sid, "covered_through": row.ts}
-            if len(self._coverage_pending) >= 500:
-                self._publish_coverage()
             for other_key in self._sessions.get(sid, set()).copy():
                 other, _ = self._calls[other_key]
                 if other["source"] in ("hook", "otel") and other["ts"] <= row.ts:
                     self._writer.delete("tool_invocations", [other])
                     self._forget(other_key, sid)
         return 1
-
-    def publish_coverage(self) -> None:
-        with self._lock:
-            self._publish_coverage()
-
-    def _publish_coverage(self) -> None:
-        if self._coverage_pending:
-            self._writer.upsert("tool_invocation_coverage", self._coverage_pending.values())
-            self._coverage_pending.clear()
 
     def hook(self, row: ToolInvocationRow, *, start: bool) -> Row | str:
         """Pair hook start and completion. Return the input for file edit extraction."""
@@ -230,18 +217,3 @@ class ToolCalls:
                     row, text = self._calls[key]
                     self._save(row | {"tool": tool}, text, row, text)
 
-
-def write_size_fills(writer: Writer, rows: Iterable[ToolInvocationRow]) -> int:
-    """Keep replayed size evidence separate so it cannot overwrite an existing call."""
-    sizes = [
-        {"project": row.project_path, "dedup_key": _key(row),
-         "input_bytes": row.input_bytes, "output_bytes": row.output_bytes}
-        for row in rows if row.input_bytes is not None or row.output_bytes is not None
-    ]
-    pace = getattr(writer, "pace", None)
-    chunk = max(1, min(2000, getattr(writer, "_max_rows", 4000) // 2))
-    for start in range(0, len(sizes), chunk):
-        writer.upsert("tool_invocation_sizes", sizes[start : start + chunk])
-        if callable(pace):
-            pace()
-    return len(sizes)

@@ -564,8 +564,6 @@ class FactBuffer:
             self.flush(retry=False)
 
     def flush(self, *, retry: bool = True) -> None:
-        if self.tool_calls is not None:
-            self.tool_calls.publish_coverage()
         if not len(self) or (self.write_error is not None and not retry):
             return
         self._take_marked()

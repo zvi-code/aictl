@@ -251,7 +251,7 @@ class TestDbReset:
         monkeypatch.setattr(maintenance.KustoClientFactory, "client", lambda _: MagicMock(execute_mgmt=receive))
         monkeypatch.setattr(maintenance, "restart_directory", lambda *_: tmp_path)
         done = maintenance.trim_text(settings, 1000, dry_run=True)
-        assert "events_text" in done and "files_text" in done and "OTELLogs" not in done
+        assert "events_text" in done and "file_blobs" in done and "OTELLogs" not in done
         for call in receive.call_args_list:
             database, command = call.args
             assert database == "aictl_perf_test"

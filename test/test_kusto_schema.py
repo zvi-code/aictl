@@ -19,7 +19,7 @@ def test_schema_includes_all_otlp_wire_columns():
 
 @pytest.mark.parametrize("existing", [None, "requests", "requests_observations", CURRENT_STORE])
 def test_schema_marks_only_a_fresh_report_layout(existing):
-    tables = {name: TABLES[name] for name in ("requests", "tool_invocations", "requests_observations")}
+    tables = {name: TABLES[name] for name in ("requests", "tool_invocations")}
     columns = [("TableName", "string"), ("ColumnName", "string"), ("ColumnType", "string")]
 
     def mgmt(command):
@@ -33,9 +33,8 @@ def test_schema_marks_only_a_fresh_report_layout(existing):
     ensure_schema(client, "test", tables=tables, modes=dict.fromkeys(tables, "queued"))
     creates = [c for c in client.commands if c.startswith(".create-merge table")]
     assert any(CURRENT_STORE in command for command in creates) == (existing is None)
-    # Each node writes its own tables (nodes.py); an observation companion only where one existed.
+    # Each node writes its own tables (nodes.py); a retired observation table is never created, not even where one exists.
     key = N.node_key("")
-    assert any(f"['requests_observations__{key}']" in command for command in creates) == (
-        existing == "requests_observations")
+    assert not any("_observations" in command for command in creates)
     assert any(f"['requests__{key}']" in command for command in creates)
     assert any(f"['tool_invocations__{key}']" in command for command in creates)

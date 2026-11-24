@@ -37,7 +37,7 @@ class TestClasses:
         assert dict(RETENTION_DEFAULTS) == {**dict.fromkeys(RETENTION_CLASSES, 365 * 24),
                                             "tool_content": 24, "large_payload": 24}
         short = {name for name, cls in TABLE_RETENTION_CLASS.items() if cls in ("tool_content", "large_payload")}
-        assert short == {"tool_invocations_text", "tool_invocations_observations_text", "hook_calls_text", "text_payloads"}
+        assert short == {"tool_invocations_text", "hook_calls_text", "text_payloads"}
         assert {TABLES[name].retention_literal for name in short} == {"24h"}
         assert {TABLES[name].retention_literal for name in TABLES.keys() - short} == {"365d"}
 

@@ -73,7 +73,7 @@ TRIM_TIMESTAMPS = {
 }
 TRIM_TIMESTAMPS.update({
     name: ("_v", "datetime") for name in (
-        "agents_observations_text", "file_blobs", "files_text", "tool_invocations_text", "tool_invocations_observations_text",
+        "file_blobs", "tool_invocations_text",
     )
 })
 TRIM_TIMESTAMPS["OTELPayloads"] = ("Timestamp", "datetime")
