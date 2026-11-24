@@ -4,10 +4,11 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import ProblemSessions from '../../src/panels/insights/ProblemSessions'
 import { EVIDENCE, evidenceNote, fewText, MODEL_SESSIONS, withEvidence } from '../../src/panels/insights/evidence'
 import {
-  failureFinding, fixedFinding, fixedHero, pauseFinding, problemFinding, subagentFinding, timeFinding,
+  failureFinding, fixedFinding, fixedHero, pauseFinding, subagentFinding, timeFinding,
   type FailureBody, type FixedBody, type PauseBody, type ProblemBody, type SubagentBody, type TimeBody,
 } from '../../src/panels/insights/insightsModel'
 import { modelFinding, modelHero, type ModelBody } from '../../src/panels/insights/modelReportModel'
+import { signalToolGrid } from '../../src/panels/insights/problemsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { installDom, layoutHeaders, mount } from './dom'
 
@@ -78,8 +79,8 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
       listed: null } })
     expect(fixedFinding(fixed, label)).toContain(`${BIG} sessions carry a median 12 k tokens`)
     expect(fixedHero(fixed)?.label).toContain(BIG)
-    expect(problemFinding(shown<ProblemBody>('problems', { pairs: [], projects: [], summary: { sessions: 5486, flagged: 549, flagged_share: 0.1, multi: 0,
-      flagged_cost_usd: 1 } }), label)).toContain(`sessions of ${BIG} (the tool with the most sessions)`)
+    expect(signalToolGrid(shown<ProblemBody>('problems', { pairs: [], projects: [], summary: { sessions: 5486, flagged: 549, flagged_share: 0.1,
+      multi: 0, flagged_cost_usd: 1 } }), label).columns.map(column => column.key)).toEqual([BIG])
     expect(pauseFinding(shown<PauseBody>('pause', { summary: { tools: [BIG, SMALL], requests: 1000, cost_usd: 100, baseline_usd: 50 } }), label))
       .not.toContain(SMALL)
     // Models: only models seen in the minimum of sessions are compared, and the headline states the stake behind its ratio.
@@ -118,7 +119,7 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
     const { host, dispose } = mount(() => <ProblemSessions ctx={ctx} since={0} until={10} />)
     flush()
     const box = host.querySelector('#insight-problems')!
-    expect(box.querySelector('[data-by-tool]')!.textContent).toBe(`By tool: ${BIG} 549 of 5,484 sessions (10%).`)
+    expect([...box.querySelectorAll('[data-chart="problem-counts"] [data-row]')].map(row => row.getAttribute('data-row'))).toEqual([BIG])
     expect(box.querySelector('[data-hero]')!.textContent).not.toContain(SMALL)
     expect(box.querySelector('[data-finding]')!.textContent).not.toContain(SMALL)
     expect(box.querySelector('[data-few]')!.textContent).toBe(`${SMALL}: 2 sessions, too few to compare.`)

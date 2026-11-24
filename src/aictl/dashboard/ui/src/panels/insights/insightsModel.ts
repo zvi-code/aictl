@@ -779,27 +779,8 @@ export const SIGNAL_LABELS: Record<Signal, string> = {
   api_error: 'Ended on an API error', open_todos: 'Open todos', hook_failure: 'Hook failure',
 }
 export const SIGNALS = Object.keys(SIGNAL_LABELS) as Signal[]
-
-export function problemFinding(body: ProblemBody, label: Label) {
-  const s = body.summary
-  if (!s.sessions) return 'No session in this period is of a tool that reports a problem signal.'
-  const pair = body.pairs[0]
-  const lead = [...body.tools].filter(tool => tool.reports).sort((a, b) => b.sessions - a.sessions)[0]
-  const top = (lead ? lead.signals.filter(cell => cell.reported && cell.sessions).map(cell => ({ tool: lead, cell })) : [])
-    .sort((a, b) => (b.cell.sessions ?? 0) - (a.cell.sessions ?? 0))[0]
-  const flagged = `${fmtNum(s.flagged)} of ${plural(s.sessions, 'session')} (${share(s.flagged_share)}) of the tools that record the ` +
-    `signals recorded at least one of the six; their requests cost ${money(s.flagged_cost_usd)} at list price. ` +
-    `${fmtNum(s.multi)} recorded two or more` +
-    (pair ? `; the pair in the most sessions is ${SIGNAL_LABELS[pair.signals[0]].toLowerCase()} with ` +
-      `${SIGNAL_LABELS[pair.signals[1]].toLowerCase()} (${plural(pair.sessions, 'session')})` : '') + '.'
-  const most = top ? ` Signal in the most sessions of ${label(top.tool.tool)} (the tool with the most sessions): ` +
-    `${SIGNAL_LABELS[top.cell.signal].toLowerCase()}, ${plural(top.cell.sessions ?? 0, 'session')}, ${share(top.cell.share)} of its sessions.` : ''
-  const project = body.projects[0]
-  const where = project && project.cost_usd != null ? ` Project with the largest cost of flagged sessions: ${projectName(project.project)}, ` +
-    `${plural(project.sessions, 'session')}, ${money(project.cost_usd)}` +
-    (s.flagged_cost_usd ? ` (${share(project.cost_usd / s.flagged_cost_usd)} of the flagged cost).` : '.') : ''
-  return flagged + where + most
-}
+/** A signal's name inside a sentence: its label with the first letter lower case only ("ended on an API error"). */
+export const signalName = (signal: Signal) => lower(SIGNAL_LABELS[signal])
 
 /** What puts a session under each signal, as the view records it. */
 export const SIGNAL_RULES: Record<Signal, string> = {
@@ -809,8 +790,8 @@ export const SIGNAL_RULES: Record<Signal, string> = {
 }
 /** The hover of one signal of one tool: its sessions, their share of the tool's sessions, their cost, and the rule. */
 export function problemSignalHover(tool: ProblemTool, cell: SignalCell, label: Label) {
-  if (!cell.reported) return `${label(tool.tool)}, ${SIGNAL_LABELS[cell.signal].toLowerCase()}: not recorded by this tool, so not counted.`
-  return `${label(tool.tool)}, ${SIGNAL_LABELS[cell.signal].toLowerCase()}: ${fmtNum(cell.sessions ?? 0)} of ${plural(tool.sessions, 'session')} ` +
+  if (!cell.reported) return `${label(tool.tool)}, ${signalName(cell.signal)}: not recorded by this tool, so not counted.`
+  return `${label(tool.tool)}, ${signalName(cell.signal)}: ${fmtNum(cell.sessions ?? 0)} of ${plural(tool.sessions, 'session')} ` +
     `(${share(cell.share)}); their requests cost ${money(cell.cost_usd)} at list price. Rule: ${SIGNAL_RULES[cell.signal]}.`
 }
 /** A tool's sessions by how many signals they recorded: none, one, two or more. */
@@ -840,16 +821,17 @@ export function problemCountHover(tool: ProblemTool, part: 'none' | 'one' | 'mul
   const n = problemCounts(tool)[part]
   const what = part === 'none' ? 'no signal' : part === 'one' ? 'exactly one signal' : 'two or more signals'
   return `${label(tool.tool)}: ${plural(n, 'session')} with ${what}, ${share(ratio(n, tool.sessions))} of its ${plural(tool.sessions, 'session')}` +
-    (part === 'none' ? '.' : `; all its flagged sessions cost ${money(tool.flagged_cost_usd)} of ${money(tool.cost_usd)} at list price.`)
+    (part === 'none' ? '.' : `; ${fmtNum(tool.flagged ?? 0)} (${share(ratio(tool.flagged ?? 0, tool.sessions))}) recorded one or more, ` +
+      `costing ${money(tool.flagged_cost_usd)} of ${money(tool.cost_usd)} at list price.`)
 }
 export function problemPairHover(pair: ProblemPair, flagged: number) {
-  return `${SIGNAL_LABELS[pair.signals[0]]} and ${SIGNAL_LABELS[pair.signals[1]].toLowerCase()} in the same session: ` +
+  return `${SIGNAL_LABELS[pair.signals[0]]} and ${signalName(pair.signals[1])} in the same session: ` +
     `${plural(pair.sessions, 'session')} (${share(ratio(pair.sessions, flagged))} of the ${fmtNum(flagged)} flagged sessions), ` +
     `their requests cost ${money(pair.cost_usd)} at list price.`
 }
 /** The hover of a grid cell: one signal in one project (or every other project summed). */
 export function problemCellHover(project: string, signal: Signal, sessions: number, all: number | null) {
-  return `${project}, ${SIGNAL_LABELS[signal].toLowerCase()}: ${plural(sessions, 'session')}` +
+  return `${project}, ${signalName(signal)}: ${plural(sessions, 'session')}` +
     (all == null ? ' (summed; no session total to take a share of).' : `, ${share(ratio(sessions, all))} of its ${plural(all, 'session')}.`) +
     ` Rule: ${SIGNAL_RULES[signal]}.`
 }
@@ -918,8 +900,8 @@ export const fixedHero = (body: FixedBody) => body.summary.never_used_share != n
   : fixedLead(body) ? hero(fixedLead(body)!.p50_tokens, value => `${fmtN(value)} tokens`,
     `median fixed context of a ${toolLabel(fixedLead(body)!.tool)} session before any work (estimated)`) : undefined
 export const problemHero = (body: ProblemBody) => hero(body.summary.flagged_share, fmtShare,
-  `of the sessions of tools that record the six signals recorded at least one: ${fmtNum(body.summary.flagged)} of ` +
-  `${plural(body.summary.sessions, 'session')}, ${money(body.summary.flagged_cost_usd)} at list price`)
+  `of ${plural(body.summary.sessions, 'session')} recorded one or more signals (${fmtNum(body.summary.flagged)}; ` +
+  `${fmtNum(body.summary.multi)} two or more) · ${money(body.summary.flagged_cost_usd)} at list price`)
 export function orientationHero(body: OrientationBody) {
   // The project with the most sessions that edit leads, not the one with the largest median.
   const top = body.projects.find(project => project.p50_requests != null)

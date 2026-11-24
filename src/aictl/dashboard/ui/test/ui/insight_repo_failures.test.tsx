@@ -267,34 +267,40 @@ describe('INS-RS-F · Problem sessions: bars split by repository', () => {
       .toEqual([[['/src/app', 22, 22 / 30], ['', 8, 8 / 30]], [['/src/app', 5, 5 / 6], ['', 1, 1 / 6]], [['/src/app', 3, 0.75], ['', 1, 0.25]]])
   })
 
-  it('keeps the bar by number of signals, adds a row per count split by repository, and splits the signals and the pairs', () => {
+  it('colours the counts by number of signals, or by repository with the legend once; the grids name repositories on hover', () => {
+    const own = draw(ProblemSessions, 'problems', problems)
+    expect(own.box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(texts(own.box.querySelectorAll('[data-chart="problem-counts"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['multi', 'one', 'none'])
+    expect(own.box.querySelector('[data-heat="problem-tools"] [data-cell="claude-code:compaction"]')!.getAttribute('title')).toBe(
+      'claude-code, repeated compaction: 6 of 40 sessions (15%); their requests cost $12.00 at list price. Rule: 3 or more compactions ' +
+      'in the session. By repository: app 5 (83% of these, 20% of its own; $10.00), docs 1 (17% of these; $2.00).')
+    expect(own.box.querySelector('[data-heat="problem-pairs"] [data-cell="compaction+failure_streak"]')!.getAttribute('title'))
+      .toContain('By repository: app 3 (75% of these; $6.00), docs 1 (25% of these; $4.00).')
+    own.dispose()
+    history.replaceState(null, '', '/?screen=insights&range=all&by=repo')
     const { box, dispose } = draw(ProblemSessions, 'problems', problems)
     expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect(texts(box.querySelectorAll('[data-chart="problem-counts"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['multi', 'one', 'none'])
+    expect(box.querySelector('[data-chart="problem-counts"]')).toBeNull()
     const counts = box.querySelector('[data-chart="problem-counts-repos"]')!
     expect(texts(counts.querySelectorAll('[data-row]'), row => row.getAttribute('data-row'))).toEqual(['claude-code:multi', 'claude-code:one', 'claude-code:none'])
     const none = counts.querySelector('[data-row="claude-code:none"]')!
     expect([repos(none), written(none)]).toEqual([['0', OTHER_TEXT], ['22', '8']])
     expect(tip(none, 'repo:/src/app')).toBe('claude-code, sessions with no signal — app (/src/app): 22 · 73% of this bar. claude-code: 30 ' +
       'sessions with no signal, 75% of its 40 sessions.')
-    const signals = box.querySelector('[data-chart="problem-signals-claude-code"]')!
-    const compaction = signals.querySelector('[data-row="compaction"]')!
-    expect([repos(compaction), written(compaction)]).toEqual([['0', '1'], ['5', '1']])
-    expect(tip(compaction, 'repo:/src/app')).toMatch(/^claude-code, repeated compaction — app \(\/src\/app\): 5 · 83% of this bar · 20% of app own sessions with this signal\. claude-code, repeated compaction: 6 of 40 sessions/)
-    expect(signals.querySelectorAll('[data-row="api_error"] [data-part]').length).toBe(0)
-    expect(repos(box.querySelector('[data-chart="problem-pairs"] [data-row]')!)).toEqual(['0', '1'])
     dispose()
   })
 
-  it('draws the old bars when the answer carries no split', () => {
+  it('draws the counts by number of signals and offers no switch when the answer carries no split', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&by=repo')
     const plain = { ...problems, repo_order: [], repo_others: null,
       tools: problems.tools.map(tool => ({ ...tool, repos: undefined, signals: tool.signals.map(cell => ({ ...cell, repos: undefined })) })),
       pairs: problems.pairs.map(pair => ({ ...pair, repos: undefined })) } as unknown as ProblemBody
     const { box, dispose } = draw(ProblemSessions, 'problems', plain)
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="problem-counts-repos"]')).toBeNull()
-    expect(texts(box.querySelectorAll('[data-chart="problem-signals-claude-code"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['compaction'])
-    expect(texts(box.querySelectorAll('[data-chart="problem-pairs"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['sessions'])
+    expect(texts(box.querySelectorAll('[data-chart="problem-counts"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['multi', 'one', 'none'])
+    expect(box.querySelector('[data-heat="problem-tools"] [data-cell="claude-code:compaction"]')!.getAttribute('title')).not.toContain('By repository')
     dispose()
   })
 })

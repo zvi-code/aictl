@@ -1,0 +1,2 @@
+/* Problem sessions at full width: the bars per tool beside the grid per tool, the grid of pairs beside the grid per project. */
+.grid { display: grid; gap: var(--space-6) var(--space-7); grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr)); align-items: start; }

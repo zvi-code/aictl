@@ -12,10 +12,11 @@ import Orientation from '../../src/panels/insights/Orientation'
 import FixedContext from '../../src/panels/insights/FixedContext'
 import ProblemSessions from '../../src/panels/insights/ProblemSessions'
 import { fmtHours } from '../../src/design/format'
+import { problemLine } from '../../src/panels/insights/problemsModel'
 import {
   carryFinding, causeText, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, pauseHero, toolLabel, rereadFinding, subagentFinding,
   type PauseCauseLead,
-  contextFinding, fixedFinding, fixedHero, orientationFinding, problemFinding, problemHero, timeFinding, type FixedBody,
+  contextFinding, fixedFinding, fixedHero, orientationFinding, problemHero, timeFinding, type FixedBody,
   type ProblemBody, type CarryBody, type ContextBody, type OrientationBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
   type TimeBody,
 } from '../../src/panels/insights/insightsModel'
@@ -633,57 +634,58 @@ describe('INS-08 · Fixed context overhead', () => {
 })
 
 describe('INS-09 · Problem sessions', () => {
-  it('states the flagged share, the most frequent pair and the most frequent signal from the response', () => {
-    expect(problemFinding(problems, tool => tool)).toBe('868 of 2,537 sessions (34%) of the tools that record the signals recorded ' +
-      'at least one of the six; their requests cost $36 k at list price. 709 recorded two or more; the pair in the most sessions ' +
-      'is failure streak with hook failure (670 sessions). Project with the largest cost of flagged sessions: alpha, 673 sessions, ' +
-      '$632 (2% of the flagged cost). Signal in the most sessions of copilot-cli (the tool with the most sessions): failure streak, ' +
-      '742 sessions, 34% of its sessions.')
-    expect(problemFinding(problems, tool => tool)).not.toMatch(/problem|costliest/)
-    expect(problemHero(problems)).toEqual({ value: '34%', label: 'of the sessions of tools that record the six signals recorded at least ' +
-      'one: 868 of 2,537 sessions, $36 k at list price' })
+  it('says under the title what is counted, and leads with the share of sessions that recorded a signal', () => {
+    expect(problemLine(problems)).toBe('Sessions of the period counted by the signals they recorded (repeated compaction, failure ' +
+      'streak, failed delegation, API error, open todos, hook failure), per tool, per pair of signals and per project.')
+    expect(problemLine(problems)).not.toMatch(/problem|costliest|\d/)
+    expect(problemHero(problems)).toEqual({ value: '34%', label: 'of 2,537 sessions recorded one or more signals (868; 709 two or ' +
+      'more) · $36 k at list price' })
     const none = { ...problems, tools: [problems.tools[2]], pairs: [], projects: [],
       summary: { sessions: 0, flagged: 0, flagged_share: null, multi: 0, flagged_cost_usd: null, not_reporting: ['codex-cli'] } } as ProblemBody
-    expect(problemFinding(none, tool => tool)).toBe('No session in this period is of a tool that reports a problem signal.')
+    expect(problemLine(none)).toBe('No session in this period is of a tool that reports a problem signal.')
     expect(problemHero(none)).toBeUndefined()
   })
 
-  it('draws signals by the projects whose flagged sessions cost the most, the rest summed, and names the tools in one line', () => {
+  it('draws signals by tool, pairs and projects as heat grids, the small project summed, and the counts per tool as 100% bars', () => {
     const { ctx } = context(ready)
     const { host, dispose } = mount(() => <ProblemSessions {...props(ctx)} />)
     const box = card(host, 'problems')
-    const header = [...box.querySelectorAll('[role="table"] [data-head] [role="columnheader"]')].map(th => th.textContent)
+    const projects = box.querySelector('[data-heat="problem-projects"]')!
+    const header = [...projects.querySelectorAll('[role="columnheader"]')].map(th => th.textContent)
     // A project with 3 sessions is under the card's minimum of 10: it is summed into the rest, not drawn as a column.
-    expect(header).toEqual(['Signal', 'alpha673 of 836 sessions · $632', 'Other projects195 sessions flagged · $35 k'])
-    const streak = box.querySelectorAll('[data-signal="failure_streak"] [role="cell"]')
+    expect(header).toEqual(['signal ↓ · project →', 'alpha673 of 836 sessions · $632', 'Other projects195 sessions flagged · $35 k'])
+    const streak = projects.querySelectorAll('[data-row="failure_streak"] [role="cell"]')
     expect(streak[0].textContent).toBe('60072%')
-    expect(streak[0].getAttribute('style')).toContain('color-mix(in srgb, var(--color-danger) 36%, var(--color-surface))')
-    // The rest has no session count of its own to take a share of: a count, no tint.
+    expect(streak[0].getAttribute('style')).toContain('color-mix(in srgb, var(--color-chart-1) 45%, var(--color-surface))')
+    // The rest has no session count of its own to take a share of: a count, no shade.
     expect(streak[1].textContent).toBe('181')
     expect(streak[1].getAttribute('style')).toBeNull()
-    expect(box.querySelectorAll('[data-signal="compaction"] [role="cell"]')[1].textContent).toBe('28')
+    expect(projects.querySelectorAll('[data-row="compaction"] [role="cell"]')[1].textContent).toBe('28')
     expect(box.querySelector('[data-few-projects]')!.textContent).toBe('Summed into other projects, too few sessions to compare: tiny (3 sessions).')
-    expect(box.querySelector('[data-by-tool]')!.textContent).toBe('By tool: copilot-cli 802 of 2,159 sessions (37%) · claude-code 66 of 378 sessions (17%).')
-    expect(box.textContent).toContain('No signal is recorded by codex-cli; left out.')
+    expect(box.querySelector('[data-not-reporting]')!.textContent).toBe('No signal is recorded by codex-cli; left out.')
     expect(streak[0].getAttribute('title')).toBe('alpha, failure streak: 600 sessions, 72% of its 836 sessions. Rule: 3 or more ' +
       'failed tool calls in a row by one agent.')
-    const pairs = box.querySelectorAll('[data-chart="problem-pairs"] [data-row]')
-    expect(pairs[0].textContent).toContain('Failure streak + hook failure')
-    expect(pairs[0].querySelector('[data-total]')!.textContent).toBe('670 sessions · $438')
-    expect(pairs[0].querySelector('[role="tooltip"]')!.textContent).toBe('Failure streak and hook failure in the same session: ' +
+    const pairs = box.querySelector('[data-heat="problem-pairs"]')!
+    const both = pairs.querySelector('[data-cell="failure_streak+hook_failure"]')!
+    expect(both.textContent).toBe('670$438')
+    expect(both.getAttribute('title')).toBe('Failure streak and hook failure in the same session: ' +
       '670 sessions (77% of the 868 flagged sessions), their requests cost $438 at list price.')
-    expect(pairs[1].querySelector('[data-total]')!.textContent).toBe('430 sessions · not reported')
-    // Per tool: sessions by number of signals, and one chart of the six signals with a signal not recorded named as such.
+    expect(pairs.querySelector('[data-cell="failure_streak+failed_delegation"]')!.textContent).toBe('430not reported')
+    expect(pairs.querySelector('[data-cell="compaction+api_error"]')!.textContent).toBe('0')
+    expect(pairs.querySelectorAll('[data-blank]').length).toBe(10)
+    // Per tool: sessions by number of signals, and a grid of the six signals with a signal not recorded hatched.
     const counts = box.querySelector('[data-chart="problem-counts"] [data-row="copilot-cli"]')!
     expect([...counts.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['683', '119', '1,357'])
     expect(counts.querySelector('[data-part="one"] [role="tooltip"]')!.textContent).toBe('copilot-cli: 119 sessions with exactly one ' +
-      'signal, 6% of its 2,159 sessions; all its flagged sessions cost $6,014 of $16 k at list price.')
-    const signals = box.querySelector('[data-chart="problem-signals-copilot-cli"]')!
-    expect(signals.querySelector('[data-row="failure_streak"] [data-total]')!.textContent).toBe('742 · 34%')
-    expect(signals.querySelector('[data-row="api_error"] [data-total]')!.textContent).toBe('not recorded by this tool')
-    expect(signals.querySelector('[data-row="failure_streak"] [role="tooltip"]')!.textContent).toBe('copilot-cli, failure streak: ' +
+      'signal, 6% of its 2,159 sessions; 802 (37%) recorded one or more, costing $6,014 of $16 k at list price.')
+    const tools = box.querySelector('[data-heat="problem-tools"]')!
+    expect([...tools.querySelectorAll('[role="columnheader"]')].map(th => th.textContent))
+      .toEqual(['signal ↓ · tool →', 'copilot-cli2,159 sessions', 'claude-code378 sessions'])
+    expect(tools.querySelector('[data-cell="copilot-cli:failure_streak"]')!.textContent).toBe('74234%')
+    expect(tools.querySelector('[data-cell="copilot-cli:api_error"]')!.textContent).toBe('not recorded')
+    expect(tools.querySelector('[data-cell="copilot-cli:failure_streak"]')!.getAttribute('title')).toBe('copilot-cli, failure streak: ' +
       '742 of 2,159 sessions (34%); their requests cost $1,591 at list price. Rule: 3 or more failed tool calls in a row by one agent.')
-    expect(box.querySelector('[data-chart="problem-signals-codex-cli"]')).toBeNull()
+    expect(tools.querySelector('[data-column="codex-cli"]')).toBeNull()
     dispose()
   })
 
