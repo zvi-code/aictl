@@ -3,11 +3,23 @@
 import { For, Show } from 'solid-js'
 import { Tooltip } from '../../ui/Tooltip'
 import type { BarChart, ColumnChart, RangeChart, Tone } from './workModel'
+import { repoClass } from './Bars'
+import bars from './Bars.module.css'
 import styles from './Insights.module.css'
+import { OTHER, repoColourVar } from './repoSplit'
 import own from './Work.module.css'
 
 const width = (value: number | null, top: number) => `${top > 0 && value ? Math.max(0, Math.min(1, value / top)) * 100 : 0}%`
 const noop = () => {}
+/** A row that is one repository: a swatch of its colour (repoSplit.ts) before its name. */
+function RepoMark(props: { repo?: number }) {
+  return <Show when={props.repo != null}>
+    <span class={`${bars.swatch} ${repoClass(props.repo!)}`} data-repo-mark={String(props.repo)} />
+  </Show>
+}
+/** The fill of a repository's part of a column, lightened as the HTML bars draw it. */
+const repoFill = (colour: number) => colour === OTHER ? repoColourVar(colour)
+  : `color-mix(in srgb, ${repoColourVar(colour)} 70%, var(--color-surface))`
 
 function Legend(props: { items: { tone: Tone; label: string }[] }) {
   return <Show when={props.items.length}>
@@ -27,11 +39,12 @@ export function Bars(props: { chart: BarChart }) {
         <For each={props.chart.rows}>{row => <li data-bar={row.key} data-small={row.small ? '' : undefined}>
           <Tooltip class={own.hit} text={row.hover} onClick={noop}
             label={`${row.name}: ${row.tracks.map(track => track.text).join('; ')}`}>
-            <span class={own.label}>{row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
+            <span class={own.label}><RepoMark repo={row.repo} />{row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
             <span class={own.tracks}>
               <For each={row.tracks}>{(track, i) => <span class={own.bar}>
                 <span class={own.track}>
-                  <For each={track.parts}>{part => <span class={own[part.tone]} data-part={part.label}
+                  <For each={track.parts}>{part => <span class={part.repo == null ? own[part.tone] : repoClass(part.repo)} data-part={part.label}
+                    data-repo={part.repo == null ? undefined : String(part.repo)}
                     style={{ 'inline-size': width(part.value, props.chart.tops[i()] ?? 0) }} />}</For>
                 </span>
                 <span class={own.value} data-value>{track.text}</span>
@@ -54,7 +67,7 @@ export function Ranges(props: { chart: RangeChart }) {
       <ol class={own.list} aria-label={props.chart.title}>
         <For each={props.chart.rows}>{row => <li data-bar={row.key} data-small={row.small ? '' : undefined}>
           <Tooltip class={own.hit} text={row.hover} onClick={noop} label={`${row.name}: ${row.text}`}>
-            <span class={own.label}>{row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
+            <span class={own.label}><RepoMark repo={row.repo} />{row.name}<Show when={row.sub}><small>{row.sub}</small></Show></span>
             <span class={own.tracks}>
               <span class={own.bar}>
                 <span class={own.range}>
@@ -98,10 +111,21 @@ export function Columns(props: { chart: ColumnChart }) {
         <For each={props.chart.columns}>{(column, i) => {
           const height = () => props.chart.top > 0 ? column.value / props.chart.top * plot : 0
           const x = () => SIDE + i() * slot() + (slot() - bar()) / 2
+          // A column split by repository stacks its parts from the axis up, each with its own hover.
+          const stacked = () => {
+            let below = 0
+            return (column.parts ?? []).map(part => {
+              const h = props.chart.top > 0 ? part.value / props.chart.top * plot : 0
+              below += h
+              return { ...part, y: H - BOTTOM - below, h }
+            })
+          }
           return <g data-column={column.key}>
-            <rect class={own.column} x={x()} width={bar()} y={H - BOTTOM - height()} height={Math.max(height(), column.value ? 1 : 0)}>
-              <title>{column.hover}</title>
-            </rect>
+            <Show when={column.parts?.length} fallback={<rect class={own.column} x={x()} width={bar()} y={H - BOTTOM - height()}
+              height={Math.max(height(), column.value ? 1 : 0)}><title>{column.hover}</title></rect>}>
+              <For each={stacked()}>{part => <rect class={own.repoColumn} style={{ fill: repoFill(part.repo) }} x={x()} width={bar()}
+                y={part.y} height={Math.max(part.h, 1)} data-part={part.key} data-repo={String(part.repo)}><title>{part.hover}</title></rect>}</For>
+            </Show>
             <text class={dense() ? own.small : undefined} x={x() + bar() / 2} y={H - BOTTOM - height() - 3} text-anchor="middle">{column.text}</text>
             <Show when={i() % every() === 0}>
               <text class={styles.muted} x={x() + bar() / 2} y={H - BOTTOM + 13} text-anchor="middle">{column.label}</text>

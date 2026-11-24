@@ -1,11 +1,15 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtHours, fmtNum, fmtShare } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
+import { Bars as SplitBars } from './Bars'
 import { share, toolLabel } from './insightsModel'
+import { RepoLegend } from './RepoLegend'
+import { hasOther } from './repoSplit'
 import { Bars, Ranges } from './WorkCharts'
 import {
-  durationFinding, durationFirstChangeRange, durationHero, durationModelToolChart, durationSessionRange, durationWorkChart, MIN_TIMED_SESSIONS,
-  modelRange, modelTimeChart, SHOWN, smallText, span, toolRange, toolTimeChart, TOOLS_SHOWN, type DurationBody, type DurationRepo,
+  durationFinding, durationFirstChangeRange, durationHero, durationModelToolChart, durationSessionRange, durationWorkChart, markRepos,
+  medianNote, MIN_TIMED_SESSIONS, modelRange, modelTimeChart, SHOWN, smallText, span, splitRows, toolRange, toolTimeChart, TOOLS_SHOWN,
+  withNote, type BarChart, type DurationBody, type DurationRepo, type RangeChart,
 } from './workModel'
 import styles from './Insights.module.css'
 import own from './Work.module.css'
@@ -33,26 +37,38 @@ function RepoFacts(props: { repo: DurationRepo }) {
   </div>
 }
 
+/** A chart of summed time per tool or model: split by repository where the server split it, else as before. */
+function TimeBars(props: { chart: BarChart; items: readonly { repos?: DurationBody['tools'][number]['repos'] }[]; order: DurationBody['repo_order'] }) {
+  const rows = () => splitRows(props.chart, props.items, 'total_ms', props.order, fmtHours, 'summed time', medianNote(props.order))
+  return <Show when={rows()} fallback={<Bars chart={props.chart} />}>{split => <SplitBars name={props.chart.id} title={props.chart.title}
+    axis={`${props.chart.axis} A segment per repository.`} rows={split()} />}</Show>
+}
+
 function Visual(props: { body: DurationBody }) {
+  const order = () => props.body.repo_order
+  // Charts whose rows are the first repositories: each row marked with its repository's colour.
+  const marked = (chart: BarChart): BarChart => ({ ...chart, rows: markRepos(chart.rows, props.body.repos.slice(0, SHOWN), order()) })
+  const markedRange = (chart: RangeChart): RangeChart => ({ ...chart, rows: markRepos(chart.rows, props.body.repos.slice(0, SHOWN), order()) })
   return <>
-    <Bars chart={durationWorkChart(props.body)} />
-    <Ranges chart={durationSessionRange(props.body)} />
-    <Ranges chart={durationFirstChangeRange(props.body)} />
-    <Bars chart={durationModelToolChart(props.body)} />
+    <RepoLegend split={props.body} other={hasOther([...props.body.repos, ...props.body.tools, ...props.body.models])} />
+    <Bars chart={marked(durationWorkChart(props.body))} />
+    <Ranges chart={markedRange(durationSessionRange(props.body))} />
+    <Ranges chart={markedRange(durationFirstChangeRange(props.body))} />
+    <Bars chart={marked(durationModelToolChart(props.body))} />
     <Show when={smallText(props.body.summary.small, `fewer than ${MIN_TIMED_SESSIONS} sessions with turn times`)}>{text =>
       <p class={styles.note} data-small-list>{text()}</p>}</Show>
     <Show when={props.body.tools.length}>
       <h3 class={styles.subhead}>Tools and programs</h3>
-      <Bars chart={toolTimeChart(props.body)} />
-      <Ranges chart={toolRange(props.body)} />
+      <TimeBars chart={toolTimeChart(props.body)} items={props.body.tools.slice(0, TOOLS_SHOWN)} order={order()} />
+      <Ranges chart={withNote(toolRange(props.body), medianNote(order()))} />
       <Show when={props.body.tools.length > TOOLS_SHOWN}>
         <p class={styles.note}>{fmtNum(props.body.tools.length - TOOLS_SHOWN)} more tools and programs not drawn.</p>
       </Show>
     </Show>
     <Show when={props.body.models.length}>
       <h3 class={styles.subhead}>Models</h3>
-      <Bars chart={modelTimeChart(props.body)} />
-      <Ranges chart={modelRange(props.body)} />
+      <TimeBars chart={modelTimeChart(props.body)} items={props.body.models} order={order()} />
+      <Ranges chart={withNote(modelRange(props.body), medianNote(order()))} />
     </Show>
     <h3 class={styles.subhead}>Each repository: every time figure</h3>
     <ol class={own.rows} aria-label="Session times per repository">

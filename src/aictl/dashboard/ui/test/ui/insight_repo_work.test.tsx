@@ -6,6 +6,9 @@ import type { AutonomyBody } from '../../src/panels/insights/autonomyModel'
 import VerifiedCommits from '../../src/panels/insights/VerifiedCommits'
 import type { VerifiedBody } from '../../src/panels/insights/verifiedModel'
 import WorkPerInstruction from '../../src/panels/insights/WorkPerInstruction'
+import Changes from '../../src/panels/insights/Changes'
+import Durations from '../../src/panels/insights/Durations'
+import type { ChangeBody, DurationBody } from '../../src/panels/insights/workModel'
 import { OTHER, OTHER_REPOS, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
@@ -43,10 +46,12 @@ function context(state: DetailState<unknown>) {
 const props = (ctx: PanelContext) => ({ ctx, boxes: createBoxes('test-repo-work'), since: base.range.since, until: base.range.until })
 const ready = (data: unknown) => context({ data, status: 'ready', error: null })
 const legend = (box: Element) => [...box.querySelectorAll('[data-repo-legend] li')].map(item => item.textContent)
-/** Strip every `repos` field (and the ranking) from a body: what an older server answers. */
+/** Whether a value is a list of segments (repoSplit), not a card's own `repos` rows or count. */
+const segments = (value: unknown) => Array.isArray(value) && value.every(item => item && typeof item === 'object' && 'share' in item)
+/** Strip every split (and the ranking) from a body: what an older server answers. */
 function unsplit<T>(body: T): T {
-  return JSON.parse(JSON.stringify(body, (key, value) => key === 'repos' || key === 'session_repos' || key === 'kind_repos'
-    ? undefined : key === 'repo_order' ? [] : key === 'repo_others' ? null : value)) as T
+  return JSON.parse(JSON.stringify(body, (key, value) => (key === 'repos' || key === 'session_repos') && segments(value)
+    || key === 'kind_repos' ? undefined : key === 'repo_order' ? [] : key === 'repo_others' ? null : value)) as T
 }
 
 beforeEach(() => { installDom(); layoutHeaders(); history.replaceState(null, '', '/?screen=insights&range=all') })
@@ -241,6 +246,138 @@ describe('INS-RW · Verified before commit split by repository', () => {
     expect(box.querySelector('[data-chart="verified-commits-repos"]')).toBeNull()
     expect(box.querySelector('[data-chart="verified-sessions-repos"]')).toBeNull()
     expect(box.querySelectorAll('[data-tool="claude-code"] [data-segment]').length).toBe(3)
+    dispose()
+  })
+})
+
+// ─── Where session time goes ────────────────────────────────────────────────────────────────────────────────────
+const H = 3_600_000
+const times = {
+  sessions: 20, timed: 20, walled: 18, changed: 15, waits: 30, requests: 2000, calls: 4000, model_ms: 10 * H, tool_ms: 2 * H,
+  agent_ms: 20 * H, wait_ms: 5 * H, p50_agent_ms: 600_000, p90_agent_ms: H, max_agent_ms: 4 * H, p50_wall_ms: 900_000,
+  p90_wall_ms: 2 * H, max_wall_ms: 24 * H, p50_first_change_ms: 120_000, p90_first_change_ms: 900_000,
+}
+const ownRow = (repo: string) => split([[repo, { agent_ms: 20 * H, wait_ms: 5 * H, model_ms: 10 * H, tool_ms: 2 * H }]],
+  { [`${repo}:agent_ms`]: 1 })
+const durations = {
+  ...base, card: 'durations', view: 'insights.durations', query: query('insights.durations'), repo_order: order, repo_others: others,
+  repos: [{ ...times, repo: '/src/app', name: 'app', kind: 'repository', agent_share: 0.8, small: false, repos: ownRow('/src/app') },
+    { ...times, repo: '/x/scratch', name: 'scratch', kind: 'folder', agent_share: 0.2, small: false, repos: ownRow('') }],
+  tools: [{ name: 'pytest', program: true, calls: 300, timed: 300, total_ms: 4 * H, p50_ms: 4000, p95_ms: 60_000, failed: 30,
+    failed_share: 0.1, repo: '/src/app', repo_name: 'app', repo_ms: 3 * H, small: false,
+    repos: split([['/src/app', { total_ms: 3 * H }], ['/src/docs', { total_ms: 0.5 * H }], ['', { total_ms: 0.5 * H }]],
+      { '/src/app:total_ms': 0.25 }) }],
+  models: [{ model: 'gpt-5', requests: 2000, timed: 2000, total_ms: 10 * H, p50_ms: 8000, p95_ms: 90_000, small: false,
+    repos: split([['/src/app', { total_ms: 10 * H }]]) }],
+  sessions: [],
+  summary: { ...times, agent_ms: 25 * H, top: null, top_tool: null, slowest_tool: null, slowest_model: null, small: [] },
+} as unknown as DurationBody
+
+describe('INS-RW · Where session time goes split by repository', () => {
+  it('marks each repository row with its colour and splits the tool and model time by repository', () => {
+    const { host, dispose } = mount(() => <Durations {...props(ready(durations))} />)
+    const box = host.querySelector('[data-box="insight-durations"]')!
+    expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
+    expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
+    // Working and waiting keep their colours; the row carries its repository's colour, and its hover says so.
+    const work = box.querySelector('[data-chart="work"]')!
+    expect([...work.querySelectorAll('[data-repo-mark]')].map(mark => mark.getAttribute('data-repo-mark'))).toEqual(['0', String(OTHER)])
+    expect(work.querySelector('[data-bar="app"] [role="tooltip"]')!.textContent)
+      .toMatch(/ Marked in the colour of app on every card: rank 1 by list-price cost\.$/)
+    expect(work.querySelector('[data-bar="scratch"] [role="tooltip"]')!.textContent)
+      .toMatch(/ Marked grey: not among the 8 repositories with the highest list-price cost\.$/)
+    expect([...box.querySelectorAll('[data-chart="session-range"] [data-repo-mark]')].length).toBe(2)
+    const tool = box.querySelector('[data-chart="tools"] [data-row="pytest"]')!
+    expect([...tool.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1', String(OTHER)])
+    expect([...tool.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['3 h', '30 min', '30 min'])
+    expect(tool.querySelector('[data-total]')!.textContent).toBe('4 h · 200%')
+    expect(tool.querySelector('[data-part="repo:/src/app"] [role="tooltip"]')!.textContent).toBe('pytest (program) — app (/src/app): ' +
+      '3 h · 75% of this bar · 25% of app own summed time. pytest (program): 4 h summed over 300 timed calls of 300 (200% of all ' +
+      'tool-call time, 2 h); median 4 s, 95th percentile 1 min; 30 failed calls (10%); most time in app: 3 h. Not split by ' +
+      'repository: the median of a whole is not the sum of the medians of its parts.')
+    expect(box.querySelector('[data-chart="tools"] [data-axis]')!.textContent).toContain('A segment per repository.')
+    expect([...box.querySelectorAll('[data-chart="models"] [data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0'])
+    expect(box.querySelector('[data-chart="tool-range"] [data-bar="pytest"] [role="tooltip"]')!.textContent).toContain('Not split by repository')
+    dispose()
+  })
+
+  it('draws the old bars without a split', () => {
+    const { host, dispose } = mount(() => <Durations {...props(ready(unsplit(durations)))} />)
+    const box = host.querySelector('[data-box="insight-durations"]')!
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-repo-mark]')).toBeNull()
+    expect(box.querySelector('[data-chart="tools"] [data-bar="pytest"] [data-value]')!.textContent).toBe('4 h · 200%')
+    expect(box.querySelector('[data-chart="tool-range"] [role="tooltip"]')!.textContent).not.toContain('Not split')
+    dispose()
+  })
+})
+
+// ─── What the agents changed ────────────────────────────────────────────────────────────────────────────────────
+const kinds = { source: 40, tests: 10, docs: 5, config: 3, memory: 1, other: 0 }
+const changeRepo = (repo: string, name: string) => ({
+  repo, name, kind: 'repository', sessions: 20, change_sessions: 15, commit_sessions: 5, uncommitted_sessions: 10, writes: 200,
+  committed_writes: 150, committed_share: 0.75, files: 59, files_share: 0.5, reworked: 4, kinds, lines_added: 3000, lines_removed: 800,
+  lines_unknown: 0, commits: 12, commit_days: 6, cost_usd: 120, agent_ms: 36_000_000, cost_per_commit: 10, time_per_commit_ms: 3_000_000,
+  small: false, repos: split([[repo === '/src/app' ? repo : '', { files: 59, writes: 200, committed_writes: 150, sessions: 20,
+    change_sessions: 15, uncommitted_sessions: 10, commit_sessions: 5, commits: 12 }]]),
+})
+const changes = {
+  ...base, card: 'changes', view: 'insights.changes', query: query('insights.changes'), repo_order: order, repo_others: others,
+  repos: [changeRepo('/src/app', 'app'), changeRepo('/x/scratch', 'scratch')],
+  files: [{ repo: '/src/docs', repo_name: 'docs', path: '/src/docs/plan.md', kind: 'docs', writes: 90, sessions: 12, most_in_session: 20,
+    repos: split([['/src/docs', { writes: 90 }]], { '/src/docs:writes': 0.3 }) }],
+  bins: [{ start: 1_700_000_000, commits: 4, writes: 100, repos: split([['/src/app', { commits: 3, writes: 60 }], ['', { commits: 1, writes: 40 }]]) },
+    { start: 1_700_086_400, commits: 8, writes: 300, repos: split([['/src/app', { commits: 8, writes: 300 }]]) }],
+  sessions: [],
+  summary: { repos: 2, writes: 400, files: 118, committed_writes: 300, committed_share: 0.75, commits: 24, change_sessions: 30,
+    uncommitted_sessions: 20, lines_added: 6000, lines_removed: 1600, reworked: 8, kinds, top: null, most_uncommitted: null,
+    dearest_per_commit: null, cheapest_per_commit: null, top_file: null, small: [],
+    kind_repos: { source: split([['/src/app', { files: 30 }], ['/src/docs', { files: 6 }], ['', { files: 4 }]]),
+      tests: split([['/src/app', { files: 10 }]]), docs: split([['/src/docs', { files: 5 }]]), config: split([['', { files: 3 }]]),
+      memory: split([['/src/app', { files: 1 }]]), other: [] } },
+} as unknown as ChangeBody
+
+describe('INS-RW · What the agents changed split by repository', () => {
+  it('colours the files bar of each repository, splits kinds, rewritten files and bins by repository', () => {
+    const { host, dispose } = mount(() => <Changes {...props(ready(changes))} />)
+    const box = host.querySelector('[data-box="insight-changes"]')!
+    expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
+    expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
+    const files = box.querySelector('[data-chart="files"]')!
+    expect([...files.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', String(OTHER)])
+    expect([...files.querySelectorAll('[data-value]')].map(value => value.textContent)).toEqual(['59 · 50%', '59 · 50%'])
+    for (const chart of ['repo-kinds', 'writes', 'sessions', 'per-commit']) {
+      expect([...box.querySelectorAll(`[data-chart="${chart}"] [data-repo-mark]`)].map(mark => mark.getAttribute('data-repo-mark')), chart)
+        .toEqual(['0', String(OTHER)])
+    }
+    // The bars by kind of file within a repository keep their kind colours.
+    expect([...box.querySelectorAll('[data-chart="repo-kinds"] [data-bar="app"] [data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['source', 'tests', 'docs', 'config and data', 'memory and instructions', 'other'])
+    const source = box.querySelector('[data-chart="kinds"] [data-row="source"]')!
+    expect([...source.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1', String(OTHER)])
+    expect([...source.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['30 files', '6 files', ''])
+    expect(source.querySelector('[data-part="repo:/src/docs"] [role="tooltip"]')!.textContent).toBe('source — docs (/src/docs): 6 files · ' +
+      '15% of this bar. source: 40 files, 68% of 59 changed files. Kind by path: code, query, style and markup files by extension.')
+    // A kind the server split into no segment keeps its single bar.
+    expect([...box.querySelectorAll('[data-chart="kinds"] [data-row="other"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual([])
+    const reworked = box.querySelector('[data-chart="reworked"] [data-row="plan.md"]')!
+    expect(reworked.querySelector('[data-part]')!.getAttribute('data-repo')).toBe('1')
+    expect(reworked.querySelector('[role="tooltip"]')!.textContent).toBe('plan.md — docs (/src/docs): 90 writes · 100% of this bar · ' +
+      '30% of docs own writes. /src/docs/plan.md (docs, docs): 90 writes in 12 sessions, at most 20 in one session.')
+    const day = box.querySelector('[data-chart="commits"] [data-column="1700000000"]')!
+    expect([...day.querySelectorAll('rect')].map(rect => rect.getAttribute('data-repo'))).toEqual(['0', String(OTHER)])
+    expect(day.querySelector('rect title')!.textContent).toMatch(/^.+ — app \(\/src\/app\): 3 commits · 75% of this bar\. .+: 4 commits, 100 file writes\.$/)
+    expect(day.querySelector('text')!.textContent).toBe('4')
+    dispose()
+  })
+
+  it('draws the old bars and columns without a split', () => {
+    const { host, dispose } = mount(() => <Changes {...props(ready(unsplit(changes)))} />)
+    const box = host.querySelector('[data-box="insight-changes"]')!
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-repo-mark]')).toBeNull()
+    expect(box.querySelector('[data-chart="kinds"] [data-bar="source"]')).not.toBeNull()
+    expect(box.querySelectorAll('[data-chart="commits"] [data-column="1700000000"] rect').length).toBe(1)
     dispose()
   })
 })

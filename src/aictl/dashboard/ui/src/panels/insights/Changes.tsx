@@ -1,11 +1,15 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtLines, fmtNum, fmtShare, fmtUsd } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { share, toolLabel } from './insightsModel'
+import { Bars as SplitBars } from './Bars'
+import { plural, share, toolLabel } from './insightsModel'
+import { RepoLegend } from './RepoLegend'
+import { hasOther, type RepoSegment } from './repoSplit'
 import { Bars, Columns } from './WorkCharts'
 import {
   CHANGE_SMALL, changeBinChart, changeFilesChart, changeFinding, changeHero, changeKindChart, changePerCommitChart, changeRepoKindChart,
-  changeSessionsChart, changeWritesChart, kindsText, perCommit, reworkedChart, SHOWN, smallText, type ChangeBody, type ChangeRepo,
+  changeSessionsChart, changeWritesChart, FILE_KINDS, kindsText, markRepos, perCommit, reworkedChart, SHOWN, smallText, splitRows,
+  type BarChart, type ChangeBody, type ChangeRepo,
 } from './workModel'
 import styles from './Insights.module.css'
 import own from './Work.module.css'
@@ -26,15 +30,32 @@ function RepoFacts(props: { repo: ChangeRepo }) {
   </div>
 }
 
+/** A one-measure chart split by repository where the server split it, else drawn as before. */
+function CountBars(props: { chart: BarChart; items: readonly { repos?: RepoSegment[] }[]; order: ChangeBody['repo_order']; measureKey: string
+  unit: string; measure: string }) {
+  const rows = () => {
+    const unit = props.unit
+    return splitRows(props.chart, props.items, props.measureKey, props.order, value => plural(value, unit), props.measure)
+  }
+  return <Show when={rows()} fallback={<Bars chart={props.chart} />}>{split => <SplitBars name={props.chart.id} title={props.chart.title}
+    axis={`${props.chart.axis} A segment per repository.`} rows={split()} />}</Show>
+}
+
 function Visual(props: { body: ChangeBody }) {
   const shown = () => props.body.repos.filter(repo => repo.writes || repo.commits).slice(0, SHOWN)
+  const order = () => props.body.repo_order
+  // Charts whose rows are repositories: each row marked with its repository's colour.
+  const marked = (chart: BarChart, items: readonly ChangeRepo[] = shown()): BarChart => ({ ...chart, rows: markRepos(chart.rows, items, order()) })
+  const kinds = () => FILE_KINDS.map(kind => ({ repos: props.body.summary.kind_repos?.[kind.id] }))
   return <>
-    <Bars chart={changeFilesChart(props.body)} />
-    <Bars chart={changeKindChart(props.body)} />
-    <Bars chart={changeRepoKindChart(props.body)} />
-    <Bars chart={changeWritesChart(props.body)} />
-    <Bars chart={changeSessionsChart(props.body)} />
-    <Bars chart={changePerCommitChart(props.body)} />
+    <RepoLegend split={props.body} other={hasOther([...props.body.repos, ...props.body.files, ...props.body.bins, ...kinds()])} />
+    <Bars chart={marked(changeFilesChart(props.body))} />
+    <CountBars chart={changeKindChart(props.body)} items={kinds()} order={order()} measureKey="files" unit="file" measure="changed files" />
+    <Bars chart={marked(changeRepoKindChart(props.body))} />
+    <Bars chart={marked(changeWritesChart(props.body))} />
+    <Bars chart={marked(changeSessionsChart(props.body))} />
+    <Bars chart={marked(changePerCommitChart(props.body),
+      shown().filter(repo => repo.cost_per_commit != null || repo.time_per_commit_ms != null))} />
     <Show when={smallText(props.body.summary.small, CHANGE_SMALL)}>{text => <p class={styles.note} data-small-list>{text()}</p>}</Show>
     <h3 class={styles.subhead}>Over the period</h3>
     <Show when={props.body.bins.length} fallback={<p class={styles.note}>No agent commit or file write in this period.</p>}>
@@ -43,7 +64,8 @@ function Visual(props: { body: ChangeBody }) {
     </Show>
     <h3 class={styles.subhead}>Files written in 3 or more sessions or 5 or more times in one</h3>
     <Show when={props.body.files.length} fallback={<p class={styles.note}>No file was written in 3 sessions or 5 times in one.</p>}>
-      <Bars chart={reworkedChart(props.body)} />
+      <CountBars chart={reworkedChart(props.body)} items={props.body.files.slice(0, SHOWN)} order={order()} measureKey="writes" unit="write"
+        measure="writes" />
     </Show>
     <h3 class={styles.subhead}>Each repository: every change figure</h3>
     <ol class={own.rows} aria-label="Changed files per repository">

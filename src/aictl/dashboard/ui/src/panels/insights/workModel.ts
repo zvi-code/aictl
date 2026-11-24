@@ -3,7 +3,9 @@
 // not report is null and reads "not reported", never 0. A repository marked `small` has too little data to compare:
 // it is drawn grey and named in one line. Text states what is shown; every mark's hover text is built here.
 import { dayLabel, fmtHours, fmtLines, fmtMs, fmtNum, fmtShare, fmtUsd } from '../../design/format'
+import type { BarRow as SplitRow } from './Bars'
 import type { Base, Hero } from './insightsModel'
+import { notSplitNote, OTHER, repoColour, repoName as repoLabel, repoParts, type RepoRef, type RepoSegment } from './repoSplit'
 
 type Num = number | null
 export type WorkCardId = 'repos' | 'durations' | 'changes'
@@ -44,17 +46,23 @@ export const repoName = (repo: { name: string; kind: string }) => repo.kind === 
 // ─── Chart rows: what each mark draws, the value written on it, and its hover text ────────────────────────────
 /** A colour of a mark: the chart tokens, a lighter first token, and grey for too little data. */
 export type Tone = 'c1' | 'c2' | 'c3' | 'c4' | 'c1soft' | 'muted'
-export type Part = { value: number; tone: Tone; label: string }
+/** `repo`: the colour index of the repository the part is (repoSplit.ts), drawn instead of `tone`. */
+export type Part = { value: number; tone: Tone; label: string; repo?: number }
 /** One bar of a row: its stacked parts and the value written beside it. */
 export type Track = { parts: Part[]; text: string }
-export type BarRow = { key: string; name: string; sub: string; tracks: Track[]; hover: string; small: boolean }
+/** `repo`: the row is one repository, marked with its colour (repoSplit.ts). */
+export type BarRow = { key: string; name: string; sub: string; tracks: Track[]; hover: string; small: boolean; repo?: number }
 /** Horizontal bars, linear; `tops[i]` is the scale end of the i-th bar of every row. */
 export type BarChart = { id: string; title: string; axis: string; legend: { tone: Tone; label: string }[]; tops: number[]; rows: BarRow[] }
 /** A distribution per row: a bar to the median, a line on to the upper percentile, a tick at the longest. */
-export type RangeRow = { key: string; name: string; sub: string; mid: Num; high: Num; max: Num; text: string; hover: string; small: boolean }
+export type RangeRow = {
+  key: string; name: string; sub: string; mid: Num; high: Num; max: Num; text: string; hover: string; small: boolean; repo?: number
+}
 export type RangeChart = { id: string; title: string; axis: string; legend: string; top: number; rows: RangeRow[] }
 /** Columns over time bins, one per bin, value written on top and a second line under it. */
-export type Column = { key: string; label: string; value: number; text: string; under: string; hover: string }
+/** `parts`: the column stacked per repository (repoSplit.ts), each with its colour index and hover. */
+export type ColumnPart = { key: string; value: number; repo: number; hover: string }
+export type Column = { key: string; label: string; value: number; text: string; under: string; hover: string; parts?: ColumnPart[] }
 export type ColumnChart = { id: string; title: string; axis: string; top: number; columns: Column[] }
 
 const sumParts = (track: Track) => track.parts.reduce((total, part) => total + Math.max(0, part.value), 0)
@@ -213,18 +221,63 @@ export function repoBinChart(repo: Repo, range: { since: number; until: number }
   return { id: 'bins', title: `Spend per ${unit} in ${repo.name} (US dollars; commits under each column)`, axis: linear(fmtUsd(top)), top, columns }
 }
 
+// ─── Bars split by repository (durations and changes) ────────────────────────────────────────────────────────
+type Split = { repos?: RepoSegment[] }
+type Order = readonly RepoRef[] | undefined
+/** The colour of a repository's own row (its one segment), or undefined when the answer carries no split. */
+export const rowRepo = (row: Split, order: Order) => row.repos?.length ? repoColour(order, row.repos[0].repo) : undefined
+/** What a repository row's hover adds: the colour it is drawn in on every card. */
+export function rowRepoNote(row: Split, order: Order): string {
+  if (!row.repos?.length) return ''
+  const repo = row.repos[0].repo, colour = repoColour(order, repo)
+  return colour === OTHER ? ' Marked grey: not among the 8 repositories with the highest list-price cost.'
+    : ` Marked in the colour of ${repoLabel(order, repo)} on every card: rank ${colour + 1} by list-price cost.`
+}
+/** Marks each row of a chart whose rows are repositories with the repository's colour. */
+export function markRepos<R extends BarRow | RangeRow>(rows: R[], items: readonly Split[], order: Order): R[] {
+  return rows.map((row, i) => ({ ...row, repo: rowRepo(items[i] ?? {}, order), hover: row.hover + rowRepoNote(items[i] ?? {}, order) }))
+}
+/**
+ * A one-measure chart as bars split by repository (Bars.tsx): row i is `items[i]`, its parts per repository of `key`, each
+ * hover followed by the row's own hover (and `note`). A row the server did not split keeps one part. Null when no row is
+ * split: the chart is drawn as before.
+ */
+export function splitRows(chart: BarChart, items: readonly Split[], key: string, order: Order, format: (value: number) => string,
+  measure: string, note = ''): SplitRow[] | null {
+  if (!items.some(item => item.repos?.length)) return null
+  return chart.rows.map((row, i) => {
+    const track = row.tracks[0], detail = row.hover + note
+    return {
+      key: row.key, label: row.name, sub: row.sub || undefined, total: track?.text ?? '',
+      parts: items[i]?.repos?.length ? repoParts(items[i].repos, key, order, format, row.name, measure, detail)
+        : [{ key: 'whole', label: measure, value: track ? sumParts(track) : 0, text: track?.text ?? '', tone: 7, hover: detail }],
+    }
+  })
+}
+/** What the hover of a median or percentile adds on a card whose other bars are split by repository. */
+export const medianNote = (order: Order) => order?.length ? ` ${notSplitNote('median')}` : ''
+/** A chart's hovers with `note` added. */
+export const withNote = <C extends { rows: { hover: string }[] }>(chart: C, note: string): C =>
+  note ? { ...chart, rows: chart.rows.map(row => ({ ...row, hover: row.hover + note })) } : chart
+
 // ─── Durations ─────────────────────────────────────────────────────────────────────────────────────────────────
 export type SessionTimes = {
   sessions: number; timed: number; walled: number; changed: number; waits: number; requests: number; calls: number
   model_ms: Num; tool_ms: Num; agent_ms: Num; wait_ms: Num; p50_agent_ms: Num; p90_agent_ms: Num; max_agent_ms: Num
   p50_wall_ms: Num; p90_wall_ms: Num; max_wall_ms: Num; p50_first_change_ms: Num; p90_first_change_ms: Num
 }
-export type DurationRepo = SessionTimes & { repo: string; name: string; kind: 'repository' | 'folder'; agent_share: Num; small: boolean }
+export type DurationRepo = SessionTimes & {
+  repo: string; name: string; kind: 'repository' | 'folder'; agent_share: Num; small: boolean
+  /** One segment, the repository itself ('' when not ranked): `agent_ms`, `wait_ms`, `model_ms`, `tool_ms`. */
+  repos?: RepoSegment[]
+}
 export type DurationTool = {
   name: string | null; program: boolean; calls: number; timed: number; total_ms: Num; p50_ms: Num; p95_ms: Num; failed: number
-  failed_share: Num; repo: string | null; repo_name: string | null; repo_ms: Num; small: boolean
+  failed_share: Num; repo: string | null; repo_name: string | null; repo_ms: Num; small: boolean; repos?: RepoSegment[]
 }
-export type DurationModel = { model: string | null; requests: number; timed: number; total_ms: Num; p50_ms: Num; p95_ms: Num; small: boolean }
+export type DurationModel = {
+  model: string | null; requests: number; timed: number; total_ms: Num; p50_ms: Num; p95_ms: Num; small: boolean; repos?: RepoSegment[]
+}
 export type DurationBody = Base<'durations'> & {
   repos: DurationRepo[]; tools: DurationTool[]; models: DurationModel[]
   summary: SessionTimes & {
@@ -426,11 +479,15 @@ export type ChangeRepo = {
   uncommitted_sessions: number; writes: number; committed_writes: number; committed_share: Num; files: number; files_share: Num
   reworked: number; kinds: Record<FileKind, number>; lines_added: number; lines_removed: number; lines_unknown: number
   commits: number; commit_days: number; cost_usd: Num; agent_ms: Num; cost_per_commit: Num; time_per_commit_ms: Num; small: boolean
+  /** One segment, the repository itself: `files`, `writes`, `committed_writes`, the session counts and `commits`. */
+  repos?: RepoSegment[]
 }
 export type ChangeBrief = Pick<ChangeRepo, 'repo' | 'name' | 'kind' | 'files' | 'files_share' | 'writes' | 'committed_writes'
   | 'committed_share' | 'commits' | 'reworked' | 'cost_per_commit' | 'time_per_commit_ms' | 'change_sessions' | 'uncommitted_sessions'>
-export type ReworkedFile = { repo: string; repo_name: string; path: string; kind: string; writes: number; sessions: number; most_in_session: number }
-export type ChangeBin = { start: number; commits: number; writes: number }
+export type ReworkedFile = {
+  repo: string; repo_name: string; path: string; kind: string; writes: number; sessions: number; most_in_session: number; repos?: RepoSegment[]
+}
+export type ChangeBin = { start: number; commits: number; writes: number; repos?: RepoSegment[] }
 export type ChangeBody = Base<'changes'> & {
   repos: ChangeRepo[]; files: ReworkedFile[]; bins: ChangeBin[]
   summary: {
@@ -438,6 +495,8 @@ export type ChangeBody = Base<'changes'> & {
     change_sessions: number; uncommitted_sessions: number; lines_added: number; lines_removed: number; reworked: number
     kinds: Record<FileKind, number>; top: ChangeBrief | null; most_uncommitted: ChangeBrief | null
     dearest_per_commit: ChangeBrief | null; cheapest_per_commit: ChangeBrief | null; top_file: ReworkedFile | null; small: string[]
+    /** Per kind of file, its changed files per repository. */
+    kind_repos?: Partial<Record<FileKind, RepoSegment[]>>
   }
 }
 
@@ -471,7 +530,8 @@ export function changeFinding(body: ChangeBody): string {
 export function changeFilesChart(body: ChangeBody): BarChart {
   const rows = active(body).map((repo): BarRow => ({
     key: repo.name, name: repo.name, sub: `${repo.kind} · ${plural(repo.change_sessions, 'session')}`, small: repo.small,
-    tracks: [{ parts: [{ value: repo.files, tone: repo.small ? 'muted' : 'c1', label: 'files' }], text: `${fmtNum(repo.files)} · ${pct(repo.files_share)}` }],
+    tracks: [{ parts: [{ value: repo.files, tone: repo.small ? 'muted' : 'c1', label: 'files', repo: rowRepo(repo, body.repo_order) }],
+      text: `${fmtNum(repo.files)} · ${pct(repo.files_share)}` }],
     hover: `${repoName(repo)}: ${plural(repo.files, 'distinct file')} changed, ${pct(repo.files_share)} of ${fmtNum(body.summary.files)}; ` +
       `${plural(repo.writes, 'write')}, lines ${fmtLines(repo.lines_added, repo.lines_removed)}` +
       (repo.lines_unknown ? ` (${plural(repo.lines_unknown, 'write')} without a line count)` : '') + `; kinds: ${kindsText(repo)}.` +
@@ -578,6 +638,10 @@ export function changeBinChart(body: ChangeBody, what: 'commits' | 'writes'): Co
     key: String(bin.start), label: binDay(bin.start), value: bin[what], text: fmtNum(bin[what]),
     under: what === 'commits' ? plural(bin.writes, 'write') : plural(bin.commits, 'commit'),
     hover: `${binSpan(bin.start, width)}: ${plural(bin.commits, 'commit')}, ${plural(bin.writes, 'file write')}.`,
+    parts: bin.repos?.length ? repoParts(bin.repos, what, body.repo_order, value => plural(value, what === 'commits' ? 'commit' : 'write'),
+      binSpan(bin.start, width), what === 'commits' ? 'commits' : 'file writes', `${binSpan(bin.start, width)}: ${plural(bin.commits, 'commit')}, ` +
+      `${plural(bin.writes, 'file write')}.`).map(part => ({ key: part.key, value: part.value ?? 0, repo: part.repo ?? OTHER, hover: part.hover }))
+      : undefined,
   }))
   const top = Math.max(0, ...columns.map(column => column.value))
   return { id: what, title: what === 'commits' ? `Commits per ${unit}` : `File writes per ${unit}`,
