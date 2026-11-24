@@ -185,8 +185,37 @@ def _times(row: dict) -> dict:
     return out
 
 
-def durations(rows: list[dict]) -> dict:
-    """Where the sessions' time goes, per repository: working time, waiting, model and tool time, and how long things take."""
+DURATION_SPLIT = ("agent_ms", "wait_ms", "model_ms", "tool_ms")
+
+
+def _folded(repos: list[dict], measure: str, order: list[dict]) -> dict[str, dict[str, float]]:
+    """A measure of the repository rows summed per segment: a ranked root keeps its own, every other one is ''."""
+    ranked = {str(item["repo"]) for item in order}
+    totals: dict[str, dict[str, float]] = {}
+    for repo in repos:
+        key = repo["repo"] if repo["repo"] in ranked else ""
+        mine = totals.setdefault(key, {measure: 0.0})
+        mine[measure] += _n(repo.get(measure))
+    return totals
+
+
+def _own_repo(bar: dict, repo: str, measures: tuple[str, ...], order: list[dict]) -> dict:
+    """A bar that is one repository's own: one segment, that repository's (or '' when it is not ranked)."""
+    from .insights import attach_repos
+
+    return attach_repos(bar, [{"repo": repo, **{measure: bar.get(measure) for measure in measures}}], measures, order)
+
+
+def durations(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """Where the sessions' time goes, per repository: working time, waiting, model and tool time, and how long things take.
+
+    Every bar is split by repository (``repos``): a repository's own bars are one segment (agent_ms, wait_ms, model_ms,
+    tool_ms); each tool's or program's and each model's summed time (total_ms) is split by the view. The percentiles
+    are not split.
+    """
+    from .insights import attach_repos, repo_splits
+
+    order = order or []
     repos = []
     for row in _of(rows, "repo"):
         repo = str(row.get("repo") or "")
@@ -198,6 +227,7 @@ def durations(rows: list[dict]) -> dict:
     agent = sum(repo["agent_ms"] or 0.0 for repo in repos)
     for repo in repos:
         repo["agent_share"] = _ratio(repo["agent_ms"], agent)
+        _own_repo(repo, repo["repo"], DURATION_SPLIT, order)
     repos.sort(key=lambda repo: (-(repo["agent_ms"] or 0.0), -repo["sessions"], repo["repo"]))
     tools = [{
         "name": row.get("name") or None, "program": bool(row.get("program")), "calls": _int(row.get("calls")),
@@ -214,6 +244,15 @@ def durations(rows: list[dict]) -> dict:
         "small": _int(row.get("timed")) < MIN_CALLS,
     } for row in _of(rows, "model")]
     models.sort(key=lambda model: -(model["total_ms"] or 0.0))
+    splits = repo_splits(rows)
+    # A repository's own call time and request time are its row's tool_ms and model_ms (the same calls and requests).
+    tool_totals = {key: {"total_ms": value["tool_ms"]} for key, value in _folded(repos, "tool_ms", order).items()}
+    model_totals = {key: {"total_ms": value["model_ms"]} for key, value in _folded(repos, "model_ms", order).items()}
+    for tool in tools:
+        key = f"{'program' if tool['program'] else 'tool'}:{tool['name'] or ''}"
+        attach_repos(tool, splits.get(("", key), []), ("total_ms",), order, tool_totals)
+    for model in models:
+        attach_repos(model, splits.get(("", f"model:{model['model'] or ''}"), []), ("total_ms",), order, model_totals)
     sessions = [{
         "session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"), "repo": row.get("repo"),
         "agent_ms": _ms(row.get("agent_s")), "wait_ms": _ms(row.get("wait_s")), "wall_ms": _ms(row.get("wall_s")),
@@ -242,8 +281,22 @@ KINDS = ("source", "tests", "docs", "config", "memory", "other")
 MIN_WRITES = 20
 
 
-def changes(rows: list[dict]) -> dict:
-    """What the agents changed per repository: files, churn, rework, kinds of files, and what ended in a commit."""
+CHANGE_SPLIT = ("files", "writes", "committed_writes", "sessions", "change_sessions", "uncommitted_sessions", "commit_sessions",
+                "commits")
+BIN_SPLIT = ("commits", "writes")
+
+
+def changes(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """What the agents changed per repository: files, churn, rework, kinds of files, and what ended in a commit.
+
+    Every count bar is split by repository (``repos``): a repository's own bars are one segment (CHANGE_SPLIT), a
+    rewritten file is its repository's, each kind of file over all repositories is the sum of the repositories' own
+    (summary.kind_repos), and each bin's commits and writes are split by the view. Spend and time per commit are
+    ratios: not split.
+    """
+    from .insights import attach_repos, repo_totals
+
+    order = order or []
     repos = []
     for row in _of(rows, "repo"):
         repo = str(row.get("repo") or "")
@@ -269,6 +322,7 @@ def changes(rows: list[dict]) -> dict:
     files_total = sum(repo["files"] for repo in repos)
     for repo in repos:
         repo["files_share"] = _ratio(repo["files"], files_total)
+        _own_repo(repo, repo["repo"], CHANGE_SPLIT, order)
     files = sorted(({
         "repo": row.get("repo"), "repo_name": folder_name(row.get("repo") or ""), "path": row.get("path"),
         "kind": row.get("file_kind"), "writes": _int(row.get("writes")), "sessions": _int(row.get("sessions")),
@@ -276,6 +330,15 @@ def changes(rows: list[dict]) -> dict:
     } for row in _of(rows, "file")), key=lambda item: (-item["writes"], str(item["path"])))
     bins = sorted(({"start": _n(row.get("bin_start")), "commits": _int(row.get("commits")), "writes": _int(row.get("writes"))}
                    for row in _of(rows, "bin")), key=lambda item: item["start"])
+    for item in files:
+        _own_repo(item, str(item["repo"] or ""), ("writes",), order)
+    bin_splits: dict[float, list[dict]] = {}
+    for row in _of(rows, "repo_split"):
+        if row.get("split_key") == "bin":
+            bin_splits.setdefault(_n(row.get("bin_start")), []).append(row)
+    bin_totals = repo_totals([row for found in bin_splits.values() for row in found], BIN_SPLIT)
+    for item in bins:
+        attach_repos(item, bin_splits.get(item["start"], []), BIN_SPLIT, order, bin_totals)
     compared = [repo for repo in repos if not repo["small"]]
     writes = sum(repo["writes"] for repo in repos)
     committed = sum(repo["committed_writes"] for repo in repos)
@@ -299,6 +362,9 @@ def changes(rows: list[dict]) -> dict:
         "top_file": files[0] if files else None,
         "small": [repo["name"] for repo in repos if repo["small"]],
     }
+    summary["kind_repos"] = {kind: attach_repos({"files": summary["kinds"][kind]},
+                                                [{"repo": repo["repo"], "files": repo["kinds"][kind]} for repo in repos],
+                                                ("files",), order)["repos"] for kind in KINDS}
     sessions = [{
         "session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"), "repo": row.get("repo"),
         "writes": _int(row.get("writes")), "committed_writes": _int(row.get("committed_writes")), "files": _int(row.get("files")),

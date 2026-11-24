@@ -100,7 +100,39 @@ let repo_map = materialize(first_root
 let reqs = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | where ts >= since and ts < until
-    | project node_id, session_id, ts, model=canon(model), duration_ms=iff(duration_ms between (0.0 .. DayMs), duration_ms, real(null)));
+    | project node_id, session_id, ts, model=canon(model), duration_ms=iff(duration_ms between (0.0 .. DayMs), duration_ms, real(null)),
+              cost_usd);
+let rank_requests = reqs | project node_id, session_id, cost_usd;
+// <repository rank>
+// The repository of a session: the root its folder has in the repository map, else the folder itself; a session
+// with no folder has none. The ranked repositories: the 8 whose requests in the period cost the most at list price
+// (cost_usd of each request; one stored at 0 counts 0), ties by sessions with a request, then by root. Every other
+// repository, and a session with no folder, is "other": repo ''. insights.repo_rank lists the 8 by this same text,
+// so the colours of the screen and the segments of every card agree. Rows: session_repo (node_id, session_id, repo),
+// repo_costs (repo, cost_usd, requests, sessions) and ranked_repos (the same and rank); repo_of(rows) gives rows that
+// carry node_id and session_id the column repo: their ranked root, or ''. The view defines rank_requests before this
+// block: its requests in the node scope and the period, one row each (node_id, session_id, cost_usd), so that a view
+// that reads them already does not read them twice.
+let session_repo = materialize(session_rows
+    | join kind=leftouter (repo_map | project node_id, path, root) on node_id, path
+    | summarize repo=max(iff(isnotempty(root), root, path)) by node_id, session_id);
+let repo_costs = materialize(rank_requests
+    | summarize requests=count(), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id
+    | join kind=inner session_repo on node_id, session_id
+    | where isnotempty(repo)
+    | summarize cost_usd=sum(cost_usd), requests=sum(requests), sessions=count() by repo);
+let ranked_repos = materialize(repo_costs
+    | sort by cost_usd desc, sessions desc, repo asc
+    | extend rank=row_number()
+    | where rank <= 8);
+let repo_of = (rows:(node_id:string, session_id:string)) {
+    rows
+    | lookup kind=leftouter session_repo on node_id, session_id
+    | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+    | extend repo=iff(coalesce(ranked, false), repo, '')
+    | project-away ranked
+};
+// </repository rank>
 let model_sessions = reqs
     | where array_length(requested_models) > 0 and model in (requested_models)
     | distinct node_id, session_id;
@@ -148,6 +180,18 @@ let per_session = materialize(chosen
     | extend wall_s=iff(in_period and end_ts > started_at, end_ts - started_at, real(null)),
              first_change_s=iff(in_period and first_write >= started_at, first_write - started_at, real(null)));
 let tool_calls = materialize(calls | join kind=inner (chosen | project node_id, session_id, repo) on node_id, session_id);
+let tool_rows = materialize(tool_calls
+    | summarize calls=count(), timed=countif(isnotnull(duration_ms)), total_ms=sum(duration_ms), p50_ms=percentile(duration_ms, 50),
+                p95_ms=percentile(duration_ms, 95), failed=countif(failed) by program, name
+    | top 20 by total_ms desc);
+let model_reqs = materialize(reqs | join kind=inner (chosen | project node_id, session_id, repo) on node_id, session_id);
+let model_rows = materialize(model_reqs
+    | summarize requests=count(), timed=countif(isnotnull(duration_ms)), total_ms=sum(duration_ms), p50_ms=percentile(duration_ms, 50),
+                p95_ms=percentile(duration_ms, 95) by model
+    | top 15 by total_ms desc);
+// A session's repository here is the root the rank gives it (the same map and rule): one of the 8 ranked keeps its
+// root, every other repository is ''.
+let ranked_roots = ranked_repos | project repo, ranked=true;
 union
     (per_session
         | summarize sessions=count(), agent_s=sum(agent_s), timed=countif(turns > 0), wait_s=sum(wait_s), waits=sum(waits),
@@ -166,20 +210,29 @@ union
                     p90_wall_s=percentile(wall_s, 90), max_wall_s=max(wall_s), changed=countif(isnotnull(first_change_s)),
                     p50_first_change_s=percentile(first_change_s, 50), p90_first_change_s=percentile(first_change_s, 90)
         | extend row_type='all'),
-    (tool_calls
-        | summarize calls=count(), timed=countif(isnotnull(duration_ms)), total_ms=sum(duration_ms), p50_ms=percentile(duration_ms, 50),
-                    p95_ms=percentile(duration_ms, 95), failed=countif(failed) by program, name
-        | top 20 by total_ms desc
+    (tool_rows
         | lookup kind=leftouter (tool_calls
             | summarize repo_ms=sum(duration_ms) by program, name, repo
             | summarize arg_max(repo_ms, repo) by program, name) on program, name
         | extend row_type='tool'),
-    (reqs
-        | join kind=inner (chosen | project node_id, session_id) on node_id, session_id
-        | summarize requests=count(), timed=countif(isnotnull(duration_ms)), total_ms=sum(duration_ms), p50_ms=percentile(duration_ms, 50),
-                    p95_ms=percentile(duration_ms, 95) by model
-        | top 15 by total_ms desc
-        | extend row_type='model'),
+    (model_rows | extend row_type='model'),
+    // Split by repository: each tool's or program's summed call time (split_key program:<name> or tool:<name>) and each
+    // model's summed request time (split_key model:<model>), for the rows listed above; the 8 ranked repositories, the
+    // rest as ''.
+    (tool_calls
+        | join kind=inner (tool_rows | project program, name) on program, name
+        | summarize total_ms=sum(duration_ms) by program, name, repo
+        | lookup kind=leftouter ranked_roots on repo
+        | extend repo=iff(coalesce(ranked, false), repo, '')
+        | summarize total_ms=sum(total_ms) by program, name, repo
+        | project row_type='repo_split', tool='', split_key=strcat(iff(program, 'program:', 'tool:'), name), repo, total_ms),
+    (model_reqs
+        | join kind=inner (model_rows | project model) on model
+        | summarize total_ms=sum(duration_ms) by model, repo
+        | lookup kind=leftouter ranked_roots on repo
+        | extend repo=iff(coalesce(ranked, false), repo, '')
+        | summarize total_ms=sum(total_ms) by model, repo
+        | project row_type='repo_split', tool='', split_key=strcat('model:', model), repo, total_ms),
     (per_session
         | top 10 by agent_s desc
         | project row_type='session', repo, node_id, session_id, tool, agent_s, wait_s, wall_s, model_ms, tool_ms, first_change_s, requests, calls),

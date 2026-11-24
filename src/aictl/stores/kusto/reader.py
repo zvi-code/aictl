@@ -346,14 +346,14 @@ _VIEWS = {
         "row_type tool bin_ts node_id session_id sessions instructions calls delegated one_instruction longest p50_longest "
         "p90_longest mean_longest multi_sessions p50_multi p90_multi mean_multi turns_answered waits queued p50_wait_s over_5m "
         "resumed no_stop active prompted scripted store_only start_unread no_calls unread first_ts last_ts bin_unit "
-        "prompts_from computed_at",
+        "prompts_from computed_at split_key repo",
     ),
     "insights.verified_commits": (
         _TIME,
         "row_type tool node_id session_id commits passed unreported failed changed_after never_tested no_change unknown_change "
         "not_recorded by_subagent own_unseen commit_sessions top_session_commits edit_sessions untested_sessions commands "
         "commands_with_text test_runs test_results remote_commits edits_no_file sessions_no_text sessions_edits_unrecorded "
-        "untested last_commit first_ts last_ts computed_at",
+        "untested last_commit first_ts last_ts computed_at split_key repo",
     ),
     "insights.model_report": (
         _TIME,
@@ -374,19 +374,19 @@ _VIEWS = {
         f"{_TIME} restrict_tools requested_tools requested_models",
         "row_type repo sessions agent_s timed wait_s waits model_ms tool_ms requests calls p50_agent_s p90_agent_s max_agent_s "
         "walled p50_wall_s p90_wall_s max_wall_s changed p50_first_change_s p90_first_change_s repository program name total_ms "
-        "p50_ms p95_ms failed repo_ms model node_id session_id tool wall_s first_change_s first_ts last_ts computed_at",
+        "p50_ms p95_ms failed repo_ms model node_id session_id tool wall_s first_change_s first_ts last_ts computed_at split_key",
     ),
     "insights.changes": (
         f"{_TIME} restrict_tools requested_tools requested_models step",
         "row_type repo sessions change_sessions commit_sessions uncommitted_sessions cost_usd priced agent_s repository writes "
         "committed_writes lines_added lines_removed lines_unknown files reworked source tests docs config memory other commits "
-        "commit_days path file_kind most_in_session node_id session_id tool bin_start first_ts last_ts computed_at",
+        "commit_days path file_kind most_in_session node_id session_id tool bin_start first_ts last_ts computed_at split_key",
     ),
     "insights.flows": (
         _TIME,
         "row_type from_step to_step calls pair loops sessions seconds rounds tool test_runs unflagged_tests outcome last_step "
         "path project_name node_id session_id committed changed no_change priced cost_usd no_change_cost tools loop_calls "
-        "first_ts last_ts computed_at",
+        "first_ts last_ts computed_at split_key repo repo_parts",
     ),
     "insights.skills": (
         _TIME,

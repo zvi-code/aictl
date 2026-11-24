@@ -89,7 +89,8 @@ def test_flows_classify_steps_join_repeats_and_find_cycles(kusto_store):
     body = _card(s, "flows")
     endings = body["endings"]
     assert (endings["committed"]["sessions"], endings["changed"]["sessions"], endings["no_change"]["sessions"]) == (1, 1, 1)
-    assert endings["no_change"]["last_steps"] == [{"step": "search", "sessions": 1, "cost_usd": 0.5}]
+    assert [{key: value for key, value in item.items() if key != "repos"} for item in endings["no_change"]["last_steps"]] == [
+        {"step": "search", "sessions": 1, "cost_usd": 0.5}]
     assert endings["committed"]["last_steps"][0]["step"] == "finish"
     # b's last main-agent step: npm test is a command (not flagged as a test run).
     assert endings["changed"]["last_steps"][0]["step"] == "command"
@@ -164,7 +165,8 @@ def test_flows_shape_applies_the_evidence_rule():
     summary = body["summary"]
     assert (summary["no_change"], summary["no_change_share"], summary["no_change_cost"]) == (12, pytest.approx(0.3), 50.0)
     assert summary["no_change_cost_share"] == pytest.approx(0.25)
-    assert summary["no_change_last"] == {"step": "read", "sessions": 8, "cost_usd": 40.0}
+    assert {key: value for key, value in summary["no_change_last"].items() if key != "repos"} == {
+        "step": "read", "sessions": 8, "cost_usd": 40.0}
     assert summary["top_cycle"]["pair"] == ["edit", "test"] and summary["cycle_share"] == pytest.approx(0.2)
     assert summary["enough"] is True and summary["no_test_tools"] == ["copilot-cli"] and summary["unflagged_tests"] == 4
 

@@ -87,13 +87,95 @@ let runs = materialize(ordered
     | sort by run asc
     | extend same=row_number() > 1 and prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id
     | extend agent_run=row_number(1, not(same)));
-let reqs = requests_secs
+let req_rows = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, cost_usd
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and ts >= since and ts < until
-    | summarize priced=countif(isnotnull(cost_usd)), cost_usd=sum(cost_usd) by node_id, session_id;
+    | project node_id, session_id, cost_usd);
+let reqs = req_rows | summarize priced=countif(isnotnull(cost_usd)), cost_usd=sum(cost_usd) by node_id, session_id;
+let rank_requests = req_rows;
+let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s;
+// <repository map>
+// Where a project folder belongs, per node: the repository root the node's own Index snapshot found on disk for it
+// (the main work tree of a linked worktree, else git's top folder), else the root a commit made in one of its
+// sessions was filed under, else the folder of the session whose agent worked in it as a worktree, else the folder
+// above a .claude/worktrees/<name> or .worktrees/<name> folder. A root that itself belongs elsewhere is followed once.
+// Any of these makes the folder a repository; so does a session there that recorded a git branch. Otherwise it is a
+// folder. Rows: node_id, path, root, repository.
+let session_rows = materialize(sessions_secs
+    | where all_nodes or node_id == requested_node
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id
+    | where not(coalesce(_deleted, false))
+    | project node_id, session_id, path=['project'], tool, started_at, branch=isnotempty(git_branch));
+let root_evidence = union
+    (maintenance_state
+        | where (all_nodes or node_id == requested_node) and key == 'index_breakdown'
+        | summarize arg_max(_v, *) by ['project'], node_id, key
+        | summarize arg_max(value, text) by node_id
+        | mv-expand item=parse_json(text).projects
+        | extend path=tostring(item.path), git_root=tostring(item.git_root), worktree_of=tostring(item.worktree_of)
+        | where isnotempty(path) and isnotempty(git_root)
+        | project node_id, path, root=iff(isnotempty(worktree_of), worktree_of, git_root), rank=1),
+    (session_commits
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, sha
+        | where isnotempty(['project'])
+        | distinct node_id, session_id, root=['project']
+        | join kind=inner (session_rows | project node_id, session_id, path) on node_id, session_id
+        | summarize sessions=count() by node_id, path, root
+        | summarize arg_max(sessions, root) by node_id, path
+        | project node_id, path, root, rank=2),
+    (agents
+        | where all_nodes or node_id == requested_node
+        | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id
+        | where not(coalesce(_deleted, false)) and isnotempty(worktree_path)
+        | distinct node_id, session_id, worktree_path
+        | join kind=inner (session_rows | project node_id, session_id, root=path) on node_id, session_id
+        | where root != worktree_path
+        | summarize arg_max(root, *) by node_id, path=worktree_path
+        | project node_id, path, root, rank=3),
+    (session_rows
+        | distinct node_id, path
+        | extend root=replace_regex(path, @'[/\\](?:\.claude[/\\]worktrees|\.worktrees)[/\\][^/\\]+[/\\]?$', '')
+        | where isnotempty(root) and root != path
+        | project node_id, path, root, rank=4);
+let first_root = root_evidence | summarize arg_min(rank, root) by node_id, path | project node_id, path, root;
+let repo_map = materialize(first_root
+    | join kind=leftouter (first_root | project node_id, path_up=path, root_up=root) on $left.node_id == $right.node_id, $left.root == $right.path_up
+    | project node_id, path, root=iff(isnotempty(root_up) and root_up != path, root_up, root), repository=true);
+// </repository map>
+// <repository rank>
+// The repository of a session: the root its folder has in the repository map, else the folder itself; a session
+// with no folder has none. The ranked repositories: the 8 whose requests in the period cost the most at list price
+// (cost_usd of each request; one stored at 0 counts 0), ties by sessions with a request, then by root. Every other
+// repository, and a session with no folder, is "other": repo ''. insights.repo_rank lists the 8 by this same text,
+// so the colours of the screen and the segments of every card agree. Rows: session_repo (node_id, session_id, repo),
+// repo_costs (repo, cost_usd, requests, sessions) and ranked_repos (the same and rank); repo_of(rows) gives rows that
+// carry node_id and session_id the column repo: their ranked root, or ''. The view defines rank_requests before this
+// block: its requests in the node scope and the period, one row each (node_id, session_id, cost_usd), so that a view
+// that reads them already does not read them twice.
+let session_repo = materialize(session_rows
+    | join kind=leftouter (repo_map | project node_id, path, root) on node_id, path
+    | summarize repo=max(iff(isnotempty(root), root, path)) by node_id, session_id);
+let repo_costs = materialize(rank_requests
+    | summarize requests=count(), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id
+    | join kind=inner session_repo on node_id, session_id
+    | where isnotempty(repo)
+    | summarize cost_usd=sum(cost_usd), requests=sum(requests), sessions=count() by repo);
+let ranked_repos = materialize(repo_costs
+    | sort by cost_usd desc, sessions desc, repo asc
+    | extend rank=row_number()
+    | where rank <= 8);
+let repo_of = (rows:(node_id:string, session_id:string)) {
+    rows
+    | lookup kind=leftouter session_repo on node_id, session_id
+    | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+    | extend repo=iff(coalesce(ranked, false), repo, '')
+    | project-away ranked
+};
+// </repository rank>
 let main_runs = runs | where isempty(agent_id) or agent_id == session_id;
 // Cycles: a joined step equal to the one two before it, in a row; a chain of 4 or more such steps is a cycle of
 // 3 or more rounds (A B A B A B).
@@ -133,7 +215,14 @@ let per_session = materialize(calls
              first_path=replace_regex(strcat_array(array_slice(steps, 0, 3), ' > '), @'\d+:', ''),
              last_path=replace_regex(strcat_array(array_slice(steps, -3, -1), ' > '), @'\d+:', ''),
              priced=coalesce(priced, 0), loops=coalesce(loops, 0)
-    | project-away steps);
+    | project-away steps
+    // The repository the rank gives the session ('' for every repository past the 8 ranked).
+    | invoke repo_of());
+// The cycles listed: the 10 with the most working time.
+let cycle_rows = materialize(loops
+    | summarize loops=count(), sessions=dcount(strcat(node_id, '/', session_id)), calls=sum(calls), seconds=sum(seconds),
+                rounds=sum(rounds) by pair
+    | top 10 by seconds desc);
 // The sessions to open: the 10 with the most working time in cycles and the 10 dearest that changed nothing.
 // One pass over the sessions makes every row about them: the cluster recomputed a materialized table read by
 // several legs, so each leg over it cost as much as a fresh read.
@@ -142,11 +231,7 @@ union
         | where isnotempty(prev_step)
         | summarize calls=count() by from_step=prev_step, to_step=step
         | extend row_type='transition'),
-    (loops
-        | summarize loops=count(), sessions=dcount(strcat(node_id, '/', session_id)), calls=sum(calls), seconds=sum(seconds),
-                    rounds=sum(rounds) by pair
-        | top 10 by seconds desc
-        | extend row_type='cycle'),
+    (cycle_rows | extend row_type='cycle'),
     (ordered
         | summarize calls=count(), sessions=dcount(strcat(node_id, '/', session_id)), seconds=sum(busy),
                     test_runs=countif(step == 'test'), unflagged_tests=countif(step == 'command' and target_mentions_test) by tool
@@ -155,28 +240,57 @@ union
         | extend kinds=iff(loops > 0 or outcome == 'no_change', dynamic(['ending', 'first_path', 'last_path', 'project', 'meta', 'session']),
                            dynamic(['ending', 'first_path', 'last_path', 'project', 'meta']))
         | mv-expand row_type=kinds to typeof(string)
+        // The session's own outcome, kept for the counts: a project row blanks outcome (it is not a key there).
+        | extend ended=outcome
         | extend outcome=iff(row_type in ('ending', 'session'), outcome, ''), last_step=iff(row_type in ('ending', 'session'), last_step, ''),
                  path=case(row_type == 'first_path', first_path, row_type == 'last_path', last_path, ''),
                  project_name=iff(row_type in ('project', 'session'), project_name, ''),
                  node_id=iff(row_type == 'session', node_id, ''), session_id=iff(row_type == 'session', session_id, ''),
-                 pair=iff(row_type == 'session', pair, '')
-        | summarize sessions=count(), committed=countif(outcome == 'committed'), changed=countif(outcome == 'changed'),
-                    no_change=countif(outcome == 'no_change'), priced=sum(priced), cost_usd=sum(cost_usd),
-                    no_change_cost=sumif(cost_usd, outcome == 'no_change'), tools=make_set(tool), tool=take_any(tool),
+                 pair=iff(row_type == 'session', pair, ''),
+                 repo=iff(row_type in ('ending', 'first_path', 'last_path', 'project'), repo, '')
+        | summarize sessions=count(), committed=countif(ended == 'committed'), changed=countif(ended == 'changed'),
+                    no_change=countif(ended == 'no_change'), priced=sum(priced), cost_usd=sum(cost_usd),
+                    no_change_cost=sumif(cost_usd, ended == 'no_change'), tools=make_set(tool), tool=take_any(tool),
                     loops=sum(loops), seconds=sum(loop_seconds), loop_calls=sum(loop_calls),
                     first_ts=min(first_ts), last_ts=max(last_ts)
+              by row_type, outcome, last_step, path, project_name, node_id, session_id, pair, repo
+        // Split by repository in the same pass (a second read of the sessions would compute them again): each ending,
+        // path and project row carries repo_parts, its sessions (and their cost and outcomes) per repository.
+        | summarize repo_parts=make_list(bag_pack('repo', repo, 'sessions', sessions, 'cost_usd', cost_usd, 'committed', committed,
+                                                  'changed', changed, 'no_change', no_change)),
+                    sessions=sum(sessions), committed=sum(committed), changed=sum(changed), no_change=sum(no_change),
+                    priced=sum(priced), cost_usd=sum(cost_usd), no_change_cost=sum(no_change_cost), tool_lists=make_list(tools),
+                    tool=take_any(tool), loops=sum(loops), seconds=sum(seconds), loop_calls=sum(loop_calls),
+                    first_ts=min(first_ts), last_ts=max(last_ts)
               by row_type, outcome, last_step, path, project_name, node_id, session_id, pair
+        | mv-apply part=tool_lists to typeof(dynamic) on (mv-expand tool_name=part to typeof(string) | summarize tools=make_set(tool_name))
+        | project-away tool_lists
+        | extend repo_parts=iff(row_type in ('ending', 'first_path', 'last_path', 'project'), repo_parts, dynamic(null))
         // The sessions: the 10 with most working time in cycles and the 10 dearest that changed nothing.
         | sort by row_type asc, seconds desc
         | extend by_cycle=row_number(1, prev(row_type) != row_type)
         | sort by row_type asc, iff(outcome == 'no_change', coalesce(cost_usd, 0.0), -1.0) desc
         | extend by_cost=row_number(1, prev(row_type) != row_type)
-        | sort by row_type asc, sessions desc
+        | sort by row_type asc, sessions desc, path asc, project_name asc
         | extend by_sessions=row_number(1, prev(row_type) != row_type)
         | where row_type in ('ending', 'meta') or (row_type == 'project' and by_sessions <= 20)
             or (row_type in ('first_path', 'last_path') and by_sessions <= 10)
             or (row_type == 'session' and ((loops > 0 and by_cycle <= 10) or (outcome == 'no_change' and by_cost <= 10)))
         | extend computed_at=iff(row_type == 'meta', todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000, real(null))
-        | project-away by_cycle, by_cost, by_sessions)
+        | project-away by_cycle, by_cost, by_sessions),
+    // Split by repository, the 8 ranked and every other one as '': the cycles listed (split_key cycle:<pair>) in working
+    // time, each tool's calls and working time (split_key ''). The ending, path and project rows above carry their own
+    // split in repo_parts.
+    (loops
+        | join kind=inner (cycle_rows | where sessions >= 3 | project pair) on pair
+        | summarize seconds=sum(seconds) by node_id, session_id, pair
+        | invoke repo_of()
+        | summarize seconds=sum(seconds) by pair, repo
+        | project row_type='repo_split', tool='', split_key=strcat('cycle:', pair), repo, seconds),
+    (ordered
+        | summarize calls=count(), seconds=sum(busy) by node_id, session_id, tool
+        | invoke repo_of()
+        | summarize calls=sum(calls), seconds=sum(seconds) by tool, repo
+        | project row_type='repo_split', tool, split_key='', repo, calls, seconds)
 | order by row_type asc, sessions desc, calls desc
 | take row_limit

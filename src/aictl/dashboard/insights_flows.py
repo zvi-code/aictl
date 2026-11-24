@@ -50,8 +50,14 @@ def _path(text: Any) -> list[str]:
     return [step for step in str(text or "").split(" > ") if step]
 
 
-def flows(rows: list[dict]) -> dict:
-    """What follows what, where sessions stop, the paths they start and end on, and the cycles they repeat."""
+def flows(rows: list[dict], order: list[dict] | None = None) -> dict:
+    """What follows what, where sessions stop, the paths they start and end on, and the cycles they repeat.
+
+    Each bar is split by repository (``repos``): how sessions ended and each last step (sessions, cost_usd), each path
+    and project (sessions; a project also committed, changed, no_change), each cycle (seconds) and each tool (calls,
+    seconds). The ending, path and project rows carry their own split (repo_parts); the cycles shown and the tools
+    are split in repo_split rows. The transitions are a matrix of shares, not split.
+    """
     nexts: dict[str, list[dict]] = {}
     for row in _of(rows, "transition"):
         nexts.setdefault(str(row.get("from_step")), []).append({"to_step": row.get("to_step"), "calls": _int(row.get("calls"))})
@@ -75,13 +81,15 @@ def flows(rows: list[dict]) -> dict:
         outcome["sessions"] += sessions
         outcome["priced"] += _int(row.get("priced"))
         outcome["cost_usd"] += _n(row.get("cost_usd"))
-        outcome["last_steps"].append({"step": row.get("last_step"), "sessions": sessions, "cost_usd": _cost(row)})
+        outcome["last_steps"].append({"step": row.get("last_step"), "sessions": sessions, "cost_usd": _cost(row),
+                                      "parts": _parts(row)})
     for outcome in endings.values():
         outcome["last_steps"].sort(key=lambda item: (-item["sessions"], str(item["step"])))
         outcome["cost_usd"] = outcome["cost_usd"] if outcome.pop("priced") else None
 
     def paths(kind: str) -> tuple[list[dict], int]:
-        found = [{"steps": _path(row.get("path")), "sessions": _int(row.get("sessions"))} for row in _of(rows, kind)]
+        found = [{"steps": _path(row.get("path")), "sessions": _int(row.get("sessions")), "parts": _parts(row)}
+                 for row in _of(rows, kind)]
         kept = sorted((item for item in found if item["sessions"] >= MIN_PATH_SESSIONS and item["steps"]),
                       key=lambda item: -item["sessions"])
         return kept, len(found) - len(kept)
@@ -101,7 +109,8 @@ def flows(rows: list[dict]) -> dict:
             small_cycles += 1
             continue
         seconds = _n(row.get("seconds"))
-        cycles.append({"pair": str(row.get("pair") or "").split(" <> "), "loops": _int(row.get("loops")),
+        cycles.append({"key": f"cycle:{row.get('pair') or ''}", "pair": str(row.get("pair") or "").split(" <> "),
+                       "loops": _int(row.get("loops")),
                        "sessions": _int(row.get("sessions")), "calls": _int(row.get("calls")), "rounds": _int(row.get("rounds")),
                        "seconds": seconds, "time_share": _ratio(seconds, working)})
     cycles.sort(key=lambda item: -item["seconds"])
@@ -119,9 +128,11 @@ def flows(rows: list[dict]) -> dict:
             "no_change": no_change, "no_change_share": _ratio(no_change, sessions), "cost_usd": _cost(row),
             "no_change_cost": _num(row.get("no_change_cost")) if _int(row.get("priced")) else None,
             "loops": _int(row.get("loops")), "cycle_seconds": _n(row.get("seconds")),
-            "tools": sorted(str(tool) for tool in (row.get("tools") or [])),
+            "tools": sorted(str(tool) for tool in (row.get("tools") or [])), "parts": _parts(row),
         })
     projects.sort(key=lambda item: (-item["sessions"], item["project"]))
+
+    _split_flows(rows, order or [], endings, first_paths + last_paths, cycles, projects, tools)
 
     meta = next(iter(_of(rows, "meta")), {})
     sessions = _int(meta.get("sessions"))
@@ -152,6 +163,54 @@ def flows(rows: list[dict]) -> dict:
     sessions_rows.sort(key=lambda row: (-row["cycle_seconds"], -_n(row["cost_usd"])))
     return {"transitions": transitions, "endings": endings, "first_paths": first_paths, "last_paths": last_paths,
             "cycles": cycles, "projects": projects, "tools": tools, "summary": summary, "sessions": sessions_rows}
+
+
+ENDING_SPLIT = ("sessions", "cost_usd")
+PROJECT_SPLIT = ("sessions", "committed", "changed", "no_change")
+TOOL_SPLIT = ("calls", "seconds")
+
+
+def _parts(row: dict) -> list[dict]:
+    """The split of an ending, path or project row by repository (its repo_parts), as split rows."""
+    parts = row.get("repo_parts")
+    return [part for part in parts if isinstance(part, dict)] if isinstance(parts, list) else []
+
+
+def _split_flows(rows: list[dict], order: list[dict], endings: dict, paths: list[dict], cycles: list[dict], projects: list[dict],
+                 tools: list[dict]) -> None:
+    """Put the segments per repository on each bar of the flows card (insights.attach_repos); see flows()."""
+    from .insights import attach_repos, repo_splits, reported_totals
+
+    splits = repo_splits(rows)
+
+    def found(key: str, tool: str = "") -> list[dict]:
+        return splits.get((tool, key), [])
+
+    # An outcome's split is the sum of its last steps' splits (every ended session has one last step).
+    ended = [(endings[outcome], [part for item in endings[outcome]["last_steps"] for part in item["parts"]]) for outcome in OUTCOMES]
+    # Every ended session is in one outcome: a repository's own sessions and cost are the sum over the outcomes.
+    totals = reported_totals(ended, ENDING_SPLIT)
+    for outcome, (ending, segments) in zip(OUTCOMES, ended):
+        attach_repos(ending, segments, ENDING_SPLIT, order, totals)
+        for item in ending["last_steps"]:
+            attach_repos(item, item.pop("parts"), ENDING_SPLIT, order, totals)
+    # A project's own outcome counts are of the repository's sessions that ended that way.
+    outcome_totals = {repo: {"sessions": values["sessions"], **{outcome: 0.0 for outcome in OUTCOMES}}
+                      for repo, values in totals.items()}
+    for outcome, (_ending, segments) in zip(OUTCOMES, ended):
+        for row in segments:
+            outcome_totals.setdefault(str(row.get("repo") or ""), dict.fromkeys(PROJECT_SPLIT, 0.0))[outcome] += _n(row.get("sessions"))
+    for item in paths:
+        attach_repos(item, item.pop("parts"), ("sessions",), order, totals)
+    for item in projects:
+        attach_repos(item, item.pop("parts"), PROJECT_SPLIT, order, outcome_totals)
+    tool_bars = [(tool, found("", str(tool["tool"] or ""))) for tool in tools]
+    tool_totals = reported_totals(tool_bars, TOOL_SPLIT)
+    for tool, segments in tool_bars:
+        attach_repos(tool, segments, TOOL_SPLIT, order, tool_totals)
+    # A cycle's working time is part of the working time of every tool call: a repository's own total is its tools' seconds.
+    for item in cycles:
+        attach_repos(item, found(item.pop("key")), ("seconds",), order, tool_totals)
 
 
 # Skills: a skill with fewer uses or sessions than these is too small to compare.

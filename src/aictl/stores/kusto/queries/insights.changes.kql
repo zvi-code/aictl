@@ -101,6 +101,37 @@ let reqs = materialize(requests_secs
     | where all_nodes or node_id == requested_node
     | where ts >= since and ts < until
     | project node_id, session_id, ts, model=canon(model), cost_usd);
+let rank_requests = reqs | project node_id, session_id, cost_usd;
+// <repository rank>
+// The repository of a session: the root its folder has in the repository map, else the folder itself; a session
+// with no folder has none. The ranked repositories: the 8 whose requests in the period cost the most at list price
+// (cost_usd of each request; one stored at 0 counts 0), ties by sessions with a request, then by root. Every other
+// repository, and a session with no folder, is "other": repo ''. insights.repo_rank lists the 8 by this same text,
+// so the colours of the screen and the segments of every card agree. Rows: session_repo (node_id, session_id, repo),
+// repo_costs (repo, cost_usd, requests, sessions) and ranked_repos (the same and rank); repo_of(rows) gives rows that
+// carry node_id and session_id the column repo: their ranked root, or ''. The view defines rank_requests before this
+// block: its requests in the node scope and the period, one row each (node_id, session_id, cost_usd), so that a view
+// that reads them already does not read them twice.
+let session_repo = materialize(session_rows
+    | join kind=leftouter (repo_map | project node_id, path, root) on node_id, path
+    | summarize repo=max(iff(isnotempty(root), root, path)) by node_id, session_id);
+let repo_costs = materialize(rank_requests
+    | summarize requests=count(), cost_usd=sum(iff(cost_usd > 0, cost_usd, 0.0)) by node_id, session_id
+    | join kind=inner session_repo on node_id, session_id
+    | where isnotempty(repo)
+    | summarize cost_usd=sum(cost_usd), requests=sum(requests), sessions=count() by repo);
+let ranked_repos = materialize(repo_costs
+    | sort by cost_usd desc, sessions desc, repo asc
+    | extend rank=row_number()
+    | where rank <= 8);
+let repo_of = (rows:(node_id:string, session_id:string)) {
+    rows
+    | lookup kind=leftouter session_repo on node_id, session_id
+    | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+    | extend repo=iff(coalesce(ranked, false), repo, '')
+    | project-away ranked
+};
+// </repository rank>
 let model_sessions = reqs
     | where array_length(requested_models) > 0 and model in (requested_models)
     | distinct node_id, session_id;
@@ -185,6 +216,17 @@ union
         | extend bin_start=max_of(since, 0.0) + floor((ts - max_of(since, 0.0)) / step, 1) * step
         | summarize commits=sum(commits), writes=sum(writes) by bin_start
         | extend row_type='bin'),
+    // Split by repository: each bin's commits and file writes (split_key 'bin', with its bin_start), by the repository of
+    // the session; the 8 ranked repositories (the root the rank gives a session is this view's repo), the rest as ''.
+    (union
+        (commits | project ts, repo, commits=1, writes=0),
+        (writes | project ts, repo, commits=0, writes=1)
+        | extend bin_start=max_of(since, 0.0) + floor((ts - max_of(since, 0.0)) / step, 1) * step
+        | summarize commits=sum(commits), writes=sum(writes) by bin_start, repo
+        | lookup kind=leftouter (ranked_repos | project repo, ranked=true) on repo
+        | extend repo=iff(coalesce(ranked, false), repo, '')
+        | summarize commits=sum(commits), writes=sum(writes) by bin_start, repo
+        | project row_type='repo_split', tool='', split_key='bin', bin_start, repo, commits, writes),
     (union (reqs | project ts), (calls | project ts)
         | summarize first_ts=min(ts), last_ts=max(ts)
         | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)

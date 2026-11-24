@@ -98,7 +98,8 @@ let failure_streaks = (ordered:(run:long, failed:bool, tool:string, node_id:stri
 # add those rows to its view, add the card to REPO_SPLIT_CARDS, take repo_order in its shape and call attach_repos.
 REPO_COLOURS = 8
 # The cards whose shape takes repo_order as a second argument: shape(rows, repo_order).
-REPO_SPLIT_CARDS = frozenset({"carry", "time", "pause", "subagents", "failures", "problems"})
+REPO_SPLIT_CARDS = frozenset({"carry", "time", "pause", "subagents", "failures", "problems", "flows", "autonomy", "verified",
+                              "durations", "changes"})
 
 
 def repo_order(history: HistoryScope, params: dict) -> dict:
@@ -918,11 +919,29 @@ def _wait_figures(row: dict) -> dict:
     }
 
 
-def work_per_instruction(rows: list[dict]) -> dict:
+def reported_totals(bars: list[tuple[dict, list[dict]]], measures: tuple[str, ...]) -> dict[str, dict[str, float]]:
+    """Per repository, the sum of each measure over the split rows of the bars that report it: (bar, its rows) pairs
+    that together cover the whole (every tool, say). A bar whose measure is None adds nothing to that measure."""
+    totals: dict[str, dict[str, float]] = {}
+    for bar, found in bars:
+        for row in found:
+            mine = totals.setdefault(str(row.get("repo") or ""), dict.fromkeys(measures, 0.0))
+            for measure in measures:
+                if bar.get(measure) is not None:
+                    mine[measure] += _n(row.get(measure))
+    return totals
+
+
+AUTONOMY_SPLIT = ("waits", "over_5m")
+
+
+def work_per_instruction(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Per tool and time bin: the longest run of main-agent tool calls between two turns of a person, and how long the
     person took to answer after the agent stopped.
 
-    A tool that records no prompts is not reported, and a figure with no session behind it is None, never 0.
+    A tool that records no prompts is not reported, and a figure with no session behind it is None, never 0. Each
+    tool's answered waits and those over 5 minutes are split by repository (``repos``); the longest run is a median
+    and is not split.
     """
     figures = {row.get("tool"): row for row in _of(rows, "tool")}
     coverage = {row.get("tool"): row for row in _of(rows, "coverage")}
@@ -940,6 +959,11 @@ def work_per_instruction(rows: list[dict]) -> dict:
             **_wait_figures(row), "resumed": _int(row.get("resumed")), "no_stop": _int(row.get("no_stop")),
         })
     tools.sort(key=lambda tool: (not tool["reported"], -tool["multi_sessions"], -tool["sessions"], str(tool["tool"])))
+    splits = repo_splits(rows)
+    waits = [(tool, splits.get((str(tool["tool"] or ""), "waits"), [])) for tool in tools]
+    totals = reported_totals(waits, AUTONOMY_SPLIT)
+    for tool, found in waits:
+        attach_repos(tool, found, AUTONOMY_SPLIT, order or [], totals)
     bins = []
     for row in _of(rows, "bin"):
         sessions, multi = _int(row.get("sessions")), _int(row.get("multi_sessions"))
@@ -981,7 +1005,12 @@ def _total(values: list[int | None]) -> int | None:
     return sum(found) if found else None
 
 
-def verified_commits(rows: list[dict]) -> dict:
+VERIFIED_SPLIT = ("commits", "passed", "unreported", "failed", "changed_after", "never_tested", "no_change", "unknown_change",
+                  "not_recorded")
+VERIFIED_SESSION_SPLIT = ("edit_sessions", "untested_sessions")
+
+
+def verified_commits(rows: list[dict], order: list[dict] | None = None) -> dict:
     """Per tool: agent commits split by whether a test run saw their source changes; sessions that changed source untested.
 
     A commit is classified when the tool records the session's edits and its deciding change names a file. A tool's
@@ -989,6 +1018,9 @@ def verified_commits(rows: list[dict]) -> dict:
     only when at least half of its commits are classified: otherwise the tool is "not classified" and its commits are
     counted as unchecked. A tool that keeps no command text reports no commits (None), and a tool with no recorded exit
     code of 0 reports no passes; pass_tool says whether the tool can record one at all.
+
+    Each tool's commit bar is split by repository (``repos``, every class count of it) and so is its bar of sessions that
+    changed source files (``session_repos``: edit_sessions and untested_sessions).
     """
     tools = []
     for row in _of(rows, "tool"):
@@ -1004,6 +1036,15 @@ def verified_commits(rows: list[dict]) -> dict:
                     unchecked=None if commits is None else commits - (_int(classified) if checked else 0))
         tools.append(tool)
     tools.sort(key=lambda tool: (-_n(tool["commits"]), str(tool["tool"])))
+    splits = repo_splits(rows)
+    commit_bars = [(tool, splits.get((str(tool["tool"] or ""), "commits"), [])) for tool in tools]
+    session_bars = [(tool, splits.get((str(tool["tool"] or ""), "sessions"), [])) for tool in tools]
+    commit_totals = reported_totals(commit_bars, VERIFIED_SPLIT)
+    session_totals = reported_totals(session_bars, VERIFIED_SESSION_SPLIT)
+    for (tool, found), (_tool, sessions_found) in zip(commit_bars, session_bars):
+        attach_repos(tool, found, VERIFIED_SPLIT, order or [], commit_totals)
+        tool["session_repos"] = attach_repos({measure: tool[measure] for measure in VERIFIED_SESSION_SPLIT}, sessions_found,
+                                             VERIFIED_SESSION_SPLIT, order or [], session_totals)["repos"]
     counted = [tool for tool in tools if tool["commits"] is not None]
     pooled = [tool for tool in counted if tool["checked"]]
     classified = sum(_int(tool["classified"]) for tool in pooled)

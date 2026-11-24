@@ -290,15 +290,18 @@ BOUNDED = {
     "insights.time_split": "two rows per tool, 10 programs, 3 program groups, 10 sessions, one meta row and at most 9 repository "
                           "rows per tool and per program row",
     "insights.work_per_instruction": "per tool, a coverage row per tool, one row per tool and bin (at most 26 weeks, or "
-                                     "months), 10 sessions and one meta row",
-    "insights.verified_commits": "one row per tool, 10 sessions and one meta row",
+                                     "months), 10 sessions, one meta row and at most 9 repository rows per tool",
+    "insights.verified_commits": "one row per tool, 10 sessions, one meta row and at most 9 repository rows per tool for its "
+                                 "commits and for its sessions",
     "insights.model_report": "per tool, model and effort, 3 failing tool names per model, 3 sessions per tool and one meta row",
-    "insights.changes": "one row per repository, 15 reworked files, 10 sessions, at most 32 time bins and a meta row",
-    "insights.durations": "one row per repository, 20 tools and programs, 15 models, 10 sessions, a total row and a meta row",
+    "insights.changes": "one row per repository, 15 reworked files, 10 sessions, at most 32 time bins and a meta row; at most 9 "
+                        "repository rows per time bin",
+    "insights.durations": "one row per repository, 20 tools and programs, 15 models, 10 sessions, a total row and a meta row; "
+                          "at most 9 repository rows per tool, program and model",
     "insights.repo_rank": "the 8 ranked repositories, one row for every other repository and one meta row",
     "insights.repositories": "per repository: one row, a row per model, 3 sessions and at most 9 time bins; one meta row",
     "insights.flows": "one row per pair of step kinds, 10 cycles, per tool, per outcome and last step, 10 first and 10 last "
-                      "paths, 20 projects, 20 sessions and one meta row",
+                      "paths, 20 projects, 20 sessions and one meta row; at most 9 repository rows per tool and per cycle",
     "insights.skills": "25 skills, 10 unused listed skills, per tool, 20 projects, 10 sessions and one meta row",
     "insights.mcp": "25 servers, 40 server tools, 200 listed servers, 20 projects, 10 sessions and one meta row",
     "insights.kql": "per tool, per kind and verb, per failure kind, 15 targets, 15 shapes, 20 projects, 10 sessions, 50 repeats, 10 large results and one meta row",
