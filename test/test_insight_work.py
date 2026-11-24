@@ -189,6 +189,80 @@ def test_flows_in_fleet_scope_name_each_session_with_its_node(kusto_store):
                                     for row, raw in zip(body["sessions"], [r["session_id"] for r in _card(kusto_store, "flows")["sessions"]]))
 
 
+# ─── Skills ────────────────────────────────────────────────────────────────────
+
+
+def _use(store, key, ts, name, *, session, prompt, tool="copilot-cli", project=ALPHA, **values):
+    store.insert("skill_uses", dedup_key=key, ts=ts, session_id=session, agent_id="", tool=tool, name=name, prompt_id=prompt,
+                 trigger="agent-invoked", project_path=project, project=project, **values)
+
+
+def _listed(store, ts, name, *, session, tokens, project=ALPHA, tool="claude-code"):
+    store.insert("session_context_items", session_id=session, agent_id="", kind="skills", name=name, ts=ts, path="",
+                 chars=tokens * 4, tokens=tokens, estimated=True, removed=False, tool=tool, project=project)
+
+
+def _seed_skills(s, project=ALPHA, prefix=""):
+    p = prefix
+    # k1: kql in turn t1, then an edit and a commit in the same turn; the turn's two requests cost 3.0.
+    _use(s, f"{p}u1", 10.0, "kql", session=f"{p}k1", prompt="t1", project=project)
+    _call(s, f"{p}k1e", 20.0, "edit", session=f"{p}k1", kind="file", target="a.kql", is_edit=True, prompt_id="t1", project=project)
+    _call(s, f"{p}k1c", 30.0, "bash", session=f"{p}k1", kind="command", target="git commit -m q", prompt_id="t1",
+          project=project)
+    _call(s, f"{p}k1x", 5.0, "edit", session=f"{p}k1", kind="file", target="b.kql", is_edit=True, prompt_id="t1",
+          project=project)      # before the use: does not follow it
+    _request(s, f"{p}k1r1", 12.0, session=f"{p}k1", cost=1.0, prompt_id="t1", project=project)
+    _request(s, f"{p}k1r2", 22.0, session=f"{p}k1", cost=2.0, prompt_id="t1", project=project)
+    # k2: kql twice in one turn (the turn counts once), nothing follows; then review in another turn.
+    _use(s, f"{p}u2", 10.0, "kql", session=f"{p}k2", prompt="t2", project=project)
+    _use(s, f"{p}u3", 11.0, "kql", session=f"{p}k2", prompt="t2", project=project)
+    _request(s, f"{p}k2r", 12.0, session=f"{p}k2", cost=0.5, prompt_id="t2", project=project)
+    _use(s, f"{p}u4", 50.0, "review", session=f"{p}k2", prompt="t3", project=project)
+    # A use after the period.
+    _use(s, f"{p}u5", 150_000.0, "kql", session=f"{p}k3", prompt="t4", project=project)
+    # c1: Claude Code lists review and never-used; it uses review.
+    _listed(s, 5.0, "review", session=f"{p}c1", tokens=100, project=project)
+    _listed(s, 5.0, "never-used", session=f"{p}c1", tokens=300, project=project)
+    _use(s, f"{p}u6", 20.0, "review", session=f"{p}c1", prompt="t5", tool="claude-code", project=project)
+
+
+def test_skills_count_uses_turns_and_what_follows_in_the_same_turn(kusto_store):
+    _seed_skills(kusto_store)
+    body = _card(kusto_store, "skills")
+    every = {item["name"]: item for item in body["skills"] + body["small_skills"]}
+    kql = every["kql"]
+    assert (kql["uses"], kql["sessions"], kql["turns"], kql["cost_usd"], kql["with_turn"]) == (3, 2, 2, 3.5, 3)
+    assert (kql["after_edit"], kql["after_test"], kql["after_commit"]) == (pytest.approx(1 / 3), 0.0, pytest.approx(1 / 3))
+    assert every["review"]["tools"] == ["claude-code", "copilot-cli"] and every["review"]["uses"] == 2
+    # 3 uses in 2 sessions is too few to compare: no skill drives the finding.
+    assert body["skills"] == [] and body["summary"]["small_skills"] == 2 and body["summary"]["top"] is None
+    assert body["unused"] == [{"tool": "claude-code", "name": "never-used", "sessions": 1, "list_tokens": 300}]
+    assert body["listings"] == [{"tool": "claude-code", "listed": 2, "unused": 1, "sessions": 1, "list_tokens": 400,
+                                 "unused_tokens": 300}]
+    assert {tool["tool"]: tool["uses"] for tool in body["tools"]} == {"copilot-cli": 4, "claude-code": 1}
+    assert body["summary"]["uses"] == 5 and body["summary"]["cost_usd"] == 3.5
+    assert [row["session_id"] for row in body["sessions"]][0] == "k2"
+
+
+def _skill_row(name, uses, sessions, cost, **values):
+    return {"row_type": "skill", "name": name, "uses": uses, "sessions": sessions, "projects": 1, "tools": ["copilot-cli"],
+            "turns": uses, "turn_tokens": 1000, "priced": uses, "cost_usd": cost, "with_turn": uses, "after_edit": uses,
+            "after_test": 0, "after_commit": 0, **values}
+
+
+def test_skills_shape_applies_the_evidence_rule():
+    rows = [_skill_row("big", 140, 140, 1300.0), _skill_row("cheap", 50, 40, 60.0), _skill_row("rare", 4, 4, 900.0),
+            {"row_type": "meta", "priced": 100, "cost_usd": 4000.0, "first_ts": 1.0, "last_ts": 2.0, "computed_at": 3.0},
+            {"row_type": "project", "project_name": "alpha", "uses": 190, "skills": 2, "sessions": 150},
+            {"row_type": "project", "project_name": "beta", "uses": 4, "skills": 1, "sessions": 4}]
+    body = insights_work.skills(rows)
+    # A skill of 4 uses never leads, however costly its turns.
+    assert [item["name"] for item in body["skills"]] == ["big", "cheap"] and body["summary"]["small_skills"] == 1
+    assert body["summary"]["top"]["name"] == "big" and body["summary"]["top"]["cost_share"] == pytest.approx(0.325)
+    assert [item["project"] for item in body["projects"]] == ["alpha"] and body["summary"]["small_projects"] == ["beta"]
+    assert body["summary"]["unused_tokens"] is None and body["summary"]["listing_tools"] == ["claude-code"]
+
+
 # ─── The project filter, for every card of this file ───────────────────────────
 
 
@@ -198,12 +272,16 @@ def _get(store, path, **params):
     return json.loads(body)
 
 
-@pytest.mark.parametrize("card", ["flows"])
+SEEDS = {"flows": _seed_flows, "skills": _seed_skills}
+
+
+@pytest.mark.parametrize("card", sorted(SEEDS))
 def test_a_card_of_a_project_equals_the_card_of_only_its_rows(kusto_tape, kusto_store, card):
-    _seed_flows(kusto_store, ALPHA)
-    _seed_flows(kusto_store, BETA, prefix="x")
+    seed = SEEDS[card]
+    seed(kusto_store, ALPHA)
+    seed(kusto_store, BETA, prefix="x")
     only = SeededStore(kusto_tape)
-    _seed_flows(only, ALPHA)
+    seed(only, ALPHA)
     window = {"since": 0.0, "until": 100_000.0}
     filtered = _get(kusto_store, f"/api/board/insights/{card}", **window, project=ALPHA)
     alone = _get(only, f"/api/board/insights/{card}", **window)

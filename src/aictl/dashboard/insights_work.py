@@ -152,3 +152,68 @@ def flows(rows: list[dict]) -> dict:
     sessions_rows.sort(key=lambda row: (-row["cycle_seconds"], -_n(row["cost_usd"])))
     return {"transitions": transitions, "endings": endings, "first_paths": first_paths, "last_paths": last_paths,
             "cycles": cycles, "projects": projects, "tools": tools, "summary": summary, "sessions": sessions_rows}
+
+
+# Skills: a skill with fewer uses or sessions than these is too small to compare.
+MIN_SKILL_USES = 5
+MIN_SKILL_SESSIONS = 3
+MIN_PROJECT_USES = 5
+# The tools that record which skills are listed to the model (session_context_items of kind skills).
+LISTING_TOOLS = ("claude-code",)
+
+
+def _names(value: Any) -> list[str]:
+    return sorted(str(item) for item in (value or []))
+
+
+def skills(rows: list[dict]) -> dict:
+    """Per skill: uses, sessions, projects, the cost of the turns it ran in and what followed it in the same turn;
+    the skills listed to the model and never used, with the tokens their listing took."""
+    meta = next(iter(_of(rows, "meta")), {})
+    total_cost = _cost(meta)
+    found, small = [], []
+    for row in _of(rows, "skill"):
+        uses, with_turn = _int(row.get("uses")), _int(row.get("with_turn"))
+        item = {
+            "name": row.get("name"), "uses": uses, "sessions": _int(row.get("sessions")), "projects": _int(row.get("projects")),
+            "tools": _names(row.get("tools")), "turns": _int(row.get("turns")),
+            "turn_tokens": _int(row.get("turn_tokens")) if row.get("turns") is not None else None,
+            "cost_usd": _cost(row), "with_turn": with_turn,
+            "after_edit": _ratio(_n(row.get("after_edit")), with_turn), "after_test": _ratio(_n(row.get("after_test")), with_turn),
+            "after_commit": _ratio(_n(row.get("after_commit")), with_turn),
+        }
+        item["cost_share"] = _ratio(_n(item["cost_usd"]), _n(total_cost)) if item["cost_usd"] is not None else None
+        (found if uses >= MIN_SKILL_USES and item["sessions"] >= MIN_SKILL_SESSIONS else small).append(item)
+    found.sort(key=lambda item: (-_n(item["cost_usd"]), -item["uses"]))
+    small.sort(key=lambda item: (-item["uses"], str(item["name"])))
+    unused = [{"tool": row.get("tool"), "name": row.get("name"), "sessions": _int(row.get("sessions")),
+               "list_tokens": _int(row.get("list_tokens"))} for row in _of(rows, "unused")]
+    unused.sort(key=lambda item: -item["list_tokens"])
+    listings = [{"tool": row.get("tool"), "listed": _int(row.get("listed")), "unused": _int(row.get("unused")),
+                 "sessions": _int(row.get("sessions")), "list_tokens": _int(row.get("list_tokens")),
+                 "unused_tokens": _int(row.get("unused_tokens"))} for row in _of(rows, "listing")]
+    tools = sorted(({"tool": row.get("tool"), "uses": _int(row.get("uses")), "skills": _int(row.get("skills")),
+                     "sessions": _int(row.get("sessions")), "with_turn": _int(row.get("with_turn"))}
+                    for row in _of(rows, "tool")), key=lambda item: -item["uses"])
+    projects, small_projects = [], []
+    for row in _of(rows, "project"):
+        item = {"project": str(row.get("project_name") or ""), "uses": _int(row.get("uses")), "skills": _int(row.get("skills")),
+                "sessions": _int(row.get("sessions"))}
+        (projects if item["uses"] >= MIN_PROJECT_USES else small_projects).append(item)
+    projects.sort(key=lambda item: (-item["uses"], item["project"]))
+    summary = {
+        "uses": sum(tool["uses"] for tool in tools), "skills": len(found) + len(small),
+        "sessions": sum(tool["sessions"] for tool in tools), "cost_usd": total_cost,
+        "top": found[0] if found and found[0]["cost_usd"] is not None else None,
+        "use_tools": [tool["tool"] for tool in tools], "listing_tools": list(LISTING_TOOLS),
+        "listed": sum(item["listed"] for item in listings), "unused": sum(item["unused"] for item in listings),
+        "unused_tokens": sum(item["unused_tokens"] for item in listings) if listings else None,
+        "listed_sessions": max((item["sessions"] for item in listings), default=0),
+        "small_skills": len(small), "small_projects": sorted(item["project"] for item in small_projects),
+    }
+    sessions = [{"session_id": row.get("session_id"), "node_id": row.get("node_id"), "tool": row.get("tool"),
+                 "project_name": row.get("project_name") or None, "uses": _int(row.get("uses")),
+                 "skills": _names(row.get("skill_names"))} for row in _of(rows, "session") if row.get("session_id")]
+    sessions.sort(key=lambda row: -row["uses"])
+    return {"skills": found, "small_skills": small, "unused": unused, "listings": listings, "tools": tools,
+            "projects": projects, "summary": summary, "sessions": sessions}

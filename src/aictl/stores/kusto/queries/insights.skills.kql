@@ -1,0 +1,151 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// Which skills the agents use and what follows: per skill, its uses, sessions and projects, the tokens and list
+// price of the turns it ran in (each turn once per skill, however often the skill ran in it), and how many uses were
+// followed in the same turn by an edit, a test run or a commit of the same session (the step rules of
+// insights.flows). A turn is the prompt_id the use and the requests share; a use with no prompt_id has no turn.
+// Listed and never used: the skills a session's main agent was told of (context items of kind skills,
+// expanded from their lists), each once per session, as its newest record, not removed, recorded in the period;
+// a listed skill is used when skill_uses holds a use of it by the same tool in the period. Its listing tokens are
+// estimated from its size. Only tools that record their skill listings count here (Claude Code); the uses of
+// every tool count. A project is the last folder of the working folder.
+// Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
+let session_context_items_secs = session_context_items | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated), removed = tolong(removed);
+// skill_uses_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let skill_uses_current_rows = skill_uses_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let skill_uses_crossed = skill_uses_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let skill_uses_secs = union (skill_uses_current_rows | where dedup_key !in (skill_uses_crossed)),
+        (skill_uses_current_rows | where dedup_key in (skill_uses_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+let context_items_expanded = (items:(['project']:string,node_id:string,session_id:string,agent_id:string,['kind']:string,
+        name:string,path:string,chars:long,tokens:long,estimated:long,removed:long,_v:datetime)) {
+    let pointers = items | where name matches regex @'^list:[0-9a-f]{32}$'
+        | summarize arg_max(_v, *) by ['project'],node_id,session_id,agent_id,kind,name
+        | extend list_key=substring(name,5);
+    union
+        (items | where not(name matches regex @'^list:[0-9a-f]{32}$')),
+        (pointers
+            | join kind=inner (context_lists | where list_id in ((pointers | distinct list_key))
+                | summarize arg_max(_v, *) by ['project'],node_id,list_id,name
+                | project list_node=node_id,list_ref=list_id,item_name=name,item_path=path,item_chars=chars,
+                    item_tokens=tokens,item_estimated=tolong(estimated),item_removed=tolong(removed))
+                on $left.node_id == $right.list_node, $left.list_key == $right.list_ref
+            | extend name=item_name,path=item_path,chars=item_chars,tokens=item_tokens,estimated=item_estimated,
+                removed=item_removed
+            | project-away list_node,list_key,list_ref,item_*)
+};
+let CommitRe = @'(?i)(?:^|[\s;&|({"''])(?:[^\s;&|({"'']*[/\\])?git(?:\.exe)?["'']?(?:\s+-c\s+\S+|\s+--no-p\S*|\s+--(?:git-dir|work-tree)=\S+)*\s+commit(?:[\s"'';)]|$)';
+let CreateTools = dynamic(['create', 'create_file']);
+let uses = materialize(skill_uses_secs
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool, name, prompt_id, project_path
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and isnotempty(name)
+    | extend project_name=coalesce(extract(@'([^/\\]+)[/\\]*$', 1, project_path), '')
+    | project node_id, session_id, ts, tool, name, prompt_id, project_name);
+// The requests of the period per turn, and the period's total.
+let turns = materialize(requests_secs
+    | where all_nodes or node_id == requested_node
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, prompt_id, cost_usd, input_tokens, output_tokens,
+              cache_read_tokens, cache_creation_tokens
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | summarize tokens=sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0) + coalesce(cache_read_tokens, 0)
+                    + coalesce(cache_creation_tokens, 0)), priced=countif(isnotnull(cost_usd)), cost_usd=sum(cost_usd)
+          by node_id, session_id, prompt_id);
+// The work steps of the turns a skill ran in, after the use.
+let work = tool_invocations_secs
+    | where all_nodes or node_id == requested_node
+    | where session_id in ((uses | distinct session_id))
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, prompt_id, tool_name, target_kind, target, is_edit,
+              is_test_run, failed
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and isnotempty(prompt_id)
+    | extend edit=coalesce(is_edit, false) or tool_name in (CreateTools), test=coalesce(is_test_run, false),
+             commit=target_kind == 'command' and target contains 'commit' and not(coalesce(failed, false)) and target matches regex CommitRe
+    | where edit or test or commit
+    | project node_id, session_id, prompt_id, ts, edit, test, commit;
+let followed = materialize(uses
+    | where isnotempty(prompt_id)
+    | join kind=inner work on node_id, session_id, prompt_id
+    | where ts1 > ts
+    | summarize edit=max(tolong(edit)), test=max(tolong(test)), commit=max(tolong(commit))
+          by node_id, session_id, prompt_id, ts, name);
+let per_skill = materialize(uses
+    | lookup kind=leftouter followed on node_id, session_id, prompt_id, ts, name
+    | summarize uses=count(), sessions=dcount(strcat(node_id, '/', session_id)), projects=dcount(project_name),
+                with_turn=countif(isnotempty(prompt_id)), after_edit=sum(coalesce(edit, 0)), after_test=sum(coalesce(test, 0)),
+                after_commit=sum(coalesce(commit, 0)), tools=make_set(tool) by name
+    | lookup kind=leftouter (uses
+        | where isnotempty(prompt_id)
+        | distinct node_id, session_id, prompt_id, name
+        | join kind=inner turns on node_id, session_id, prompt_id
+        | summarize turns=count(), turn_tokens=sum(tokens), priced=sum(priced), cost_usd=sum(cost_usd) by name)
+        on name);
+let listed = materialize(session_context_items_secs | where (isempty(agent_id) or agent_id == session_id) and ['kind'] == 'skills' | extend entry=name
+    | invoke context_items_expanded()
+    | where all_nodes or node_id == requested_node
+    | project ['project'], node_id, session_id, agent_id, ['kind'], name, tokens, removed, _v, ts, tool, entry
+    | summarize arg_max(_v, *) by ['project'], node_id, session_id, agent_id, ['kind'], entry, name
+    | summarize arg_max(ts, *) by node_id, session_id, name
+    | where removed == 0 and ts >= since and ts < until and name != 'skill listing'
+    | summarize sessions=count(), list_tokens=sum(coalesce(tokens, 0)) by tool, name
+    | lookup kind=leftouter (uses | summarize uses=count() by tool, name) on tool, name
+    | extend uses=coalesce(uses, 0));
+union
+    (per_skill
+        | top 25 by uses desc
+        | extend row_type='skill'),
+    (listed
+        | where uses == 0
+        | top 10 by list_tokens desc
+        | extend row_type='unused'),
+    (listed
+        | summarize listed=count(), unused=countif(uses == 0), sessions=max(sessions), list_tokens=sum(list_tokens),
+                    unused_tokens=sumif(list_tokens, uses == 0) by tool
+        | extend row_type='listing'),
+    (uses
+        | summarize uses=count(), skills=dcount(name), sessions=dcount(strcat(node_id, '/', session_id)), with_turn=countif(isnotempty(prompt_id))
+              by tool
+        | extend row_type='tool'),
+    (uses
+        | summarize uses=count(), skills=dcount(name), sessions=dcount(strcat(node_id, '/', session_id)), top_skill=take_any(name)
+              by project_name
+        | top 20 by uses desc
+        | extend row_type='project'),
+    (uses
+        | summarize uses=count(), skill_names=make_set(name, 5), tool=take_any(tool), project_name=take_any(project_name)
+              by node_id, session_id
+        | top 10 by uses desc
+        | extend row_type='session'),
+    (turns
+        | summarize priced=sum(priced), cost_usd=sum(cost_usd), turn_tokens=sum(tokens)
+        | extend row_type='meta', first_ts=toscalar(uses | summarize min(ts)), last_ts=toscalar(uses | summarize max(ts)),
+                 computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, uses desc
+| take row_limit

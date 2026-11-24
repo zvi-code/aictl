@@ -355,6 +355,12 @@ _VIEWS = {
         "path project_name node_id session_id committed changed no_change priced cost_usd no_change_cost tools loop_calls "
         "first_ts last_ts computed_at",
     ),
+    "insights.skills": (
+        _TIME,
+        "row_type name uses sessions projects with_turn after_edit after_test after_commit tools turns turn_tokens "
+        "priced cost_usd tool list_tokens listed unused unused_tokens skills project_name top_skill skill_names node_id "
+        "session_id first_ts last_ts computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -456,6 +462,7 @@ _CACHE_TTL_S = {
     "insights.verified_commits": _INSIGHT_TTL_S,
     "insights.model_report": _INSIGHT_TTL_S,
     "insights.flows": _INSIGHT_TTL_S,
+    "insights.skills": _INSIGHT_TTL_S,
     # Every request with a repository in the project filter resolves it from this list: one read serves a page load.
     "projects.catalog": 15.0,
 }

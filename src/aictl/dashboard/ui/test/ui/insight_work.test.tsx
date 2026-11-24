@@ -2,6 +2,8 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import Flows from '../../src/panels/insights/Flows'
 import { flowsFinding, flowsHero, tooSmall, type FlowsBody } from '../../src/panels/insights/flowsModel'
+import Skills from '../../src/panels/insights/Skills'
+import { skillsCoverage, skillsFinding, skillsHero, type SkillsBody } from '../../src/panels/insights/skillsModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -82,6 +84,58 @@ describe('INS-20 · Flows', () => {
     const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-cycle'))
     open!.click()
     expect(opened).toEqual(['s-cycle:flow'])
+    dispose()
+  })
+})
+
+const skill = { name: 'kql', uses: 142, sessions: 142, projects: 6, tools: ['copilot-cli'], turns: 142, turn_tokens: 608_000_000,
+  cost_usd: 1315.68, cost_share: 0.3125, with_turn: 142, after_edit: 138 / 142, after_test: 0, after_commit: 1 / 142 }
+const skills = {
+  ...base, card: 'skills', view: 'insights.skills', query: query('insights.skills'),
+  skills: [skill], small_skills: [{ ...skill, name: 'rare', uses: 2, sessions: 2 }],
+  unused: [{ tool: 'claude-code', name: 'never-used', sessions: 24, list_tokens: 7180 }],
+  listings: [{ tool: 'claude-code', listed: 118, unused: 114, sessions: 25, list_tokens: 177_101, unused_tokens: 163_424 }],
+  tools: [{ tool: 'copilot-cli', uses: 927, skills: 29, sessions: 286, with_turn: 927 }],
+  projects: [{ project: '/work/alpha', uses: 386, skills: 12, sessions: 117 }],
+  summary: { uses: 927, skills: 30, sessions: 286, cost_usd: 4211, top: skill, use_tools: ['copilot-cli', 'claude-code'],
+    listing_tools: ['claude-code'], listed: 118, unused: 114, unused_tokens: 163_424, listed_sessions: 25, small_skills: 1,
+    small_projects: ['beta'] },
+  sessions: [{ session_id: 's-skill', node_id: 'n', tool: 'copilot-cli', project_name: 'alpha', uses: 7, skills: ['kql', 'review'] }],
+} as unknown as SkillsBody
+
+describe('INS-21 · Skills', () => {
+  it('states the costliest skill with what followed it, and the skills listed and never used', () => {
+    expect(skillsFinding(skills, label)).toBe('The skill kql ran in 142 turns of 142 sessions in 6 projects; those turns cost $1,316 at ' +
+      "list price (31% of the period's cost). After it, in the same turn, 97% of its uses edited a file, 0% ran tests and 1% committed. " +
+      'Claude Code listed 118 skills to the model; 114 were never used, and their listing took 163 k tokens (estimated from size) over ' +
+      'the sessions that listed them.')
+    expect(skillsHero(skills)).toEqual({ value: '31%', label: "of the period's cost was in turns that ran kql" })
+  })
+
+  it('leads with no skill when none has enough uses, and says which tools report listings', () => {
+    const few = { ...skills, skills: [], summary: { ...skills.summary, top: null, listed: 0, unused: 0, unused_tokens: null } } as SkillsBody
+    expect(skillsFinding(few, label)).toBe('927 skill uses in this period, but no skill has 5 uses in 3 sessions: too few to compare.')
+    expect(skillsHero(few)).toBeUndefined()
+    expect(skillsCoverage(skills, label)).toBe('Only Claude Code reports which skills are listed to the model; for other tools, listed ' +
+      'and never used cannot be measured. Skill uses come from Copilot CLI, Claude Code. Too small to compare: 1 skill with fewer than ' +
+      '5 uses or 3 sessions; 1 project with fewer than 5 uses.')
+  })
+
+  it('draws a bar per skill with what followed it, the unused listings and the projects, and opens a session', () => {
+    const opened: string[] = []
+    const { host, dispose } = mount(() => <Skills {...props(context({ data: skills, status: 'ready', error: null }, opened))} />)
+    const box = host.querySelector('[data-box="insight-skills"]')!
+    expect(box.querySelector('[data-hero] strong')!.textContent).toBe('31%')
+    const row = box.querySelector('[data-skill="kql"]')!
+    expect(row.textContent).toContain('142 uses · 142 sessions · 6 projects')
+    expect(row.textContent).toContain('$1,316 (31%)')
+    expect(row.textContent).toContain('then edit 97% · test 0% · commit 1%')
+    expect(box.querySelector('[data-skill="rare"]')).toBeNull()
+    expect(box.querySelector('[data-unused]')!.textContent).toContain('never-used24 sessions · 7.2 k tokens')
+    expect(box.querySelector('[data-projects]')!.textContent).toContain('alpha386 uses of 12 skills · 117 sessions')
+    const open = [...box.querySelectorAll('button')].find(button => button.getAttribute('aria-label')?.startsWith('Open session s-skill'))
+    open!.click()
+    expect(opened).toEqual(['s-skill:flow'])
     dispose()
   })
 })

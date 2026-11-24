@@ -33,6 +33,7 @@ CARDS = {
     "verified": "insights.verified_commits",
     "models": "insights.model_report",
     "flows": "insights.flows",
+    "skills": "insights.skills",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -855,6 +856,7 @@ SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "verified": verified_commits,
     "models": model_report,
     "flows": insights_work.flows,
+    "skills": insights_work.skills,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -872,6 +874,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "verified": lambda history, params: history.read("insights.verified_commits", limit=ROW_LIMIT, **params),
     "models": lambda history, params: history.read("insights.model_report", limit=ROW_LIMIT, **params),
     "flows": lambda history, params: history.read("insights.flows", limit=ROW_LIMIT, **params),
+    "skills": lambda history, params: history.read("insights.skills", limit=ROW_LIMIT, **params),
 }
 
 
