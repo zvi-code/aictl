@@ -1,16 +1,18 @@
 import { For, Show, untrack } from 'solid-js'
 import { fmtNum, fmtShare, projectName } from '../../design/format'
 import { BarChart } from './FlowsBars'
-import { axisText, barTop } from './flowBarModel'
+import { axisText, barTop, type BarRow } from './flowBarModel'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  columnName, cycleAxis, cycleName, cycleRows, endingLegend, endingRows, flowsFinding, flowsHero, flowToolRows, lastStepRows,
-  OUTCOME_LABELS, OUTCOMES, pathRows, projectRows, step, tooSmall, transitionMatrix, workTime,
+  columnName, cycleAxis, cycleName, cycleRows, endingLegend, endingRepoRows, endingRows, flowsFinding, flowsHero, flowToolRows,
+  lastStepRows, OUTCOME_LABELS, OUTCOMES, pathRows, projectRepoRows, projectRows, step, tooSmall, transitionMatrix, workTime,
   type FlowOutcome, type FlowsBody, type Step,
 } from './flowsModel'
 import { money, plural, share, toolLabel, type Label } from './insightsModel'
 import styles from './Insights.module.css'
 import bars from './FlowsBars.module.css'
+import { RepoLegend } from './RepoLegend'
+import { hasOther } from './repoSplit'
 
 const LEFT = 120, CELL = 58, ROW = 32, HEAD = 64
 
@@ -43,35 +45,57 @@ function Matrix(props: { body: FlowsBody }) {
         </svg>
       </div>
       <p class={bars.axis}>Cell shade grows with the share. Blank: not among the step's 4 most frequent next steps; "other" sums the rest.
-        {' '}What follows a failed call is in the card After a failure.</p>
+        {' '}What follows a failed call is in the card After a failure. Not split by repository.</p>
     </Show>
   </figure>
 }
 
+/** Every bar of the card the server split by repository, for the legend's "Other repositories". */
+function splitBars(body: FlowsBody) {
+  const endings = OUTCOMES.map(outcome => body.endings[outcome])
+  return [...endings, ...endings.flatMap(ending => ending.last_steps), ...body.first_paths, ...body.last_paths, ...body.cycles,
+    ...body.projects, ...body.tools]
+}
+/** The axis line of a chart, saying so when its bars are split by repository. */
+const splitAxis = (text: string, rows: readonly BarRow[]) =>
+  rows.some(row => row.parts.some(part => part.repo != null)) ? `${text} A segment per repository.` : text
+
 function Visual(props: { body: FlowsBody; label: Label }) {
   const ended = () => OUTCOMES.filter(outcome => props.body.endings[outcome].last_steps.length)
-  const stepAxis = (outcome: FlowOutcome) => axisText('sessions', fmtNum(barTop(lastStepRows(props.body, outcome))))
+  const stepAxis = (outcome: FlowOutcome) => splitAxis(axisText('sessions', fmtNum(barTop(lastStepRows(props.body, outcome)))),
+    lastStepRows(props.body, outcome))
+  const pathAxis = (which: 'first' | 'last') => splitAxis(axisText('sessions', fmtNum(barTop(pathRows(props.body, which)))),
+    pathRows(props.body, which))
   return <>
+    <RepoLegend split={props.body} other={hasOther(splitBars(props.body))} />
     <BarChart data="endings" title="How sessions ended (sessions)" rows={endingRows(props.body)} legend={endingLegend}
       axis="One bar of all sessions, split by how they ended." empty="No session ended in this period." />
+    <Show when={endingRepoRows(props.body).length}>
+      <BarChart data="endings-repos" title="Sessions per ending, by repository (sessions)" rows={endingRepoRows(props.body)}
+        axis={splitAxis(axisText('sessions', fmtNum(barTop(endingRepoRows(props.body)))), endingRepoRows(props.body))} />
+    </Show>
     <div class={styles.lists}>
       <For each={ended()}>{outcome => <BarChart data={`last-${outcome}`} title={`Last step: ${OUTCOME_LABELS[outcome].toLowerCase()}`}
         rows={lastStepRows(props.body, outcome)} axis={stepAxis(outcome)} />}</For>
     </div>
     <Matrix body={props.body} />
     <BarChart data="cycles" title="Cycles of two alternating steps, by working time" rows={cycleRows(props.body)}
-      axis={cycleAxis(props.body)} empty="No cycle seen in 3 or more sessions." />
+      axis={splitAxis(cycleAxis(props.body), cycleRows(props.body))} empty="No cycle seen in 3 or more sessions." />
     <div class={styles.lists}>
       <BarChart data="first-paths" title="First steps of sessions (sessions)" rows={pathRows(props.body, 'first')}
-        axis={axisText('sessions', fmtNum(barTop(pathRows(props.body, 'first'))))} empty="No start shared by 3 or more sessions." />
+        axis={pathAxis('first')} empty="No start shared by 3 or more sessions." />
       <BarChart data="last-paths" title="Last steps of sessions (sessions)" rows={pathRows(props.body, 'last')}
-        axis={axisText('sessions', fmtNum(barTop(pathRows(props.body, 'last'))))} empty="No end shared by 3 or more sessions." />
+        axis={pathAxis('last')} empty="No end shared by 3 or more sessions." />
     </div>
     <BarChart data="projects" title="Sessions per project, by how they ended (committed · changed · changed no file)"
       rows={projectRows(props.body)} legend={endingLegend} axis={axisText('sessions', fmtNum(barTop(projectRows(props.body))))}
       empty="No project with 5 or more sessions." />
+    <Show when={projectRepoRows(props.body).length}>
+      <BarChart data="projects-repos" title="Sessions per project, by repository (sessions)" rows={projectRepoRows(props.body)}
+        axis={splitAxis(axisText('sessions', fmtNum(barTop(projectRepoRows(props.body)))), projectRepoRows(props.body))} />
+    </Show>
     <BarChart data="tools" title="Tool calls per tool" rows={flowToolRows(props.body, props.label)}
-      axis={axisText('tool calls', fmtNum(barTop(flowToolRows(props.body, props.label))))} empty="No tool call in this period." />
+      axis={splitAxis(axisText('tool calls', fmtNum(barTop(flowToolRows(props.body, props.label)))), flowToolRows(props.body, props.label))} empty="No tool call in this period." />
     <Show when={tooSmall(props.body, props.label)}>{text => <p class={styles.note} data-small>{text()}</p>}</Show>
   </>
 }

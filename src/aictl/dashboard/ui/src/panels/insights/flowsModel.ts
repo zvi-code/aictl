@@ -1,21 +1,25 @@
 // ─── Flows — the payload of /api/board/insights/flows, the sentence it states and the rows of its charts ─
 // A group with too little data is listed by the server as too small and never gets its own bar.
 import { fmtNum, projectName } from '../../design/format'
-import { axisText, barTop, type BarLegend, type BarRow, type BarTone } from './flowBarModel'
+import { axisText, barTop, type BarLegend, type BarPart, type BarRow, type BarTone } from './flowBarModel'
 import { hours, money, plural, share, type Base, type Hero, type Label } from './insightsModel'
+import { repoColour, repoHover, repoName, type RepoSegment } from './repoSplit'
 
 type Num = number | null
 export type Step = 'read' | 'search' | 'edit' | 'command' | 'test' | 'commit' | 'mcp' | 'skill' | 'delegate' | 'web' | 'ask' | 'finish'
   | 'other'
 export type FlowOutcome = 'committed' | 'changed' | 'no_change'
-export type FlowEnding = { sessions: number; cost_usd: Num; last_steps: { step: Step; sessions: number; cost_usd: Num }[] }
-export type FlowCycle = { pair: Step[]; loops: number; sessions: number; calls: number; rounds: number; seconds: number; time_share: Num }
-export type FlowPath = { steps: Step[]; sessions: number }
+/** `repos` (repoSplit.ts): the bar's parts per repository, where the server split it. */
+type Split = { repos?: RepoSegment[] }
+export type FlowLastStep = { step: Step; sessions: number; cost_usd: Num } & Split
+export type FlowEnding = { sessions: number; cost_usd: Num; last_steps: FlowLastStep[] } & Split
+export type FlowCycle = { pair: Step[]; loops: number; sessions: number; calls: number; rounds: number; seconds: number; time_share: Num } & Split
+export type FlowPath = { steps: Step[]; sessions: number } & Split
 export type FlowProject = {
   project: string; sessions: number; committed: number; changed: number; no_change: number; no_change_share: Num
   cost_usd: Num; no_change_cost: Num; loops: number; cycle_seconds: number; tools: string[]
-}
-export type FlowTool = { tool: string; calls: number; sessions: number; seconds: number; test_runs: number; unflagged_tests: number }
+} & Split
+export type FlowTool = { tool: string; calls: number; sessions: number; seconds: number; test_runs: number; unflagged_tests: number } & Split
 export type FlowsBody = Base<'flows'> & {
   transitions: { from_step: Step; calls: number; next: { to_step: Step; calls: number; share: number }[] }[]
   endings: Record<FlowOutcome, FlowEnding>
@@ -26,7 +30,7 @@ export type FlowsBody = Base<'flows'> & {
   tools: FlowTool[]
   summary: {
     sessions: number; cost_usd: Num; enough: boolean; no_change: number; no_change_share: Num; no_change_cost: Num
-    no_change_cost_share: Num; no_change_last: { step: Step; sessions: number; cost_usd: Num } | null
+    no_change_cost_share: Num; no_change_last: FlowLastStep | null
     committed: number; changed: number; working_seconds: number; cycle_seconds: number; cycle_share: Num
     top_cycle: FlowCycle | null; no_test_tools: string[]; unflagged_tests: number
     small_steps: Step[]; small_paths: number; small_cycles: number; small_projects: string[]
@@ -89,6 +93,32 @@ export function endingRows(body: FlowsBody): BarRow[] {
     hover: OUTCOMES.map(outcome => outcomeHover(body, outcome)).join('; '),
   }]
 }
+/** The parts of a bar per repository for one measure of its segments, each with repoHover, `extra` (that segment's
+ * other figures) and `detail` (the bar's own hover); none when the answer carries no split. */
+export function flowRepoParts(body: FlowsBody, segments: readonly RepoSegment[] | undefined, key: string, format: (value: number) => string,
+  bar: string, measure: string, detail: string, extra?: (segment: RepoSegment) => string): BarPart[] {
+  return (segments ?? []).flatMap(segment => {
+    const value = segment[key]
+    if (typeof value !== 'number' || value <= 0) return []
+    const name = repoName(body.repo_order, segment.repo)
+    return [{ value, tone: 'muted' as const, key: `repo:${segment.repo}`, repo: repoColour(body.repo_order, segment.repo),
+      hover: repoHover({ bar, repo: segment.repo, name, value: format(value), share: segment.share?.[key] ?? null,
+        ofRepo: segment.of_repo?.[key] ?? null, measure }) + (extra ? ` ${extra(segment)}` : '') + (detail ? ` ${detail}` : '') }]
+  })
+}
+const segmentCost = (segment: RepoSegment) =>
+  `${money(typeof segment.cost_usd === 'number' ? segment.cost_usd : null)} at list price.`
+const sessions = (value: number) => plural(value, 'session')
+
+/** Per outcome, its sessions in a segment per repository: the second bar under "how sessions ended". */
+export function endingRepoRows(body: FlowsBody): BarRow[] {
+  return OUTCOMES.filter(outcome => body.endings[outcome].repos?.length && body.endings[outcome].sessions).map(outcome => {
+    const ending = body.endings[outcome], hover = outcomeHover(body, outcome)
+    return { key: outcome, name: OUTCOME_LABELS[outcome], sub: money(ending.cost_usd),
+      parts: flowRepoParts(body, ending.repos, 'sessions', sessions, OUTCOME_LABELS[outcome], 'sessions', `${hover}.`, segmentCost),
+      text: plural(ending.sessions, 'session'), hover }
+  })
+}
 export const endingLegend: BarLegend = OUTCOMES.map(outcome => ({ tone: OUTCOME_TONES[outcome], label: OUTCOME_LABELS[outcome] }))
 
 /** Per outcome, the main agent's last step: sessions and list price. */
@@ -97,7 +127,11 @@ export function lastStepRows(body: FlowsBody, outcome: FlowOutcome): BarRow[] {
   return ending.last_steps.slice(0, SHOWN).map(item => {
     const hover = `${OUTCOME_LABELS[outcome]}, last step ${step(item.step)}: ${fmtNum(item.sessions)} of ${plural(ending.sessions, 'session')} ` +
       `(${share(ratio(item.sessions, ending.sessions))}), ${money(item.cost_usd)} at list price`
-    return { key: item.step, name: step(item.step), parts: [{ value: item.sessions, tone: OUTCOME_TONES[outcome], hover }],
+    const parts = item.repos?.length
+      ? flowRepoParts(body, item.repos, 'sessions', sessions, `${OUTCOME_LABELS[outcome]}, last step ${step(item.step)}`, 'sessions',
+        `${hover}.`, segmentCost)
+      : [{ value: item.sessions, tone: OUTCOME_TONES[outcome], hover }]
+    return { key: item.step, name: step(item.step), parts,
       text: `${plural(item.sessions, 'session')} · ${money(item.cost_usd)}`, hover }
   })
 }
@@ -143,7 +177,9 @@ export function cycleRows(body: FlowsBody): BarRow[] {
       `${share(cycle.time_share)} of the working time of all tool calls (${workTime(body.summary.working_seconds)}). ` +
       'A cycle is two steps taking turns 3 rounds or more.'
     return { key: cycle.pair.join('-'), name: cycleName(cycle.pair), sub: `${plural(cycle.rounds, 'round')} · ${plural(cycle.sessions, 'session')}`,
-      parts: [{ value: cycle.seconds, tone: 'c1', hover }], text: `${workTime(cycle.seconds)} (${share(cycle.time_share)})`, hover }
+      parts: cycle.repos?.length ? flowRepoParts(body, cycle.repos, 'seconds', workTime, cycleName(cycle.pair), 'working time', hover)
+        : [{ value: cycle.seconds, tone: 'c1', hover }],
+      text: `${workTime(cycle.seconds)} (${share(cycle.time_share)})`, hover }
   })
 }
 export const cycleAxis = (body: FlowsBody) => axisText('working time in the cycle', workTime(barTop(cycleRows(body))))
@@ -155,7 +191,9 @@ export function pathRows(body: FlowsBody, which: 'first' | 'last'): BarRow[] {
   return paths.slice(0, SHOWN).map(path => {
     const hover = `${which === 'first' ? 'First' : 'Last'} ${which === 'first' ? 4 : 3} steps ${stepPath(path.steps)}: ` +
       `${fmtNum(path.sessions)} of ${plural(total, 'session')} (${share(ratio(path.sessions, total))}); repeats of one step count once`
-    return { key: path.steps.join('-'), name: stepPath(path.steps), parts: [{ value: path.sessions, tone: which === 'first' ? 'c1' : 'c2', hover }],
+    const parts = path.repos?.length ? flowRepoParts(body, path.repos, 'sessions', sessions, stepPath(path.steps), 'sessions', `${hover}.`)
+      : [{ value: path.sessions, tone: which === 'first' ? 'c1' as const : 'c2' as const, hover }]
+    return { key: path.steps.join('-'), name: stepPath(path.steps), parts,
       text: `${plural(path.sessions, 'session')} (${share(ratio(path.sessions, total))})`, hover }
   })
 }
@@ -175,12 +213,27 @@ export function projectRows(body: FlowsBody): BarRow[] {
   })
 }
 
+/** Per project, its sessions in a segment per repository: the second chart under the split by how they ended. */
+export function projectRepoRows(body: FlowsBody): BarRow[] {
+  return projectRows(body).flatMap(row => {
+    const project = body.projects.find(item => item.project === row.key)
+    if (!project?.repos?.length) return []
+    const extra = (segment: RepoSegment) => `Of them ${fmtNum(Number(segment.committed ?? 0))} committed, ${fmtNum(Number(segment.changed ?? 0))} ` +
+      `changed files without a commit, ${fmtNum(Number(segment.no_change ?? 0))} changed no file.`
+    return [{ ...row, parts: flowRepoParts(body, project.repos, 'sessions', sessions, row.name, 'sessions', `${row.hover}.`, extra),
+      text: plural(project.sessions, 'session') }]
+  })
+}
+
 /** Per tool: its calls, sessions, working time and recognised test runs. */
 export function flowToolRows(body: FlowsBody, label: Label): BarRow[] {
   return body.tools.map(tool => {
     const hover = `${label(tool.tool)}: ${plural(tool.calls, 'tool call')} in ${plural(tool.sessions, 'session')}, working time ` +
       `${workTime(tool.seconds)}, ${plural(tool.test_runs, 'recognised test run')}`
-    return { key: tool.tool, name: label(tool.tool), sub: plural(tool.sessions, 'session'), parts: [{ value: tool.calls, tone: 'c1', hover }],
+    const parts = tool.repos?.length ? flowRepoParts(body, tool.repos, 'calls', value => plural(value, 'tool call'), label(tool.tool),
+      'tool calls', `${hover}.`, segment => `Working time ${workTime(typeof segment.seconds === 'number' ? segment.seconds : null)}.`)
+      : [{ value: tool.calls, tone: 'c1' as const, hover }]
+    return { key: tool.tool, name: label(tool.tool), sub: plural(tool.sessions, 'session'), parts,
       text: `${plural(tool.calls, 'call')} · ${workTime(tool.seconds)}`, hover }
   })
 }

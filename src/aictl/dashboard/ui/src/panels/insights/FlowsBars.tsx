@@ -1,6 +1,11 @@
 import { For, Show } from 'solid-js'
 import { barTop, placeParts, tickAt, type BarLegend, type BarRow } from './flowBarModel'
 import styles from './FlowsBars.module.css'
+import { OTHER, repoColourVar } from './repoSplit'
+
+/** The fill of a repository's part: its chart colour, lightened as the HTML bars of the other cards draw it. */
+const repoFill = (colour: number) => colour === OTHER ? repoColourVar(colour)
+  : `color-mix(in srgb, ${repoColourVar(colour)} 70%, var(--color-surface))`
 
 /**
  * A titled chart of horizontal bars on one linear scale: the name and its counts on the left, the bar, and the value
@@ -24,8 +29,10 @@ export function BarChart(props: { title: string; axis: string; rows: readonly Ba
           <span class={styles.name}>{row.name}<Show when={row.sub}>{sub => <small>{sub()}</small>}</Show></span>
           <svg class={styles.track} viewBox="0 0 100 10" preserveAspectRatio="none" role="img" aria-label={row.hover}>
             <title>{row.hover}</title>
-            <For each={placeParts(row, top())}>{part => <rect class={styles[part.tone]} x={part.x} y={1} height={8} width={part.width}
-              data-part={part.tone}><title>{part.hover}</title></rect>}</For>
+            <For each={placeParts(row, top())}>{part => <rect class={part.repo == null ? styles[part.tone] : styles.repo}
+              style={part.repo == null ? undefined : { fill: repoFill(part.repo) }} x={part.x} y={1} height={8} width={part.width}
+              data-part={part.key ?? part.tone} data-repo={part.repo == null ? undefined : String(part.repo)}>
+              <title>{part.hover}</title></rect>}</For>
             <Show when={row.tick}>{tick => <line class={styles.tick} x1={tickAt(row, top()) ?? 0} x2={tickAt(row, top()) ?? 0} y1={0} y2={10}
               data-tick><title>{tick().hover}</title></line>}</Show>
           </svg>

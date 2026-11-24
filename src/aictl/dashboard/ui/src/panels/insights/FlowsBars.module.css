@@ -19,6 +19,8 @@
 .good { fill: var(--color-success); background: var(--color-success); }
 .bad { fill: var(--color-danger); background: var(--color-danger); }
 .muted { fill: var(--color-muted); background: var(--color-muted); }
+/* A repository's part (repoSplit.ts): filled inline with its colour; a thin line of the surface parts two neighbours. */
+.repo { stroke: var(--color-surface); stroke-width: 1; vector-effect: non-scaling-stroke; }
 
 /* The transition matrix of the Flows card: one row per step kind, one column per next step kind. */
 .matrixScroll { overflow-x: auto; min-inline-size: 0; }

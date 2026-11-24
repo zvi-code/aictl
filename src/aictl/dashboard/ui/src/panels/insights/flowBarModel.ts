@@ -3,7 +3,9 @@
 // is written beside the bar. A tick marks a second figure of the same row on the same scale (a 95th percentile).
 
 export type BarTone = 'c1' | 'c2' | 'c3' | 'c4' | 'good' | 'bad' | 'muted'
-export type BarPart = { value: number; tone: BarTone; hover: string }
+/** `repo`: the part is one repository's share of the bar (repoSplit.ts), filled with that repository's colour instead of
+ * `tone`; `key` names the part in the markup. */
+export type BarPart = { value: number; tone: BarTone; hover: string; repo?: number; key?: string }
 export type BarRow = {
   key: string; name: string; sub?: string; parts: BarPart[]; text: string; hover: string
   tick?: { value: number; hover: string }
