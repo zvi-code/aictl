@@ -22,6 +22,7 @@ from typing import Any
 
 from .. import session_lifecycle
 from ..data.model_pricing import canonical_model_id, request_cost_usd, resolve_pricing
+from ..data.model_vendor import model_vendor
 from ..data.provenance import CACHE_NOT_REPORTED, NO_LIST_PRICE
 from ..ingesters._common import project_key, project_root
 from ..tool_scope import is_unattributed, stored_ids_for
@@ -3650,6 +3651,167 @@ def _usage_series(board: _Board) -> dict:
             },
         },
         "cached_share": [u.cached_share for u in board.bucket],
+        "split": _split_series(board),
+    }
+
+
+# ── Usage split by model, vendor, project and tool ──
+#
+# The request cells are already summed by the store per session, agent, model and step of the time grid
+# (``requests.cells``); each cell knows its model, tool and project. A split sums those cells per group:
+# it changes what the usage panels draw, never what the board reads.
+
+SPLIT_DIMENSIONS = ("model", "vendor", "project", "tool")
+# The usage table splits by these; a tool's usage is the Tools panel's.
+TABLE_DIMENSIONS = ("model", "vendor", "project")
+# Groups drawn per chart; the rest are summed into one "Other (n)" series.
+SPLIT_TOP = 5
+# A group's cache hit rate in a bucket needs this much input of all kinds (input, cache read and cache
+# write tokens); with less it is a gap, not a 0 % or 100 % drawn from a request or two.
+MIN_CACHE_RATE_INPUT = 10_000
+# Model ids named per vendor group and folded group keys named per "Other (n)".
+MAX_NAMED = 20
+
+
+def split_key(dimension: str, cell: _Cell) -> str:
+    """The group of *cell* in one split: its model id, the model's vendor, its project or its tool."""
+    if dimension == "model":
+        return cell.model
+    if dimension == "vendor":
+        return model_vendor(cell.model)
+    return cell.project if dimension == "project" else cell.tool
+
+
+class _GroupSeries:
+    """One group's request cells summed per time bucket."""
+
+    __slots__ = ("tokens", "requests", "input_all", "cache_read", "cost", "models")
+
+    def __init__(self, n: int) -> None:
+        self.tokens = [0] * n
+        self.requests = [0] * n
+        self.input_all = [0] * n
+        self.cache_read = [0] * n
+        self.cost: list[float | None] = [None] * n
+        self.models: set[str] = set()
+
+    def add(self, c: _Cell) -> None:
+        b = c.b
+        self.tokens[b] += c.i + c.o + c.cr + c.cw
+        self.requests[b] += c.n
+        self.input_all[b] += c.i + c.cr + c.cw
+        self.cache_read[b] += c.cr
+        if c.cost is not None:
+            self.cost[b] = (self.cost[b] or 0.0) + c.cost
+        self.models.add(c.model)
+
+
+def _cache_rate(cache_read: int, input_all: int) -> float | None:
+    return round(cache_read / input_all, 4) if input_all >= MIN_CACHE_RATE_INPUT else None
+
+
+def _sum_lists(lists: list[list], n: int) -> list:
+    """Bucket sums of several groups' values; a bucket where none has a value stays None."""
+    out: list = [None] * n
+    for values in lists:
+        for i, value in enumerate(values):
+            if value is not None:
+                out[i] = value if out[i] is None else out[i] + value
+    return out
+
+
+def _split_series(board: _Board) -> dict:
+    """Per split, per measure: the top groups by that measure, then one "Other (n)" entry for the rest.
+
+    An entry is ``{"key", "values"}``; the folded entry has ``key`` None, ``other`` (how many groups)
+    and ``members`` (their keys). A vendor entry names its ``models``. The entries of a measure add up
+    to the board's total of it: tokens to ``kpis.tokens``, cost to ``kpis.cost_usd``, messages to the
+    model requests (``series.messages.assistant``). The cache hit rate is cached input over all input
+    of the group per bucket, a gap below ``MIN_CACHE_RATE_INPUT``.
+    """
+    n = board.f.buckets
+    groups: dict[str, dict[str, _GroupSeries]] = {dim: {} for dim in SPLIT_DIMENSIONS}
+    for c in board.cells:
+        for dim in SPLIT_DIMENSIONS:
+            key = split_key(dim, c)
+            found = groups[dim].get(key)
+            if found is None:
+                found = groups[dim][key] = _GroupSeries(n)
+            found.add(c)
+
+    def entries(dim: str, measure: str) -> list[dict]:
+        def total(g: _GroupSeries) -> float:
+            values = g.input_all if measure == "cached_share" else getattr(g, measure)
+            return sum(v for v in values if v is not None)
+
+        ranked = sorted(((k, g) for k, g in groups[dim].items() if total(g) > 0), key=lambda kv: (-total(kv[1]), kv[0]))
+        shown, rest = ranked[:SPLIT_TOP], ranked[SPLIT_TOP:]
+
+        def values(parts: list[_GroupSeries]) -> list:
+            if measure == "cached_share":
+                cr = _sum_lists([g.cache_read for g in parts], n)
+                ia = _sum_lists([g.input_all for g in parts], n)
+                return [_cache_rate(cr[i] or 0, ia[i] or 0) for i in range(n)]
+            summed = _sum_lists([getattr(g, measure) for g in parts], n)
+            if measure == "cost":
+                return [_usd(v) for v in summed]
+            return [v or 0 for v in summed]
+
+        def named(parts: list[_GroupSeries]) -> dict:
+            return {"models": sorted(set().union(*(g.models for g in parts)))[:MAX_NAMED]} if dim == "vendor" else {}
+
+        out = [{"key": k, "values": values([g]), **named([g])} for k, g in shown]
+        if rest:
+            out.append({"key": None, "other": len(rest), "members": [k for k, _ in rest][:MAX_NAMED],
+                        "values": values([g for _, g in rest]), **named([g for _, g in rest])})
+        return out
+
+    return {dim: {measure: entries(dim, measure) for measure in ("tokens", "cached_share", "cost", "requests")}
+            for dim in SPLIT_DIMENSIONS}
+
+
+def _usage_by(board: _Board) -> dict:
+    """The usage table, one row per model, vendor or project, the costliest first.
+
+    Rows past ``MAX_LIST_ROWS`` are summed into one ``Other (n)`` row (``key`` None), so the rows add up
+    to the board's totals. ``cost_share`` is the row's part of the priced cost of the board.
+    """
+    out: dict[str, list[dict]] = {}
+    for dim in TABLE_DIMENSIONS:
+        cells: dict[str, list[_Cell]] = defaultdict(list)
+        usage: dict[str, _Usage] = defaultdict(_Usage)
+        for c in board.cells:
+            key = split_key(dim, c)
+            cells[key].append(c)
+            usage[key].add(c)
+        ranked = sorted(usage, key=lambda k: (usage[k].cost is None, -(usage[k].cost or 0.0), -usage[k].tokens, k))
+        shown, rest = ranked[:MAX_LIST_ROWS], ranked[MAX_LIST_ROWS:]
+        out[dim] = [_usage_row(board, dim, k, cells[k]) for k in shown]
+        if rest:
+            out[dim].append({**_usage_row(board, dim, None, [c for k in rest for c in cells[k]]), "other": len(rest)})
+    return out
+
+
+def _usage_row(board: _Board, dim: str, key: str | None, cells: list[_Cell]) -> dict:
+    u = _Usage()
+    for c in cells:
+        u.add(c)
+    return {
+        "key": key,
+        **({"models": sorted({c.model for c in cells})[:MAX_NAMED]} if dim == "vendor" else {}),
+        "agents": len({_agent_key(c.sid, c.aid) for c in cells}),
+        "requests": u.calls,
+        "input": u.input,
+        "cache_read": u.cache_read,
+        "cache_write": _reported(u.cache_write, {c.tool for c in cells}, _NO_CACHE_WRITE),
+        "cached_share": u.cached_share,
+        "output": u.output,
+        "tokens": u.tokens,
+        "cost_usd": _usd(u.cost),
+        "cost_share": _ratio(u.cost, board.total.cost) if u.cost is not None else None,
+        "cost_per_request": _usd(u.cost / u.calls) if u.cost is not None and u.calls else None,
+        "errors": u.errors,
+        "error_share": _ratio(u.errors, u.calls),
     }
 
 
@@ -3681,7 +3843,7 @@ def chart_fields(board: _Board, now: float, latency: dict, tool_section: dict, e
     usage = _usage_series(board)
     series = {
         "tokens": usage["tokens"], "cost": usage["cost"], "messages": _messages_series(board, tool_section),
-        "cached_share": usage["cached_share"], "latency": _latency_series(latency),
+        "cached_share": usage["cached_share"], "split": usage["split"], "latency": _latency_series(latency),
         "failures": {"tool": tool_section["fail_bucket"], "api": api_bucket},
         "tests": {"passed": tests_passed, "failed": tests_failed}, "cpu": cpu, "mem": mem,
     }
@@ -3732,6 +3894,7 @@ def usage_part(db: Any, board: _Board, now: float) -> dict:
         },
         "kpis": kpis,
         "by_role": by_role,
+        "usage_by": _usage_by(board),
         "saved_usd": _usd(board.total.saved),
         "unpriced": _unpriced_section(board),
         "credits": _credits_section(board),

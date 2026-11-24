@@ -41,7 +41,7 @@ def test_synthetic_board_fixture(ui_fixtures):
     board = ui_fixtures["board"]
     assert set(INDEX["board"]) - board.keys() == {
         "node_scope", "tool_labels", "settings_at", "unpriced", "prompts_total",
-        "tests_piped", "credits", "project_prompts_searched",
+        "tests_piped", "credits", "project_prompts_searched", "usage_by",
     }
     missing = {
         "range": ("$.partial_bucket",),

@@ -1,5 +1,5 @@
 // Generated from dashboard/contract. Do not edit. Run npm run gen:contract.
-// Schema digest: 3661732aa17fcbf936a7283a7e2e5477eab8bc8535680c24dadadcd54a3105cc
+// Schema digest: d095202fb6c07823f6f715dfb211adc6a34faaab8c6a8fc47759e56dcbc89f2d
 
 export const CONTRACT_VERSION = 1 as const;
 
@@ -401,6 +401,128 @@ export type BoardSeries = {
     tool: Array<number | null>;
   };
   cached_share: Array<number | null>;
+  split?: {
+    model: {
+      tokens: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      cached_share: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      cost: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      requests: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+    };
+    vendor: {
+      tokens: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      cached_share: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      cost: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      requests: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+    };
+    project: {
+      tokens: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      cached_share: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      cost: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      requests: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+    };
+    tool: {
+      tokens: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      cached_share: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      cost: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+      requests: Array<{
+        key: string | null;
+        other?: number;
+        members?: Array<string>;
+        models?: Array<string>;
+        values: Array<number | null>;
+      }>;
+    };
+  };
   latency: {
     p50: Array<number | null>;
     p95: Array<number | null>;
@@ -481,6 +603,63 @@ export type BoardUnpriced = {
     model: string;
     tokens: number;
     reason?: string;
+  }>;
+};
+
+export type BoardUsageBy = {
+  model: Array<{
+    key: string | null;
+    other?: number;
+    models?: Array<string>;
+    agents: number;
+    requests: number;
+    input: number;
+    cache_read: number;
+    cache_write: number | null;
+    cached_share: number | null;
+    output: number;
+    tokens: number;
+    cost_usd: number | null;
+    cost_share: number | null;
+    cost_per_request: number | null;
+    errors: number;
+    error_share: number | null;
+  }>;
+  vendor: Array<{
+    key: string | null;
+    other?: number;
+    models?: Array<string>;
+    agents: number;
+    requests: number;
+    input: number;
+    cache_read: number;
+    cache_write: number | null;
+    cached_share: number | null;
+    output: number;
+    tokens: number;
+    cost_usd: number | null;
+    cost_share: number | null;
+    cost_per_request: number | null;
+    errors: number;
+    error_share: number | null;
+  }>;
+  project: Array<{
+    key: string | null;
+    other?: number;
+    models?: Array<string>;
+    agents: number;
+    requests: number;
+    input: number;
+    cache_read: number;
+    cache_write: number | null;
+    cached_share: number | null;
+    output: number;
+    tokens: number;
+    cost_usd: number | null;
+    cost_share: number | null;
+    cost_per_request: number | null;
+    errors: number;
+    error_share: number | null;
   }>;
 };
 
@@ -1061,6 +1240,7 @@ export type DetailBoardHistory = {
   tool_labels?: BoardToolLabels;
   tools?: BoardTools;
   unpriced?: BoardUnpriced;
+  usage_by?: BoardUsageBy;
   pending_fields?: Array<string>;
   field_errors?: Record<string, string>;
 };
@@ -3734,6 +3914,10 @@ export type TopicHistoryBoard = {
   scope: string;
   field: "unpriced";
   value: BoardUnpriced;
+} | {
+  scope: string;
+  field: "usage_by";
+  value: BoardUsageBy;
 };
 
 export type TopicRuntimeAgent = {
@@ -3955,6 +4139,7 @@ export interface BoardFields {
   tool_labels: BoardToolLabels;
   tools: BoardTools;
   unpriced: BoardUnpriced;
+  usage_by: BoardUsageBy;
 }
 
 export interface LiveTopicData {

@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aictl.invalid/contract/v1/board-usage-by.schema.json",
+  "title": "BoardUsageBy",
+  "description": "Usage per model, vendor or project from the window's request cells, the costliest first. Rows past the list limit are summed into one row with key null and other = how many groups it holds.",
+  "type": "object",
+  "properties": {
+    "model": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": ["string", "null"]},
+          "other": {"type": "integer"},
+          "models": {"type": "array", "items": {"type": "string"}},
+          "agents": {"type": "integer"},
+          "requests": {"type": "integer"},
+          "input": {"type": "integer"},
+          "cache_read": {"type": "integer"},
+          "cache_write": {"type": ["integer", "null"]},
+          "cached_share": {"type": ["number", "null"]},
+          "output": {"type": "integer"},
+          "tokens": {"type": "integer"},
+          "cost_usd": {"type": ["number", "null"]},
+          "cost_share": {"type": ["number", "null"]},
+          "cost_per_request": {"type": ["number", "null"]},
+          "errors": {"type": "integer"},
+          "error_share": {"type": ["number", "null"]}
+        },
+        "required": [
+          "key",
+          "agents",
+          "requests",
+          "input",
+          "cache_read",
+          "cache_write",
+          "cached_share",
+          "output",
+          "tokens",
+          "cost_usd",
+          "cost_share",
+          "cost_per_request",
+          "errors",
+          "error_share"
+        ]
+      }
+    },
+    "vendor": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": ["string", "null"]},
+          "other": {"type": "integer"},
+          "models": {"type": "array", "items": {"type": "string"}},
+          "agents": {"type": "integer"},
+          "requests": {"type": "integer"},
+          "input": {"type": "integer"},
+          "cache_read": {"type": "integer"},
+          "cache_write": {"type": ["integer", "null"]},
+          "cached_share": {"type": ["number", "null"]},
+          "output": {"type": "integer"},
+          "tokens": {"type": "integer"},
+          "cost_usd": {"type": ["number", "null"]},
+          "cost_share": {"type": ["number", "null"]},
+          "cost_per_request": {"type": ["number", "null"]},
+          "errors": {"type": "integer"},
+          "error_share": {"type": ["number", "null"]}
+        },
+        "required": [
+          "key",
+          "agents",
+          "requests",
+          "input",
+          "cache_read",
+          "cache_write",
+          "cached_share",
+          "output",
+          "tokens",
+          "cost_usd",
+          "cost_share",
+          "cost_per_request",
+          "errors",
+          "error_share"
+        ]
+      }
+    },
+    "project": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": ["string", "null"]},
+          "other": {"type": "integer"},
+          "models": {"type": "array", "items": {"type": "string"}},
+          "agents": {"type": "integer"},
+          "requests": {"type": "integer"},
+          "input": {"type": "integer"},
+          "cache_read": {"type": "integer"},
+          "cache_write": {"type": ["integer", "null"]},
+          "cached_share": {"type": ["number", "null"]},
+          "output": {"type": "integer"},
+          "tokens": {"type": "integer"},
+          "cost_usd": {"type": ["number", "null"]},
+          "cost_share": {"type": ["number", "null"]},
+          "cost_per_request": {"type": ["number", "null"]},
+          "errors": {"type": "integer"},
+          "error_share": {"type": ["number", "null"]}
+        },
+        "required": [
+          "key",
+          "agents",
+          "requests",
+          "input",
+          "cache_read",
+          "cache_write",
+          "cached_share",
+          "output",
+          "tokens",
+          "cost_usd",
+          "cost_share",
+          "cost_per_request",
+          "errors",
+          "error_share"
+        ]
+      }
+    }
+  },
+  "required": ["model", "vendor", "project"]
+}

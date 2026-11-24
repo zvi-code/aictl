@@ -1,7 +1,7 @@
 {
-  "usage": ["generated_at", "capture_mode", "range", "series.tokens", "series.cost", "series.cached_share", "scope",
+  "usage": ["generated_at", "capture_mode", "range", "series.tokens", "series.cost", "series.cached_share", "series.split", "scope",
     "kpis.messages", "kpis.tokens", "kpis.cached_share", "kpis.cost_usd", "kpis.spark.running", "kpis.spark.tokens",
-    "kpis.spark.cached", "kpis.spark.cost", "by_role", "saved_usd", "unpriced", "credits", "prompts_total"],
+    "kpis.spark.cached", "kpis.spark.cost", "by_role", "usage_by", "saved_usd", "unpriced", "credits", "prompts_total"],
   "tools": ["series.messages", "series.failures.tool", "kpis.tool_calls", "kpis.failures", "kpis.fail_rate",
     "kpis.spark.messages", "kpis.spark.tool_calls", "kpis.spark.failures", "tools"],
   "status": ["kpis.running", "kpis.idle", "kpis.subagents_running", "kpis.loops", "kpis.spark.loops"],

@@ -296,9 +296,9 @@ def _confirms(s: Selection) -> dict:
 # one key of a field. The page reads a field from the sections that answer it (ui/src/panels/boardSections.json).
 SECTIONS: dict[str, Section] = {
     "usage": Section(
-        ("generated_at", "capture_mode", "range", "series.tokens", "series.cost", "series.cached_share", "scope",
+        ("generated_at", "capture_mode", "range", "series.tokens", "series.cost", "series.cached_share", "series.split", "scope",
          "kpis.messages", "kpis.tokens", "kpis.cached_share", "kpis.cost_usd", "kpis.spark.running",
-         "kpis.spark.tokens", "kpis.spark.cached", "kpis.spark.cost", "by_role", "saved_usd", "unpriced", "credits",
+         "kpis.spark.tokens", "kpis.spark.cached", "kpis.spark.cost", "by_role", "usage_by", "saved_usd", "unpriced", "credits",
          "prompts_total"),
         _usage),
     "tools": Section(

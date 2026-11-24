@@ -36,7 +36,8 @@
     "tests_piped": "board-tests-piped.schema.json",
     "tool_labels": "board-tool-labels.schema.json",
     "tools": "board-tools.schema.json",
-    "unpriced": "board-unpriced.schema.json"
+    "unpriced": "board-unpriced.schema.json",
+    "usage_by": "board-usage-by.schema.json"
   },
   "topics": {
     "catalog.board": "topic-catalog-board.schema.json",

@@ -42,6 +42,261 @@
       "required": ["user", "assistant", "tool"]
     },
     "cached_share": {"type": "array", "items": {"type": ["number", "null"]}},
+    "split": {
+      "type": "object",
+      "description": "Usage per time bucket split by model, vendor, project and tool. Per split and measure: the top groups by that measure, then one entry with key null summing the rest (other = how many groups, members = their keys). A vendor entry names its models. cached_share is a gap (null) where a group had too little input in a bucket.",
+      "properties": {
+        "model": {
+          "type": "object",
+          "properties": {
+            "tokens": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "cached_share": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "cost": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "requests": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            }
+          },
+          "required": ["tokens", "cached_share", "cost", "requests"]
+        },
+        "vendor": {
+          "type": "object",
+          "properties": {
+            "tokens": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "cached_share": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "cost": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "requests": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            }
+          },
+          "required": ["tokens", "cached_share", "cost", "requests"]
+        },
+        "project": {
+          "type": "object",
+          "properties": {
+            "tokens": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "cached_share": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "cost": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "requests": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            }
+          },
+          "required": ["tokens", "cached_share", "cost", "requests"]
+        },
+        "tool": {
+          "type": "object",
+          "properties": {
+            "tokens": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "cached_share": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "cost": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            },
+            "requests": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {"type": ["string", "null"]},
+                  "other": {"type": "integer"},
+                  "members": {"type": "array", "items": {"type": "string"}},
+                  "models": {"type": "array", "items": {"type": "string"}},
+                  "values": {"type": "array", "items": {"type": ["number", "null"]}}
+                },
+                "required": ["key", "values"]
+              }
+            }
+          },
+          "required": ["tokens", "cached_share", "cost", "requests"]
+        }
+      },
+      "required": ["model", "vendor", "project", "tool"]
+    },
     "latency": {
       "type": "object",
       "properties": {
@@ -76,14 +331,5 @@
       "additionalProperties": {"type": "array", "items": {"type": ["number", "null"]}}
     }
   },
-  "required": [
-    "tokens",
-    "cost",
-    "messages",
-    "cached_share",
-    "latency",
-    "failures",
-    "cpu",
-    "mem"
-  ]
+  "required": ["tokens", "cost", "messages", "cached_share", "latency", "failures", "cpu", "mem"]
 }

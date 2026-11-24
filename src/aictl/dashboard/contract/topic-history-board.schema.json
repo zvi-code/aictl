@@ -753,6 +753,16 @@
       },
       "required": ["scope", "field", "value"],
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "scope": {"type": "string"},
+        "field": {"const": "usage_by"},
+        "value": {"$ref": "board-usage-by.schema.json"}
+      },
+      "required": ["scope", "field", "value"],
+      "additionalProperties": false
     }
   ]
 }

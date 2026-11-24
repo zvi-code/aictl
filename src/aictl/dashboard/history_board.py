@@ -23,7 +23,7 @@ _PANEL_FIELDS = (
     "range", "series", "generated_at", "agents", "attention", "by_model", "by_role", "capture_mode", "changes", "confirms",
     "coverage", "credits", "errors", "kpis", "latency", "loops", "memory_files", "options", "project_prompts",
     "project_prompts_searched", "projects", "prompts", "prompts_total", "saved_usd", "scope", "skills",
-    "sources", "tests", "tests_piped", "tool_labels", "tools", "unpriced",
+    "sources", "tests", "tests_piped", "tool_labels", "tools", "unpriced", "usage_by",
 )
 # Per key: (read at, body, complete). An incomplete answer lacks the fields of an optional section that failed.
 _cache: dict[tuple, tuple[float, bytes, bool]] = {}

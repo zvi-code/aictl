@@ -63,6 +63,9 @@ THINKING_DETAILS = {"/api/board/thinking", "/api/board/thinking/search"}
 #   /api/board/agent     check_history_projections below (session_details.agent_detail)
 #   /api/board/context   test_board_api.py TestContext.test_files_list_context_and_count_the_rest_by_kind
 CHANGED_SINCE_CAPTURE = {"/api/board/sessions", "/api/board/agent", "/api/board/context"}
+# Board fields added after the capture: the captured boards cannot have them; a board read now must
+# (check_history_projections).
+ADDED_SINCE_CAPTURE = {"usage_by"}
 
 
 def _validate(validator, value, label):
@@ -74,9 +77,9 @@ def _validate(validator, value, label):
         pytest.fail(f"{label}: {error.json_path}: {error.validator}{detail}", pytrace=False)
 
 
-def validate_board(body, label="board"):
+def validate_board(body, label="board", added=frozenset()):
     schemas = VALIDATORS["board"]
-    assert set(schemas) - {"node_scope"} <= body.keys()
+    assert set(schemas) - {"node_scope", *added} <= body.keys()
     assert body.keys() <= set(schemas), f"{label}: unindexed fields {body.keys() - schemas.keys()}"
     for key, value in body.items():
         _validate(schemas[key], value, f"{label}#{key}")
@@ -137,7 +140,7 @@ def test_recorded_rest_payloads():
             if route in CHANGED_SINCE_CAPTURE:
                 continue
             if route == "/api/board":
-                validate_board(record["body"], label)
+                validate_board(record["body"], label, ADDED_SINCE_CAPTURE)
             elif route in VALIDATORS["details"]:
                 validate_detail(route, record["body"], label)
             else:
