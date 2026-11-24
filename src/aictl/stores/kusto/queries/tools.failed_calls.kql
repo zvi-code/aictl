@@ -1,0 +1,31 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real,
+    session_keys:dynamic = dynamic([]), row_limit:long = 5000
+);
+// The Errors panel from the stored flag failed: a row per tool with its calls and failures (row_type
+// 'tool'), then the newest failed calls (row_type 'call'), at most row_limit of them. Permission records
+// (tool names 'permission:...') are no calls.
+let since_t = unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0));
+let until_t = unixtime_seconds_todatetime(min_of(until, 32503680000.0));
+// tool_invocations_current holds the current row of each call per hour of its time (event_hour); the hours
+// one either side of the range are read, and only the calls with two rows are reduced again.
+let current_rows = tool_invocations_current
+    | where all_nodes or node_id == requested_node
+    | where event_hour between (bin(since_t, 1h) - 1h .. until_t + 1h);
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let calls = materialize(
+    union (current_rows | where dedup_key !in (crossed)),
+        (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | where ts between (since_t .. until_t) and isnotempty(session_id) and not(tool_name startswith_cs 'permission:')
+    | where array_length(session_keys) == 0 or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, failed = tolong(failed)
+    | project node_id, session_id, agent_id, ts, tool_name, target, exit_code, error_summary, failed, fact_key=dedup_key
+);
+union
+    (calls | summarize calls=count(), failures=countif(failed == 1), last_failed_ts=maxif(ts, failed == 1) by tool_name
+           | extend row_type='tool'),
+    (calls | where failed == 1 | order by ts desc, node_id asc, fact_key asc | take row_limit | extend row_type='call')
+| order by row_type desc, ts desc, tool_name asc, node_id asc, fact_key asc
+| project row_type, tool_name, calls, failures, last_failed_ts, node_id, session_id, agent_id, ts, target, exit_code,
+          error_summary

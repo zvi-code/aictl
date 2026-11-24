@@ -3,7 +3,15 @@ declare query_parameters(
     after_row:string = '', row_limit:long
 );
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let skill_uses_secs = skill_uses | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// skill_uses_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let skill_uses_current_rows = skill_uses_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let skill_uses_crossed = skill_uses_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let skill_uses_secs = union (skill_uses_current_rows | where dedup_key !in (skill_uses_crossed)),
+        (skill_uses_current_rows | where dedup_key in (skill_uses_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let cursor_row = parse_json(after_row);
 skill_uses_secs
 | where all_nodes or node_id == requested_node

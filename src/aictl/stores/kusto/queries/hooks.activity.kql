@@ -4,8 +4,24 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
 let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
-let skill_uses_secs = skill_uses | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// skill_uses_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let skill_uses_current_rows = skill_uses_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where isnull(until) or event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let skill_uses_crossed = skill_uses_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let skill_uses_secs = union (skill_uses_current_rows | where dedup_key !in (skill_uses_crossed)),
+        (skill_uses_current_rows | where dedup_key in (skill_uses_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let tool_invocations_current_rows = tool_invocations_current;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let scoped_events = () { events_secs
     | where (all_nodes or node_id == requested_node) and ts between (since .. until)
     | extend event_key=iff(isempty(source_key), strcat('legacy:', tostring(seq)), source_key),

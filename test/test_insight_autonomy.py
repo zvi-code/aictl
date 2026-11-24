@@ -55,13 +55,14 @@ def test_the_longest_chain_runs_from_one_person_turn_to_the_next(kusto_store):
     _call(s, "c1b", 1020.0, "Read", session="c1")
     _call(s, "c1c", 1030.0, "Agent", session="c1", target_kind="agent")
     _call(s, "c1s", 1035.0, session="c1", agent="sub")                    # a subagent call: not in the chain
-    _call(s, "c1x", 1025.0, session="c1")                                 # deleted by a tombstone that has no ts
-    s.insert("tool_invocations", dedup_key="c1x", ts=None, session_id="", tool="", _deleted=True, _v=NEWER)
+    _call(s, "c1x", 1025.0, session="c1")                                 # deleted by a tombstone
+    s.insert("tool_invocations", dedup_key="c1x", ts=1025.0, session_id="c1", tool="claude-code", _deleted=True, _v=NEWER)
     _call(s, "c1y", 1026.0, session="c1")                                 # deleted by a scoped tombstone
     s.insert("tool_invocations", dedup_key="c1y", ts=1026.0, session_id="c1", tool="claude-code", _deleted=True, _v=NEWER)
     _reply(s, "c1r1", 1040.0, session="c1")
     _reply(s, "c1rx", 1090.0, session="c1")                               # a deleted reply would make the wait 10 s
-    s.insert("requests", dedup_key="c1rx", ts=None, session_id="", tool="", _deleted=True, _v=NEWER)
+    # A tombstone carries the time of the row it deletes (a current view keys rows by hour of their time).
+    s.insert("requests", dedup_key="c1rx", ts=1090.0, session_id="c1", tool="claude-code", _deleted=True, _v=NEWER)
     _prompt(s, "c1p2", 1100.0, "now also cover the empty input case please", session="c1")
     _call(s, "c1d", 1110.0, "Edit", session="c1", agent="c1")             # agent id equal to the session id: main agent
     _call(s, "c1e", 1120.0, session="c1")

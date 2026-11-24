@@ -3,9 +3,38 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', requeste
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let events_text_secs = events_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
-let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where isnull(since) or event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where isnull(until) or event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h
+    | where session_id == requested_session;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// session_prompts_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let session_prompts_current_rows = session_prompts_current
+    | where isnull(since) or event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where isnull(until) or event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h
+    | where session_id == requested_session;
+let session_prompts_crossed = session_prompts_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let session_prompts_secs = union (session_prompts_current_rows | where dedup_key !in (session_prompts_crossed)),
+        (session_prompts_current_rows | where dedup_key in (session_prompts_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current
+    | where isnull(since) or event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where isnull(until) or event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h
+    | where session_id == requested_session;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let cursor_row = parse_json(after_row);
 let calls = materialize(requests_secs
     | where session_id == requested_session and (all_nodes or node_id == requested_node)

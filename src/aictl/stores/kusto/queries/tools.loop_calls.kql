@@ -1,0 +1,48 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real,
+    session_keys:dynamic = dynamic([]), row_limit:long = 5000
+);
+// The calls the Loops panel's finder (find_loops) reads, from the stored flags failed and is_edit: per agent
+// in time order, a loop is made of failing calls and edits, and any other call ends it. Returned: every failing
+// call, the first edit of each run of edits that succeed, the first call of each agent, and the first other
+// call after a failing call or an edit (it ends the loop). At most row_limit rows, oldest first.
+let since_t = unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0));
+let until_t = unixtime_seconds_todatetime(min_of(until, 32503680000.0));
+// tool_invocations_current holds the current row of each call per hour of its time (event_hour); the hours
+// one either side of the range are read, and only the calls with two rows are reduced again.
+let current_rows = tool_invocations_current
+    | where all_nodes or node_id == requested_node
+    | where event_hour between (bin(since_t, 1h) - 1h .. until_t + 1h);
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let calls = materialize(
+    union (current_rows | where dedup_key !in (crossed)),
+        (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | where ts between (since_t .. until_t) and isnotempty(session_id) and not(tool_name startswith_cs 'permission:')
+    | where array_length(session_keys) == 0 or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error), fact_key=dedup_key,
+             agent_part=iff(isempty(agent_id) or agent_id == session_id, '', agent_id)
+    | extend relevant=failed or is_edit
+);
+let streamed = calls
+    | sort by node_id asc, session_id asc, agent_part asc, ts asc, id asc nulls first, fact_key asc, ['project'] asc
+    | extend stream_start=row_number(1, prev(node_id) != node_id or prev(session_id) != session_id
+                                        or prev(agent_part) != agent_part) == 1
+    | extend keep=stream_start or failed or (is_edit and not(prev(is_edit) and not(prev(failed))))
+                  or (not(relevant) and prev(relevant))
+    | where keep
+    | order by ts asc, node_id asc, id asc nulls first, fact_key asc, ['project'] asc
+    | take row_limit;
+// The input of a failing call, as a signature: the finder compares failing calls by name, target and input.
+let signatures = tool_invocations_text
+    | where all_nodes or node_id == requested_node
+    | where dedup_key in (streamed | where failed | project fact_key)
+    | extend deleted=column_ifexists('_deleted', false)
+    | summarize arg_max(_v, input, deleted) by ['project'], node_id, dedup_key
+    | where not(coalesce(deleted, false)) and isnotempty(input)
+    | project ['project'], node_id, fact_key=dedup_key, input_signature=hash_sha256(input);
+streamed
+| lookup kind=leftouter signatures on ['project'], node_id, fact_key
+| order by ts asc, node_id asc, id asc nulls first, fact_key asc, ['project'] asc
+| project node_id, session_id, agent_id, ts, tool_name, target, is_error, exit_code, failed=tolong(failed),
+          is_edit=tolong(is_edit), input_signature=coalesce(input_signature, '')

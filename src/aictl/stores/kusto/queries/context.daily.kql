@@ -2,7 +2,16 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', since:re
     calendar_starts:dynamic, calendar_days:dynamic, requested_tools:dynamic=dynamic([]),
     restrict_tools:bool=false, row_limit:long);
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let calendar = print intervals=zip(calendar_days,array_slice(calendar_starts,0,-2),array_slice(calendar_starts,1,-1))
     | mv-expand interval=intervals
     | project day=tostring(interval[0]), day_start=toreal(interval[1]), day_end=toreal(interval[2]), join_key=1;

@@ -30,7 +30,7 @@ session files again. The migrations that layouts 1 to 3 named were removed with 
 | 4 | no | | context_lists: the items of each distinct list of tools, skills, custom agents or MCP instructions, stored once per node under list_id (a hash of the list). session_context_items holds one pointer row per announcement of such a list instead of one row per item: name "list:" + list_id, with the announcement's ts and the sums of its items. Rows written before stay one row per item and are read as they are; readers expand pointers into items. An aictl of layout 3 shows a pointer as one item named list:&lt;id&gt; that has the list's total. |
 | 5 | no | | session_digests: keyed by agent too (agent_id, "" for the main agent), so a subagent's compaction summary and todo lists are kept; one row per version (a todo list per list sent, task_change per TaskCreate or TaskUpdate call); a text over large_payload_bytes keeps a preview and its whole text in file_blobs under text_hash (365 days by default, was 24 hours in text_payloads, where two sessions' summaries could overwrite each other); event_key links a summary to its context_events row, whose summary_kind and summary_seq link back. A Claude Code todo_list row of seq 0 written before is the last list seen. file_write_events: agent_id, prompt_id, turn_index, mechanism, actor, lines_added, lines_removed, before/after hash, bytes and source of each memory change; Copilot store_memory and vote_memory and the VS Code memory tool are rows under copilot-memory:// and vscode-memory:// paths; a Claude Code hook row and its transcript row share one key. Rows written before have these columns empty. context_events: kinds rewind_point, checkpoint, truncation, memory_recall, instruction_update, tool_baseline, context_reset and context_query, with checkpoint_no, message_id, files_count, lines, dropped and preserved counts, path, tool_call_id, turn, content_hash and detail; a Claude Code compaction is keyed by its session too (a fork that rewrote the line's session id owns it as well; a transcript imported again stores its compactions once more under the new key). file_history: rows for the files of each rewind point, with session_id, source_event_id (the rewind point's message id), origin, mechanism, version, state and line counts. context_events kinds config.* (session_start, session_resume, model_change, mode_change, permissions_change, managed_override, feature_flags, assignment_context, subagent_configured, context_changed, launch_flags): the settings a session ran under, with the reported fields in detail; sessions written before have none. |
 | 6 | yes | | requests and tool_invocations: each node table has a materialized view of the current row of each key per hour of the row's time (requests_current__&lt;node key&gt;, tool_invocations_current__&lt;node key&gt;), read through the functions `requests_current` and `tool_invocations_current` (see [Current views](#current-views)); the requests views read them. A tombstone carries the time of the row it deletes, and the writers refuse one without it. A node of an older layout has no such view, and a tombstone it stored before November 2026 carries only the key, which a current view cannot place in time: such a node is reset. |
-| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. A column cannot change its type in place: a node of layout 6 or older is reset. |
+| 7 | yes | | Every column has the Kusto type of what it holds: each point in time is a UTC `datetime` (`ts`, `started_at`, `ended_at`, `mtime`, the `*_at` columns and others were `real` epoch seconds), each flag a `bool` (`is_error`, `completed`, `is_sidechain`, `estimated`, `removed`, `truncated` and others were `long` 0/1), the JSON details that views read as a structure `dynamic` (`events.detail`, `events_text.detail`, `context_events.detail`, `file_write_events.detail`, `data_quality_status.detail`, `metrics.tags`, `system_snapshots.node_health_counters` were JSON text), and `OTELPayloads.ChunkNo` and `ChunkCount` `long`. `tool_invocations` gains `is_test_run`, `test_label`, `failed` and `is_edit`, what the board's Testing, Errors and Loops panels read of a call, set at ingest; `session_prompts`, `skill_uses` and `file_write_events` get a current view each. A column cannot change its type in place: a node of layout 6 or older is reset. |
 
 ### The `schema_version` registry
 
@@ -193,9 +193,9 @@ not what is stored.
 ## Current views
 
 Reducing the versions of a whole table before a time range applies makes a 15-minute read cost
-what a 30-day read costs. For `requests` and `tool_invocations` Kusto keeps the current rows in a
-materialized view per node table, and the function `requests_current` (`tool_invocations_current`)
-unions the views of every node the functions include:
+what a 30-day read costs. For `requests`, `tool_invocations`, `session_prompts`, `skill_uses` and
+`file_write_events` Kusto keeps the current rows in a materialized view per node table, and the
+function `T_current` (`requests_current`, ...) unions the views of every node the functions include:
 
 - The view `T_current__<node key>` (folder `aictl/current`) over `T__<node key>` is
   `T__<node key> | extend event_hour = bin(ts, 1h) | summarize arg_max(_v, *) by event_hour, ['project'], node_id, dedup_key`.
@@ -225,6 +225,10 @@ union (current_rows | where dedup_key !in (crossed)),
 
 - Before that reduction, filter only on key columns, `event_hour` (with the margin) and the
   columns the table's tombstones carry, as for the table itself.
+- aictl's views read these tables only through their current views (`board.revision` excepted: it
+  counts the stored rows of every version). A view of a time range filters `event_hour` before it
+  reads times as seconds, unless a use of the rows there is not limited to the range (a session read
+  whole); test_tombstone_scope.py lists each view that reads a table without that filter, and why.
 - The view keeps rows for the table's retention period. `aictl db reset` drops a node's views
   before its tables; a start creates a missing view (from the stored rows, waiting for the build)
   and enables a disabled one. Creating a view needs Database Admin.
@@ -778,6 +782,7 @@ One row per prompt given to an agent.
 - Ingestion: `streaming`
 - Retention class: `prompt` (default 365d)
 - Written by: `session_facts.py` (`write`), from `ingesters/call_facts.py`
+- Current view: `session_prompts_current` (see [Current views](#current-views))
 
 | column | type | meaning |
 |---|---|---|
@@ -1094,7 +1099,7 @@ A call reported by OTel and read again from the transcript is stored once. The t
 | column | type | meaning |
 |---|---|---|
 | `id` | long | Equal to `rowid` |
-| `dedup_key` | string | Key of the model call: the source's call id, else a hash of the session, the embedded time or the token counts, the model and the source |
+| `dedup_key` | string | Key of the model call: the source's call id, else a hash of the session, the embedded time or the token counts, the model and the source. A Claude Code call is keyed by its message and request id, without the session: a fork copies the earlier session's calls into its file under its own id, and a call held by several main files of a folder belongs to the session whose file was created first, whichever file is read first. A fork read again after the earlier session's file was deleted (a reset, a reader version change) takes those calls |
 | `ts` | datetime | When the call happened, from the source's own timestamp, UTC |
 | `session_id` | string | The session |
 | `agent_id` | string | The subagent that made the call; "" for the main agent |
@@ -1218,6 +1223,10 @@ One row per tool call, without its text.
 | `turn_index` | long | The user turn of the session (1 = the first); null when unknown |
 | `prompt_id` | string | Claude Code `promptId` of the turn; joins `session_turns.prompt_id` |
 | `request_key` | string | `dedup_key` of the `requests` row of the model call that asked for this call |
+| `is_test_run` | bool | True when the call runs tests by the board's rule: a command tool whose whole command line first runs a test runner (`board_projection.is_command_tool`, `shell_program.is_test_run`). Set at ingest from the full command, also when the command text is not kept |
+| `test_label` | string | The Testing panel's row of a test run: `shell_program.run_label` of `target`, one line, at most 80 characters; "" when the call is no test run or `target` holds no command |
+| `failed` | bool | True when the call failed in the board's sense: a test run when `is_error` is set or `exit_code` is neither 0 nor null, any other call when `is_error` is set |
+| `is_edit` | bool | True when the tool edits files by the board's rule (`board_projection.is_edit_tool`): its name names an edit, write, patch, replace, file creation or insert, and it is not an MCP server tool |
 | `project` | string | Part of the key. The call's `project_path` |
 | `node_id` | string | Part of the key. The node that wrote the row. Set by the writer |
 | `_v` | datetime | Version of the row: the UTC time the writer made it, strictly increasing per writer process. The current row of a key has the largest `_v` |
@@ -1296,6 +1305,7 @@ One row per use of a skill.
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`write`), from `ingesters/call_facts.py`
+- Current view: `skill_uses_current` (see [Current views](#current-views))
 
 | column | type | meaning |
 |---|---|---|
@@ -1376,6 +1386,7 @@ One row per write-like file event of an agent.
 - Ingestion: `streaming`
 - Retention class: `history` (default 365d)
 - Written by: `session_facts.py` (`file_writes`), from transcripts and hooks
+- Current view: `file_write_events_current` (see [Current views](#current-views))
 
 | column | type | meaning |
 |---|---|---|

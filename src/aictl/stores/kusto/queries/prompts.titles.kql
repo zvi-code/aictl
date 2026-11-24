@@ -2,7 +2,13 @@ declare query_parameters(
     all_nodes:bool = true, requested_node:string = '', session_keys:dynamic, row_limit:long
 );
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// session_prompts_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let session_prompts_current_rows = session_prompts_current;
+let session_prompts_crossed = session_prompts_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let session_prompts_secs = union (session_prompts_current_rows | where dedup_key !in (session_prompts_crossed)),
+        (session_prompts_current_rows | where dedup_key in (session_prompts_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
 session_prompts_secs
 | where all_nodes or node_id == requested_node
 | where strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)

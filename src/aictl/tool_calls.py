@@ -26,6 +26,25 @@ if TYPE_CHECKING:
     from .records import ToolInvocationRow
 
 
+def panel_flags(tool_name: str, command: str, target: str, is_error: int, exit_code: int | None) -> Row:
+    """What the board's Testing, Errors and Loops panels read of a call, by the board's own rules
+    (board_projection): whether it runs tests (*command* is the whole command line) and the label of the
+    run (from the stored *target*), whether it failed (a test run by its exit code too), whether it edits."""
+    from .dashboard.board_projection import (
+        TEST_LABEL_CHARS,
+        _test_failed,
+        is_command_tool,
+        is_edit_tool,
+        is_test_command,
+    )
+    from .dashboard.projection_utils import _one_line
+    from .dashboard.shell_program import run_label
+
+    test = is_command_tool(tool_name) and is_test_command(command)
+    return {"is_test_run": test, "test_label": _one_line(run_label(target), TEST_LABEL_CHARS) if test and target else "",
+            "failed": _test_failed(is_error, exit_code) if test else bool(is_error), "is_edit": is_edit_tool(tool_name)}
+
+
 def call_key(*parts: str) -> str:
     return hashlib.sha256("".join(parts).encode("utf-8", errors="replace")).hexdigest()[:16]
 
@@ -111,6 +130,15 @@ class ToolCalls:
                     metadata[field] = previous[field]
             metadata["source"] = previous["source"]
             metadata["project"] = project = metadata["project_path"]
+        command = row.target or (found.get("target") if self._keeps_text() else "") or ""
+        if not command and row.input:
+            command = describe_call(row.tool_name, row.input, keep_text=True).get("target") or ""
+        metadata.update(panel_flags(metadata["tool_name"], command or metadata.get("target") or "",
+                                    metadata.get("target") or "", metadata["is_error"], metadata.get("exit_code")))
+        if previous.get("is_test_run") and not metadata["is_test_run"] and not command:
+            # A later record without the command (a completion) keeps what the first one read.
+            metadata.update(is_test_run=True, test_label=previous.get("test_label", ""))
+            metadata["failed"] = bool(metadata["is_error"]) or metadata.get("exit_code") not in (0, None)
         if previous and project != previous["project"]:
             self._writer.delete("tool_invocations", [previous])
         text = {}

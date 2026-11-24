@@ -7,7 +7,14 @@ declare query_parameters(
 // The main agent of a session is named by the session id and matches no row here.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
-let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 union
     (agents_secs
     | where agent_id == requested_agent and (all_nodes or node_id == requested_node)

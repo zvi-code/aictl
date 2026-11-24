@@ -6,8 +6,24 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // A session counts in the period its first main-agent request falls in; its later requests count with it.
 // A project is the session's project_path; projects with fewer than 3 sessions that edit are left out.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
-let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// requests_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let requests_current_rows = requests_current;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let tool_invocations_current_rows = tool_invocations_current;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let reqs = requests_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)

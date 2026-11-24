@@ -1,6 +1,15 @@
 declare query_parameters(all_nodes:bool=true, requested_node:string='', since:real, until:real, row_limit:long);
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// file_write_events_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let file_write_events_current_rows = file_write_events_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let file_write_events_crossed = file_write_events_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let file_write_events_secs = union (file_write_events_current_rows | where dedup_key !in (file_write_events_crossed)),
+        (file_write_events_current_rows | where dedup_key in (file_write_events_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
 file_write_events_secs
 | where all_nodes or node_id == requested_node
 | extend key=iff(isempty(dedup_key),tostring(id),dedup_key)

@@ -14,7 +14,14 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // A file is the last segment of the item's path; an instruction block with no file is 'custom instruction (no file)'.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 let session_context_items_secs = session_context_items | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated), removed = tolong(removed);
-let skill_uses_secs = skill_uses | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// skill_uses_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let skill_uses_current_rows = skill_uses_current;
+let skill_uses_crossed = skill_uses_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let skill_uses_secs = union (skill_uses_current_rows | where dedup_key !in (skill_uses_crossed)),
+        (skill_uses_current_rows | where dedup_key in (skill_uses_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let context_items_expanded = (items:(['project']:string,node_id:string,session_id:string,agent_id:string,['kind']:string,
         name:string,path:string,chars:long,tokens:long,estimated:long,removed:long,_v:datetime)) {
     let pointers = items | where name matches regex @'^list:[0-9a-f]{32}$'

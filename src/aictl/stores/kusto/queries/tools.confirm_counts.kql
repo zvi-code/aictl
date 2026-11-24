@@ -5,7 +5,16 @@ declare query_parameters(
 // The calls with a confirmation value, counted per session, tool and value in the cluster.
 // The waits of approved and denied calls come back whole, so that percentiles stay exact.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let raw_calls = () { tool_invocations_secs
     | where all_nodes or node_id == requested_node
     | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key)

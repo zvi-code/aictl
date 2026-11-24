@@ -10,8 +10,8 @@ let current_rows = requests_current
     | where all_nodes or node_id == requested_node
     | where isempty(requested_project) or ['project'] == requested_project
     | where session_id == requested_session and (isempty(requested_agent) or agent_id == requested_agent)
-    | where isnull(since) or event_hour >= bin(unixtime_seconds_todatetime(since), 1h) - 1h
-    | where isnull(until) or event_hour <= unixtime_seconds_todatetime(until) + 1h;
+    | where isnull(since) or event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where isnull(until) or event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
 let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
 union (current_rows | where dedup_key !in (crossed)),
     (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)

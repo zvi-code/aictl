@@ -4,7 +4,16 @@ declare query_parameters(
     without_requests:bool = false, session_keys:dynamic = dynamic([]), row_limit:long
 );
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// requests_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). A session of the range may have made its calls
+// before the range, so every hour is read: the sessions with a call are left out whenever they made it.
+let requests_current_rows = requests_current
+    | where without_requests and (all_nodes or node_id == requested_node);
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let session_usage_secs = session_usage | extend started_at = (started_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s, updated_at = (updated_at - datetime(1970-01-01)) / 1s;
 let usage = session_usage_secs
     | where all_nodes or node_id == requested_node

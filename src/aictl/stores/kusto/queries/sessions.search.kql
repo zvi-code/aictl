@@ -8,15 +8,46 @@ declare query_parameters(all_nodes:bool=true, requested_node:string='', since:re
 // One page of the session finder, its total and its facet counts, in one query.
 // A session is one logical id per node: the tool's UUID when the id carries one.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
-let file_write_events_secs = file_write_events | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// file_write_events_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let file_write_events_current_rows = file_write_events_current;
+let file_write_events_crossed = file_write_events_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let file_write_events_secs = union (file_write_events_current_rows | where dedup_key !in (file_write_events_crossed)),
+        (file_write_events_current_rows | where dedup_key in (file_write_events_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// requests_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let requests_current_rows = requests_current;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let session_artifacts_secs = session_artifacts | extend mtime = (mtime - datetime(1970-01-01)) / 1s;
 let session_commits_secs = session_commits | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// session_prompts_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let session_prompts_current_rows = session_prompts_current;
+let session_prompts_crossed = session_prompts_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let session_prompts_secs = union (session_prompts_current_rows | where dedup_key !in (session_prompts_crossed)),
+        (session_prompts_current_rows | where dedup_key in (session_prompts_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let session_sources_secs = session_sources | extend mtime = (mtime - datetime(1970-01-01)) / 1s, indexed_at = (indexed_at - datetime(1970-01-01)) / 1s;
 let session_usage_secs = session_usage | extend started_at = (started_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s, updated_at = (updated_at - datetime(1970-01-01)) / 1s;
 let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
-let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let tool_invocations_current_rows = tool_invocations_current;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let uuid_of = (s:string) { coalesce(extract(@"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", 0, s), s) };
 // aictl.data.model_pricing.normalize_model_id; model_prices holds USD per 1M tokens by that id.
 let model_key = (m:string) {

@@ -49,9 +49,16 @@ def with_data(**rows):
     return fake
 
 
-def ensure(fake, node="node-a", **kwargs):
-    return ensure_schema(fake, "db", tables=SMALL, modes=dict.fromkeys(SMALL, "queued"), node_id=node,
-                         cluster=SETTINGS.cluster, **kwargs)
+def ensure(fake, node="node-a", tables=SMALL, **kwargs):
+    return ensure_schema(
+        fake,
+        "db",
+        tables=tables,
+        modes=dict.fromkeys(tables, "queued"),
+        node_id=node,
+        cluster=SETTINGS.cluster,
+        **kwargs,
+    )
 
 
 def layout_writes(fake):
@@ -59,8 +66,11 @@ def layout_writes(fake):
 
 
 def layouts(fake, node=None):
-    return [r for r in fake.layout_rows if r["kind"] == "layout" and not r.get("step")
-            and (node is None or r["node_id"] == node)]
+    return [
+        r
+        for r in fake.layout_rows
+        if r["kind"] == "layout" and not r.get("step") and (node is None or r["node_id"] == node)
+    ]
 
 
 def bump(monkeypatch, latest, compatible, *changes):
@@ -117,7 +127,11 @@ def test_new_database_creates_this_nodes_tables_the_record_and_the_functions():
     [create] = [c for c in fake.commands if c.startswith(".create-merge tables ")]
     assert all(phys(n) in create for n in SMALL) and f'folder = "aictl/nodes/{key()}"' in create
     assert json.loads(fake.tables[phys("requests")]["docstring"]) == {
-        "aictl": "node table", "node_id": "node-a", "node_key": key(), "table": "requests"}
+        "aictl": "node table",
+        "node_id": "node-a",
+        "node_key": key(),
+        "table": "requests",
+    }
     [db] = [r for r in fake.layout_rows if r["kind"] == "database"]
     assert db["compatible_since"] == L.NODE_TABLES_SINCE and db["node_id"] == ""
     [row] = layouts(fake)
@@ -138,7 +152,7 @@ def test_a_function_without_any_node_table_still_has_the_logical_schema():
     state = check_layout(fake, "db", "node-a")
     state.nodes.clear()
     [cmd] = [c for c in schema.function_commands(state, {"requests"}) if "['requests']()" in c]
-    body = cmd[cmd.index("{"):]
+    body = cmd[cmd.index("{") :]
     assert body.startswith("{ union (datatable(['id']:long") and "['requests__" not in body
     assert all(f"['{c}']:{t}" in body for c, t in TABLES["requests"].columns)
 
@@ -195,8 +209,11 @@ def test_compatible_older_node_layout_widens_its_tables_then_records_the_new_ver
     bump(monkeypatch, V + 1, L.COMPATIBLE_SINCE, L.Change(V + 1, "a column", False))
     del fake.tables[phys("sessions")]["columns"]["tool"]
     status = ensure(fake)
-    widen = next(i for i, c in enumerate(fake.commands) if c.startswith(".create-merge tables ")
-                 and phys("sessions") in c and i > 10)
+    widen = next(
+        i
+        for i, c in enumerate(fake.commands)
+        if c.startswith(".create-merge tables ") and phys("sessions") in c and i > 10
+    )
     record = fake.commands.index(layout_writes(fake)[-1])
     assert widen < record
     assert (layouts(fake)[-1]["version"], layouts(fake)[-1]["detail"]) == (V + 1, "upgrade")
@@ -294,8 +311,11 @@ def test_writing_open_reports_the_layout_and_the_nodes_in_health(monkeypatch):
     fake = started("node-b")
     seen = {}
     monkeypatch.setattr(KustoClientFactory, "client", lambda _: fake)
-    monkeypatch.setattr(KustoClientFactory, "native_ingester",
-                        lambda _, tables=None: seen.setdefault("tables", tables) and SimpleNamespace())
+    monkeypatch.setattr(
+        KustoClientFactory,
+        "native_ingester",
+        lambda _, tables=None: seen.setdefault("tables", tables) and SimpleNamespace(),
+    )
     local = KustoSettings("http://localhost:8080", database="db", node_id="node-a", auth="none")
     store = open_store("kusto", settings=local)
     try:
@@ -315,8 +335,10 @@ def test_the_ingester_maps_logical_tables_to_this_nodes_tables():
     from aictl.stores.kusto.ingest import TableIngester
 
     sent = []
-    inner = SimpleNamespace(ingest_lines=lambda table, lines: sent.append(("lines", table)),
-                            ingest=lambda table, rows: sent.append(("rows", table)))
+    inner = SimpleNamespace(
+        ingest_lines=lambda table, lines: sent.append(("lines", table)),
+        ingest=lambda table, rows: sent.append(("rows", table)),
+    )
     settings = KustoSettings("https://x.invalid", database="db", node_id="node-a", ingestion="queued")
     ingester = TableIngester(settings, {"queued": inner}, tables={"requests": phys("requests")})
     ingester.ingest_lines("requests", ["{}"])
@@ -374,8 +396,11 @@ def test_reset_of_one_node_leaves_the_other_nodes_rows(monkeypatch, tmp_path):
     assert dict(plan) == {phys(n): (3 if n == "requests" else 0) for n in SMALL}
     status = maintenance.reset_store(SETTINGS, [name for name, _ in plan])
     drop = next(i for i, c in enumerate(fake.commands) if c.startswith(".drop tables"))
-    unlink = max(i for i, c in enumerate(fake.commands) if c.startswith(".create-or-alter function")
-                 and "['requests']()" in c and i < drop)
+    unlink = max(
+        i
+        for i, c in enumerate(fake.commands)
+        if c.startswith(".create-or-alter function") and "['requests']()" in c and i < drop
+    )
     assert unlink < drop and phys("requests") not in fake.commands[unlink]
     assert "someone_elses" in fake.tables and fake.count(phys("requests", "node-b")) == 3
     assert fake.count(phys("requests")) == 0
@@ -423,7 +448,9 @@ def test_reset_names_the_role_when_the_drop_is_denied(monkeypatch):
     from aictl.stores.base import StorePermissionError
 
     fake = started("node-a")
-    fake.fail = lambda text: (_ for _ in ()).throw(RuntimeError("Forbidden")) if text.startswith(".drop tables") else None
+    fake.fail = lambda text: (
+        (_ for _ in ()).throw(RuntimeError("Forbidden")) if text.startswith(".drop tables") else None
+    )
     monkeypatch.setattr(KustoClientFactory, "client", lambda _: fake)
     with pytest.raises(StorePermissionError, match="Drop aictl tables requires Database Admin"):
         maintenance.reset_store(SETTINGS, [phys("requests")])
@@ -435,7 +462,10 @@ def test_reset_names_the_role_when_the_drop_is_denied(monkeypatch):
 def test_a_new_node_gets_an_empty_current_view_per_table_and_the_functions_read_them():
     from aictl.stores.kusto import current as C
 
-    fake = started("node-a", "node-b")
+    every = {**SMALL, **{name: TABLES[name] for name in C.CURRENT_TABLES}}
+    fake = FakeKusto()
+    for node in ("node-a", "node-b"):
+        ensure(fake, node, tables=every)
     for name in C.CURRENT_TABLES:
         for node in ("node-a", "node-b"):
             view = fake.views[C.physical(name, key(node))]
@@ -500,8 +530,9 @@ def start_check(monkeypatch):
     calls = []
     monkeypatch.setattr(daemon, "kusto_settings", lambda: SETTINGS)
     monkeypatch.setattr(maintenance, "reset_plan", lambda *a, **k: [(phys("requests"), 5)])
-    monkeypatch.setattr(maintenance, "reset_store", lambda *a, **k: calls.append("reset") or
-                        SimpleNamespace(data_epoch="new"))
+    monkeypatch.setattr(
+        maintenance, "reset_store", lambda *a, **k: calls.append("reset") or SimpleNamespace(data_epoch="new")
+    )
     cfg = SimpleNamespace(capture="full")
 
     def run(fake, *, interactive, answer=None):
@@ -562,9 +593,18 @@ def test_db_layout_prints_this_node_every_node_and_the_changelog(monkeypatch):
     result = CliRunner().invoke(db, ["layout", "--nodes"])
     assert result.exit_code == 0, result.output
     epoch = layouts(fake, "node-a")[0]["data_epoch"]
-    for text in (epoch, f"layout {L.LAYOUT_VERSION}", "Verdict:             current", "Changelog:",
-                 "breaks compatibility: reset", "Nodes: 2, 1 not included", "node-a (this node)",
-                 "no: newer layout", key("node-b"), "one set per node"):
+    for text in (
+        epoch,
+        f"layout {L.LAYOUT_VERSION}",
+        "Verdict:             current",
+        "Changelog:",
+        "breaks compatibility: reset",
+        "Nodes: 2, 1 not included",
+        "node-a (this node)",
+        "no: newer layout",
+        key("node-b"),
+        "one set per node",
+    ):
         assert text in result.output, text
     assert re.search(r"requests\s+3 rows", result.output)
 
@@ -617,8 +657,9 @@ def test_db_reset_lists_this_nodes_tables_and_needs_a_yes(monkeypatch):
     monkeypatch.setattr(KustoClientFactory, "client", lambda _: started("node-a", "node-b"))
     monkeypatch.setattr("aictl.commands.admin.kusto_settings", lambda: SETTINGS)
     called = []
-    monkeypatch.setattr(maintenance, "reset_store", lambda *a, **k: called.append((a, k)) or
-                        SimpleNamespace(data_epoch="n"))
+    monkeypatch.setattr(
+        maintenance, "reset_store", lambda *a, **k: called.append((a, k)) or SimpleNamespace(data_epoch="n")
+    )
     result = CliRunner().invoke(db, ["reset"], input="n\n")
     assert result.exit_code != 0 and not called
     assert phys("requests") in result.output and phys("requests", "node-b") not in result.output
@@ -735,12 +776,16 @@ def test_every_restart_directory_call_site_goes_through_the_epoch_check():
         "dashboard/ingester_runner.py": "doctor: shows a checkpoint's time, connects to nothing, changes nothing",
         "index_breakdown.py": "aictl db index: reads the reader's saved positions to show read states, changes nothing",
     }
-    users = {str(p.relative_to(root)).replace(os.sep, "/") for p in root.rglob("*.py")
-             if "restart_directory(" in p.read_text(encoding="utf-8")}
+    users = {
+        str(p.relative_to(root)).replace(os.sep, "/")
+        for p in root.rglob("*.py")
+        if "restart_directory(" in p.read_text(encoding="utf-8")
+    }
     assert users <= allowed.keys(), f"new restart_directory callers: {users - allowed.keys()}"
     for name in users - {"state_file.py", "dashboard/ingester_runner.py", "index_breakdown.py"}:
-        assert "sync_data_epoch" in (root / name).read_text(encoding="utf-8") or \
-            "restart_state(" in (root / name).read_text(encoding="utf-8"), name
+        assert "sync_data_epoch" in (root / name).read_text(encoding="utf-8") or "restart_state(" in (
+            root / name
+        ).read_text(encoding="utf-8"), name
 
 
 # ── guards on the layout definition ────────────────────────────────

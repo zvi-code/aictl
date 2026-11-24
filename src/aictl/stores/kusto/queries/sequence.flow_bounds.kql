@@ -14,13 +14,39 @@ let context_events_secs = context_events | extend ts = (ts - datetime(1970-01-01
 let copilot_session_messages_secs = copilot_session_messages | extend ts = (ts - datetime(1970-01-01)) / 1s, ingested_at = (ingested_at - datetime(1970-01-01)) / 1s;
 let cursor_session_messages_secs = cursor_session_messages | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let events_secs = events | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let requests_secs = requests | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// requests_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let requests_current_rows = requests_current
+    | where session_id == requested_session;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let session_digests_secs = session_digests | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let session_prompts_secs = session_prompts | extend ts = (ts - datetime(1970-01-01)) / 1s;
+// session_prompts_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let session_prompts_current_rows = session_prompts_current
+    | where session_id == requested_session;
+let session_prompts_crossed = session_prompts_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let session_prompts_secs = union (session_prompts_current_rows | where dedup_key !in (session_prompts_crossed)),
+        (session_prompts_current_rows | where dedup_key in (session_prompts_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let session_step_text_secs = session_step_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
 let session_steps_secs = session_steps | extend ts = (ts - datetime(1970-01-01)) / 1s, estimated = tolong(estimated);
 let sessions_secs = sessions | extend started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, last_activity_at = (last_activity_at - datetime(1970-01-01)) / 1s;
-let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); only the keys with
+// two rows are reduced again (docs/storage-schema.md). Every hour is read: not every use here keeps only
+// the rows of the range.
+let tool_invocations_current_rows = tool_invocations_current
+    | where session_id == requested_session;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let vscode_chat_messages_secs = vscode_chat_messages | extend ts = (ts - datetime(1970-01-01)) / 1s, ingested_at = (ingested_at - datetime(1970-01-01)) / 1s;
 let bound_count = array_length(segment_bounds);
 let before = iff(bound_count > 0, todouble(segment_bounds[0]), until);

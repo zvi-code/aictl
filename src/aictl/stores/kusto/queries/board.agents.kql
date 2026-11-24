@@ -8,7 +8,14 @@ declare query_parameters(
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 let agents_secs = agents | extend is_sidechain = tolong(is_sidechain), started_at = (started_at - datetime(1970-01-01)) / 1s, ended_at = (ended_at - datetime(1970-01-01)) / 1s, completed = tolong(completed), observed_at = (observed_at - datetime(1970-01-01)) / 1s;
 let agents_text_secs = agents_text | extend ts = (ts - datetime(1970-01-01)) / 1s;
-let tool_invocations_secs = tool_invocations | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
 let tasks = union isfuzzy=true
     (datatable(['project']:string, node_id:string, session_id:string, agent_id:string, _v:datetime, task:string,
         _deleted:bool)[]),

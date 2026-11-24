@@ -45,7 +45,8 @@ from . import nodes as N
 from .client import quote
 
 # The versioned tables that have a current view, and the time column each view keys by hour.
-CURRENT_TABLES: dict[str, str] = {"requests": "ts", "tool_invocations": "ts"}
+CURRENT_TABLES: dict[str, str] = {"requests": "ts", "tool_invocations": "ts", "session_prompts": "ts", "skill_uses": "ts",
+                                  "file_write_events": "ts"}
 SUFFIX = "_current"
 HOUR = "event_hour"
 # How far, in hours, the time of one key may move between versions for a reader to still see

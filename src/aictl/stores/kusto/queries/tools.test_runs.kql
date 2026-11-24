@@ -1,0 +1,30 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real,
+    session_keys:dynamic = dynamic([]), row_limit:long = 5000
+);
+// The Testing panel from the stored flags (is_test_run, test_label, failed): a row per label with its
+// counts (row_type 'label'), then the newest runs (row_type 'run'), at most row_limit of them.
+let since_t = unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0));
+let until_t = unixtime_seconds_todatetime(min_of(until, 32503680000.0));
+// tool_invocations_current holds the current row of each call per hour of its time (event_hour); the hours
+// one either side of the range are read, and only the calls with two rows are reduced again.
+let current_rows = tool_invocations_current
+    | where all_nodes or node_id == requested_node
+    | where event_hour between (bin(since_t, 1h) - 1h .. until_t + 1h);
+let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let runs = materialize(
+    union (current_rows | where dedup_key !in (crossed)),
+        (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | where ts between (since_t .. until_t) and is_test_run and isnotempty(session_id)
+    | where array_length(session_keys) == 0 or strcat(strlen(node_id), ':', node_id, session_id) in (session_keys)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, failed = tolong(failed)
+    | project node_id, session_id, agent_id, ts, test_label, failed, exit_code, duration_ms, fact_key=dedup_key
+);
+union
+    (runs | summarize runs=count(), failed=countif(failed == 1), last_ts=max(ts),
+                      p50_ms=percentile(iff(duration_ms > 0, duration_ms, real(null)), 50) by test_label
+          | extend row_type='label'),
+    (runs | order by ts desc, node_id asc, fact_key asc | take row_limit | extend row_type='run')
+| order by row_type asc, ts desc, test_label asc, node_id asc, fact_key asc
+| project row_type, test_label, runs, failed, last_ts, p50_ms, node_id, session_id, agent_id, ts, exit_code, duration_ms

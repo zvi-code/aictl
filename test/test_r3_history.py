@@ -125,7 +125,7 @@ def test_sequence_and_tool_pages_prune_keys_without_resurrecting_old_versions(ku
         seed(table, **dims, **{key: "moved"}, ts=300, session_id="s", _v="2026-01-02")
         seed(table, **dims, **{key: "visible"}, ts=120, session_id="s")
     seed("tool_invocations", dedup_key="deleted", ts=130, session_id="s", is_error=1)
-    seed("tool_invocations", dedup_key="deleted", _deleted=True, _v="2026-01-02")
+    seed("tool_invocations", dedup_key="deleted", ts=130, session_id="s", _deleted=True, _v="2026-01-02")
     seed("events_text", source_key="visible", detail='{"session_id":"retained","message":"kept"}')
     seed("tool_invocations_text", dedup_key="visible", target="pytest", result_summary="kept")
     window = {"since": 99, "until": 200, "limit": 1}
@@ -151,7 +151,7 @@ def test_confirmation_counts_take_each_call_once_by_its_winning_version(kusto_st
     seed("tool_invocations", dedup_key="moved", ts=300, session_id="s", tool_name="Bash", confirm="approved",
          _v="2026-01-02")
     seed("tool_invocations", dedup_key="gone", ts=100, session_id="s", tool_name="Bash", confirm="approved")
-    seed("tool_invocations", dedup_key="gone", _deleted=True, _v="2026-01-02")
+    seed("tool_invocations", dedup_key="gone", ts=100, session_id="s", _deleted=True, _v="2026-01-02")
     seed("tool_invocations", dedup_key="none", ts=100, session_id="s", tool_name="Bash")
     rows = reader.read("tools.confirm_counts", {"since": 99.0, "until": 200.0}).rows
     assert {row["confirm"]: (row["calls"], sorted(row["waits"]), row["wait_count"]) for row in rows} == {

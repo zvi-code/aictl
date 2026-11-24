@@ -12,7 +12,7 @@ let wanted = (t:real, n:string, s:string, m:string, e:long) {
 // read too, and only the calls with two rows are reduced to the newest (docs/storage-schema.md).
 let current_rows = requests_current
     | where all_nodes or node_id == requested_node
-    | where event_hour between (bin(unixtime_seconds_todatetime(since), 1h) - 1h .. unixtime_seconds_todatetime(until) + 1h);
+    | where event_hour between (bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h .. unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h);
 let crossed = current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
 union (current_rows | where dedup_key !in (crossed)),
     (current_rows | where dedup_key in (crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)

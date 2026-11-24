@@ -33,7 +33,7 @@ COMPATIBLE_SINCE = 7
 # The layout that gave each node its own tables. The database record carries it.
 NODE_TABLES_SINCE = 3
 # sha256 of the table definitions, see fingerprint(). A guard test compares it.
-FINGERPRINT = "f8abf7f2d41dbd380bf4aaf806de31d9815815f8b6763c42a7e5bc29b7ddabd7"
+FINGERPRINT = "5d1fbf57a77e326a61103cc98ffd17a927a1191e2404aa6a877cbe1160934530"
 
 
 @dataclass(frozen=True)
@@ -118,7 +118,9 @@ CHANGES: tuple[Change, ...] = (
         "(events.detail, events_text.detail, context_events.detail, file_write_events.detail, "
         "data_quality_status.detail, metrics.tags, system_snapshots.node_health_counters were JSON text), and "
         "OTELPayloads.ChunkNo and ChunkCount long. A column cannot change its type in place, and rows of the old "
-        "types cannot be read by the views of this layout.",
+        "types cannot be read by the views of this layout. tool_invocations: is_test_run, test_label, failed and "
+        "is_edit, what the board's Testing, Errors and Loops panels read of a call, set at ingest. session_prompts, "
+        "skill_uses and file_write_events: a current view each, like requests and tool_invocations.",
         breaks=True,
     ),
 )
