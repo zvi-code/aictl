@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { FlowEvent } from '../src/data/contract.gen'
 import { flowModel } from '../src/drawer/flowModel'
 import {
-  modelFamily, openingRow, promptLine, rowsOf, spansOf, spanSummary, stepsOf, stepTitle, toolMetrics,
+  modelFamily, openingRow, promptLine, requestsOnlyNote, rowsOf, spansOf, spanSummary, stepsOf, stepTitle, toolMetrics,
 } from '../src/drawer/flowSteps'
 import {
   arrangeColumns, clampWidth, COL_MAX, COL_MIN, columnGrid, hideColumn, moveColumn, readWidths, resolveWidths, writeWidths,
@@ -147,5 +147,25 @@ describe('DRW-FL-07 · Chart columns', () => {
     writeWidths(storage, 'k', hidden)
     expect(readWidths(storage, 'k')).toEqual(hidden)
     expect(moveColumn(empty, ids, 'missing', 0)).toBe(empty)
+  })
+})
+
+describe('FLOW-REQUESTS-ONLY · A session whose event file was not read says so', () => {
+  // Copilot keeps each request's usage in a database, read at once; prompts and tool calls are in the session's event
+  // file, read later or gone. Such a session holds model requests only.
+  it('names a round that stopped for tool calls and has none as not recorded, not as an answer', () => {
+    const [stopped, answered] = stepsOf(placed([
+      event('api_call', 1, { step: 1, model: 'gpt-6-astra', request_n: 1, finish_reason: 'tool_calls' }),
+      event('api_call', 2, { step: 2, model: 'gpt-6-astra', request_n: 2, finish_reason: 'stop' }),
+    ]))
+    expect(stepTitle(stopped)).toBe('Tool calls not recorded')
+    expect(stepTitle(answered)).toBe('Answer without tool calls')
+  })
+
+  it('says only the model requests are stored when the flow has no prompt and no tool call', () => {
+    expect(requestsOnlyNote({ total_api_calls: 15, total_tool_uses: 0, total_turns: 0 })).toContain('Only the model requests of this session are stored')
+    expect(requestsOnlyNote({ total_api_calls: 15, total_tool_uses: 0, total_turns: 1 })).toBeUndefined()
+    expect(requestsOnlyNote({ total_api_calls: 15, total_tool_uses: 3, total_turns: 0 })).toBeUndefined()
+    expect(requestsOnlyNote({ total_api_calls: 0, total_tool_uses: 0, total_turns: 0 })).toBeUndefined()
   })
 })

@@ -434,6 +434,17 @@ export function outcomeOf(end: FlowEvent) {
   return 'ended, outcome not reported'
 }
 
+/**
+ * Said when a session has model requests and nothing else: no prompt and no tool call. A tool keeps its usage
+ * records apart from the session's event file (Copilot: its usage database), and the usage records are read first.
+ */
+export function requestsOnlyNote(summary: { total_api_calls?: number | null; total_tool_uses?: number | null; total_turns?: number | null }): string | undefined {
+  if (!summary.total_api_calls || summary.total_tool_uses || summary.total_turns) return undefined
+  return 'Only the model requests of this session are stored: its prompts, tool calls and replies are not. They are read ' +
+    "from the session's event file, which the node that ran it has not read. Either the file still waits while that node " +
+    'reads its history (Health shows the progress per node), or it is no longer on that node.'
+}
+
 /** One line for a step, for screen readers and the list view. */
 export function stepTitle(step: Step) {
   const lead = step.lead
@@ -441,7 +452,9 @@ export function stepTitle(step: Step) {
     case 'round': case 'tool': {
       const tools = groupText(step.tools)
       return tools ? `${tools}${step.tools.length === 1 && toolTarget(step.tools[0]) ? ` · ${toolTarget(step.tools[0])}` : ''}`
-        : step.reply?.response_preview ? `Reply · ${step.reply.response_preview}` : 'Answer without tool calls'
+        : step.reply?.response_preview ? `Reply · ${step.reply.response_preview}`
+          // The model stopped to call tools, and the store has none for this round: they were not read, not absent.
+          : /tool/i.test(step.call?.finish_reason ?? '') ? 'Tool calls not recorded' : 'Answer without tool calls'
     }
     case 'reply': return lead.response_preview ? `Reply · ${lead.response_preview}` : 'Reply'
     case 'prompt': return promptLine(lead)

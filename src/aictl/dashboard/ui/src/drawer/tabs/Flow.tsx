@@ -12,7 +12,7 @@ import { flowBounds, flowModel, skillPhase, type PlacedEvent } from '../flowMode
 import { createHover, DroppedNotice, HoverCard, OlderButtons, StepInspector, StepList, TurnScrubber } from '../FlowParts'
 import { ThinkingBlocks } from '../ThinkingBlocks'
 import { FLOW_PAGE, flowPages, readDownTo } from '../flowPages'
-import { definitions, openingRow, matchesReference, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
+import { definitions, openingRow, matchesReference, requestsOnlyNote, rowsOf, stepsOf, totalsOf, type FlowRow, type Totals } from '../flowSteps'
 import { collapseRuns, repeatsOf, scalesOf, tracksOf, workCounts, type ChartRow } from '../chartModel'
 import { chartColumns, FlowChart, WorkKey } from '../FlowChart'
 import {
@@ -314,6 +314,10 @@ export default function Flow(props: TabProps) {
           <span>{loadedFigures(loaded())}</span>
         </p>
       </Box>
+    }</Show>
+
+    <Show when={!agentScope() && summary() && requestsOnlyNote(summary()!)}>{note =>
+      <p class={styles.scopeNote} role="status" data-requests-only><Icon glyph="sources" small /><span>{note()}</span></p>
     }</Show>
 
     <Show when={usedEvidence()}>
