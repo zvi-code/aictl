@@ -184,7 +184,7 @@ function Shell(props: { client: LiveClient; startedAt: number }) {
         },
       })
     },
-  } satisfies Omit<PanelContext, 'board' | 'read' | 'metadata' | 'detail'>
+  } satisfies Omit<PanelContext, 'board' | 'read' | 'need' | 'metadata' | 'detail'>
   const ctx: PanelContext = { ...context, ...untrack(() => panelData(context, screen)) }
   const cancel = () => { if (!pending()) setDecision(undefined) }
   const apply = async () => {

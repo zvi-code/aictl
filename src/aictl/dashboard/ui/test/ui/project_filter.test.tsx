@@ -76,9 +76,10 @@ describe('PRJ-02 · Every screen sends the chosen projects', () => {
   it('board, all nodes: the history read carries them', async () => {
     const board = context(CHOSEN, 'fleet')
     try {
-      board.ctx.read({ field: 'kpis' })
-      await vi.waitFor(() => expect(board.fetched.some(path => path.startsWith('/api/history/board'))).toBe(true))
-      const history = board.fetched.find(path => path.startsWith('/api/history/board'))!
+      createRoot(dispose => { board.ctx.need([{ field: 'kpis' }]); return dispose })
+      flush()
+      await vi.waitFor(() => expect(board.fetched.some(path => path.startsWith('/api/history/board/section'))).toBe(true))
+      const history = board.fetched.find(path => path.startsWith('/api/history/board/section'))!
       expect([projectsOf(history), projectsOf(history, 'repo')]).toEqual([[ALPHA, BETA], [REPO]])
     } finally { board.dispose() }
   })

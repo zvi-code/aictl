@@ -63,10 +63,18 @@ export default function Kpis(props: PanelProps) {
             runtime()?.unlinked ? unlinkedText(runtime()!.unlinked) : ''].filter(Boolean).join(' · ') :
             monitored() ? `${monitored()!.hosts} reporting ${monitored()!.hosts === 1 ? 'node' : 'nodes'}` : 'No fresh monitor report'} />
         <For each={metrics}>{([key, label, section, spark]) => {
+        // A node or fleet board reads its tiles from several sections: each tile shows its own figure as
+        // soon as its section answers, and says so while it is read or when it could not be read.
+        const tile = createMemo(() => ctx.read({ field: 'kpis', path: key }))
+        const missing = () => tile().state === 'loading' ? 'Reading…' : tile().state === 'error' ? 'Could not be read' : undefined
         const detail = () => {
+          if (tile().state === 'error') return <span title={tile().message}>{tile().message}{' '}
+            <button type="button" class={styles.tileRetry} onClick={event => { event.preventDefault(); event.stopPropagation(); ctx.refresh() }}>Retry</button>
+          </span>
           if (key === 'cost_usd' && copilotBilledText(ctx.board('credits'))) return copilotBilledText(ctx.board('credits'))
           if (key === 'running') return runningDetail(runtime(), data() as Parameters<typeof runningDetail>[1])
           if (key === 'failures') return format('fail_rate', data()?.fail_rate)
+          if (key === 'p95_ms' && tile().state === 'loading') return null
           if (key === 'p95_ms') return `p50: ${format('p50_ms', data()?.p50_ms) ?? 'Not available from this source'}`
           if (key === 'cached_share') {
             const read = ctx.board('by_model')?.flatMap(row => row.cache_read == null ? [] : [row.cache_read])
@@ -76,7 +84,7 @@ export default function Kpis(props: PanelProps) {
         }
         return <a href={`#sec-${section}`} onClick={event => { event.preventDefault(); ctx.jump(section) }}>
           <Stat label={key === 'cost_usd' ? costTitle(ctx.board('credits')) : label} value={format(key, (key === 'running' ? runtime()?.running : undefined) ??
-            (key === 'cost_usd' ? billedCost(ctx.board('credits')) : undefined) ?? data()?.[key])}
+            (key === 'cost_usd' ? billedCost(ctx.board('credits')) : undefined) ?? data()?.[key])} missing={missing()}
             detail={<div class={styles.kpiDetail}>
               <span>{detail()}</span><Spark values={data()?.spark?.[spark] ?? []} />
             </div>} />

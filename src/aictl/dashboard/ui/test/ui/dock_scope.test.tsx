@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flush } from 'solid-js'
 import DockScreen from '../../src/panels/DockScreen'
 import { sections } from '../../src/panels/layout'
@@ -27,7 +27,7 @@ const def = (id: string, sources: PanelDef['sources']): PanelDef => ({
 const panels = ['kpis', 'tokens', 'alerts', 'cpu', 'findings', 'settings', 'coverage'].map(id => def(id, byId.get(id)!.sources))
 
 function screen(scope: NodeScope) {
-  const ctx = { client: { store: { meta: { capabilities: {} } } }, scope: () => scope } as unknown as PanelContext
+  const ctx = { client: { store: { meta: { capabilities: {} } } }, scope: () => scope, need() {} } as unknown as PanelContext
   let order: string[] = []
   const { host, dispose } = mount(() => <DockScreen screen="board" definitions={panels} ctx={ctx}
     order={ids => { order = ids }} shown={panel => shownInScope(panel, scope)} />)
@@ -65,15 +65,16 @@ describe('BRD-SCOPE-01 · A panel with nothing to say in the scope is not drawn'
     fleet.dispose()
   })
 
-  it('shows every panel again in the editor, with the empty section kept as a drop target', () => {
+  it('shows every panel again in the editor, with the empty section kept as a drop target', async () => {
     const fleet = screen('fleet')
     ;(fleet.host.querySelector('[data-edit-layout]') as HTMLButtonElement).click()
-    return new Promise<void>(resolve => setTimeout(resolve, 50)).then(() => {
+    // The editor loads on demand: wait for it, not for a fixed time, which a busy run can outlast.
+    await vi.waitFor(() => {
       flush()
       expect(fleet.host.querySelector('#sec-effect')).not.toBeNull()
-      expect(fleet.host.querySelector('#p-findings')).toBeNull()
-      fleet.dispose()
     })
+    expect(fleet.host.querySelector('#p-findings')).toBeNull()
+    fleet.dispose()
   })
 })
 

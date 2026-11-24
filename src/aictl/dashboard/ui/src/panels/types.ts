@@ -82,6 +82,9 @@ export interface PanelContext {
   revision: Accessor<number>
   board<K extends keyof BoardFields>(field: K, wholeRange?: boolean): BoardFields[K] | undefined
   read(source: Source): Read
+  /** Read the board fields of these sources while the calling panel is on screen. A node or fleet board is
+   * read in sections: only a section some panel on screen needs is asked for. */
+  need(sources: readonly Source[]): void
   detail<T>(path: Accessor<string | undefined>, format?: 'text'): DetailResource<T>
   metadata(key: string): { label?: string; unit?: string; format?: string } | undefined
   navigate(patch: UrlPatch): void
