@@ -388,7 +388,8 @@ def test_orientation_names_edit_calls_by_the_board_rule():
     edit, server = _kql_regexes("insights.orientation")
     assert (edit, server) == (_EDIT_TOOL_RE.pattern, _MCP_TOOL_RE.pattern)
     for name in ("Edit", "Write", "apply_patch", "replace_string_in_file", "create_file", "insert_edit_into_file",
-                 "mcp__srv__edit_file", "github/create_file", "Read", "Bash"):
+                 "mcp__srv__edit_file", "github/create_file", "Read", "Bash",
+                 "create", "recreate_index"):  # Copilot CLI creates a file with a tool named just "create"
         assert is_edit_tool(name) == (bool(re.search(edit, name)) and not re.search(server, name)), name
 
 

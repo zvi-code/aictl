@@ -227,7 +227,8 @@ def _long_threshold(model: str) -> int:
 _COMMAND_TOOL_RE = re.compile(r"(?i)bash|shell|terminal|powershell|exec_?command|run_?command|execute_?command")
 
 
-_EDIT_TOOL_RE = re.compile(r"(?i)edit|write|patch|replace|create_?file|insert")
+# Copilot CLI's tool that creates a file is named just "create".
+_EDIT_TOOL_RE = re.compile(r"(?i)edit|write|patch|replace|create_?file|insert|^create$")
 
 
 _PIPED_TO_FILTER_RE = re.compile(r"\|\s*(?:tail|head|grep|tee|sed|awk|cut|sort|uniq|wc|less|cat)\b")

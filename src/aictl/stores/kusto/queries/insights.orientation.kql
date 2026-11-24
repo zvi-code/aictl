@@ -40,7 +40,7 @@ let edits = tool_invocations_secs
     | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, tool_name
     | summarize arg_max(_v, *) by ['project'], node_id, fact_key
     | where not(coalesce(deleted, false)) and not(tool_name startswith_cs 'permission:')
-    | where tool_name matches regex @'(?i)edit|write|patch|replace|create_?file|insert'
+    | where tool_name matches regex @'(?i)edit|write|patch|replace|create_?file|insert|^create$'
         and not(tool_name matches regex @'^mcp(__|_|\.|:)|^[\w.-]+/[\w.-]+$')
     | summarize first_edit=min(ts) by node_id, session_id;
 let per_session = materialize(reqs

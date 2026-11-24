@@ -84,7 +84,7 @@ let streamed = union
     (calls | where kind_filter == 'loops'
         | extend agent_part=iff(isempty(agent_id) or agent_id == session_id, '', agent_id),
                  failing=coalesce(is_error, 0) != 0 or (isnotnull(exit_code) and exit_code != 0),
-                 edit=tool_name matches regex @"(?i)edit|write|patch|replace|create_?file|insert"
+                 edit=tool_name matches regex @"(?i)edit|write|patch|replace|create_?file|insert|^create$"
         | extend relevant=failing or edit,
                  plain_edit=edit and not(failing) and tool_name matches regex @"^[A-Za-z0-9_]+$"
                      and not(tool_name startswith_cs 'mcp_')
