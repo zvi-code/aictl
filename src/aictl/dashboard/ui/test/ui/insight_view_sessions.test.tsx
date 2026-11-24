@@ -2,6 +2,8 @@
 // The session views of Insights at full width: Flows, Problem sessions, What the agents changed, Verified before commit
 // and Orientation cost. Per view: the marks of the main chart, the colour switch, one hover per kind of mark, the line
 // under the title, and a body without a split by repository. Invented rows only.
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { flowLayout } from '../../src/panels/insights/charts/FlowDiagram'
@@ -11,7 +13,9 @@ import Changes from '../../src/panels/insights/Changes'
 import { changeLine } from '../../src/panels/insights/changesModel'
 import Flows from '../../src/panels/insights/Flows'
 import { endingFlow, flowsFinding, transitionGrid, type FlowsBody } from '../../src/panels/insights/flowsModel'
-import type { ProblemBody } from '../../src/panels/insights/insightsModel'
+import type { OrientationBody, ProblemBody } from '../../src/panels/insights/insightsModel'
+import Orientation from '../../src/panels/insights/Orientation'
+import { neverCostRows, orientationLine, projectDots } from '../../src/panels/insights/orientationModel'
 import ProblemSessions from '../../src/panels/insights/ProblemSessions'
 import { pairBlank, pairGrid, problemLine, projectGrid, signalToolGrid } from '../../src/panels/insights/problemsModel'
 import type { RepoRef, RepoSegment } from '../../src/panels/insights/repoSplit'
@@ -393,6 +397,85 @@ describe('Verified before commit view', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelectorAll('[data-chart="verified-commits"] [data-segment]').length).toBe(5)
     expect(box.querySelector('[data-idle]')!.textContent).toBe('No commit in this period by copilot-cli.')
+    dispose()
+  })
+})
+
+// ─── Orientation cost by repository ─────────────────────────────────────────────────────────────────────────────
+const orientation = {
+  ...base, card: 'orientation', view: 'insights.orientation', query: query('insights.orientation'), repo_order: order, sessions: [],
+  projects: [
+    { project_path: '/src/shop', sessions: 30, tools: ['claude-code'], p50_requests: 6, p50_cost_usd: 0.6 },
+    { project_path: '/work/notes', sessions: 12, tools: ['copilot-cli'], p50_requests: 12, p50_cost_usd: null },
+  ],
+  tools: [
+    { tool: 'claude-code', sessions: 50, edited: 35, no_project: 0, p50_requests: 7, never: 15, never_requests: 90, never_cost_usd: 9,
+      repos: split([['/src/shop', { sessions: 40, edited: 30, never: 10, never_requests: 60, never_cost_usd: 6 }],
+        ['/src/blog', { sessions: 10, edited: 5, never: 5, never_requests: 30, never_cost_usd: 3 }]]) },
+    { tool: 'copilot-cli', sessions: 20, edited: 20, no_project: 0, p50_requests: 12, never: 0, never_requests: 0, never_cost_usd: 0 },
+  ],
+  summary: { sessions: 70, edited: 55, projects: 2, never: 15, never_cost_usd: 9, no_project: 0, unpriced_requests: 2 },
+} as unknown as OrientationBody
+
+describe('Orientation cost view', () => {
+  it('draws a dot row per project in the order of the answer, its two medians written, and the line under the title', () => {
+    const { host, dispose } = mount(() => <Orientation {...props(context(orientation))} />)
+    const box = host.querySelector('#insight-orientation')!
+    expect(box.querySelector('[data-finding]')!.textContent).toBe(orientationLine(orientation))
+    expect(box.querySelector('[data-hero]')).toBeNull()
+    const rows = box.querySelectorAll('[data-dots="orientation-projects"] [data-row]')
+    expect([...rows].map(row => row.getAttribute('data-row'))).toEqual(['/src/shop', '/work/notes'])
+    expect(texts(box.querySelectorAll('[data-dots="orientation-projects"] [data-value]'))).toEqual(['6 requests', '$0.60', '12 requests', 'not reported'])
+    expect(texts(box.querySelectorAll('[data-dots="orientation-projects"] [data-measure] small'))).toEqual(['0 to 12', '0 to $0.60'])
+    expect(rows[0].querySelector('[data-dot="requests"]')!.getAttribute('style')).toContain('inset-inline-start: 50.00%')
+    expect(box.querySelector('[data-unpriced]')!.textContent).toBe('2 requests with no known cost are left out of the cost.')
+    dispose()
+  })
+
+  it('gives each kind of mark its exact figures on hover', () => {
+    const dots = projectDots(orientation, tool => tool, false)
+    expect(dots.rows[0].values[1].hover).toBe('/src/shop: median 6 main-agent requests costing $0.60 at list price before the first ' +
+      'edit, over 30 sessions that edit (claude-code).')
+    expect(neverCostRows(orientation, tool => tool).map(row => row.key)).toEqual(['claude-code'])
+    const { host, dispose } = mount(() => <Orientation {...props(context(orientation))} />)
+    const box = host.querySelector('#insight-orientation')!
+    expect(box.querySelector('[data-chart="orientation-tools"] [data-row="claude-code"] [data-part="edited"] [role="tooltip"]')!.textContent)
+      .toBe('claude-code: 35 of 50 sessions (70%) recorded an edit; the median one made 7 requests before it.')
+    expect(box.querySelector('[data-chart="orientation-never"] [role="tooltip"]')!.textContent).toBe('claude-code: 15 of 50 sessions (30%) ' +
+      'recorded no edit; their main agents made 90 requests costing $9.00 at list price. All tools: 15 sessions with no edit, $9.00 at list price.')
+    dispose()
+  })
+
+  it('switches between edit and repository', () => {
+    const navigated: unknown[] = []
+    const { host, dispose } = mount(() => <Orientation {...props(context(orientation, navigated))} />)
+    const box = host.querySelector('#insight-orientation')!
+    option(box, 'Repository').click()
+    flush()
+    expect([...box.querySelectorAll('[data-chart="orientation-tools-repos"] [data-row] [data-part]')].map(part => part.getAttribute('data-repo')))
+      .toEqual(['0', '1'])
+    expect([...box.querySelectorAll('[data-dots="orientation-projects"] [data-row]')].map(row => row.querySelector('[data-swatch]') != null))
+      .toEqual([true, false])
+    option(box, 'Edit').click()
+    flush()
+    expect(box.querySelector('[data-chart="orientation-tools"]')).not.toBeNull()
+    expect(navigated).toEqual([{ by: 'repo' }, { by: null }])
+    dispose()
+  })
+
+  it('gives the value column of the dot rows one width in every row, so that the axes of a measure line up', () => {
+    // Each row's cell is a grid of its own: a value column sized by its content made each row's axis a different length.
+    const css = readFileSync(join(__dirname, '../../src/panels/insights/charts/DotRows.module.css'), 'utf8')
+    const cell = /^\.cell \{([^}]*)\}/m.exec(css)![1]
+    expect(cell).toMatch(/grid-template-columns: minmax\(4rem, 1fr\) \d+(\.\d+)?rem;/)
+  })
+
+  it('draws without a split and offers no switch', () => {
+    const { host, dispose } = mount(() => <Orientation {...props(context(unsplit(orientation)))} />)
+    const box = host.querySelector('#insight-orientation')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(box.querySelectorAll('[data-dots="orientation-projects"] [data-row]').length).toBe(2)
+    expect(box.querySelectorAll('[data-chart="orientation-tools"] [data-row]').length).toBe(2)
     dispose()
   })
 })

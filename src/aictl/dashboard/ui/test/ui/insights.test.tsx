@@ -12,11 +12,12 @@ import Orientation from '../../src/panels/insights/Orientation'
 import FixedContext from '../../src/panels/insights/FixedContext'
 import ProblemSessions from '../../src/panels/insights/ProblemSessions'
 import { fmtHours } from '../../src/design/format'
+import { orientationLine, orientationUnpriced } from '../../src/panels/insights/orientationModel'
 import { problemLine } from '../../src/panels/insights/problemsModel'
 import {
   carryFinding, causeText, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, pauseHero, toolLabel, rereadFinding, subagentFinding,
   type PauseCauseLead,
-  contextFinding, fixedFinding, fixedHero, orientationFinding, problemHero, timeFinding, type FixedBody,
+  contextFinding, fixedFinding, fixedHero, problemHero, timeFinding, type FixedBody,
   type ProblemBody, type CarryBody, type ContextBody, type OrientationBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
   type TimeBody,
 } from '../../src/panels/insights/insightsModel'
@@ -242,8 +243,8 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
       .toMatch(/of its cost\. 1 request with no known cost is left out of the cost\.$/)
     expect(contextFinding({ ...contextBody, summary: { ...contextBody.summary, unpriced_requests: 12 } }, label))
       .toMatch(/ 12 requests with no known cost are left out of the cost\.$/)
-    expect(orientationFinding({ ...orientation, summary: { ...orientation.summary, never: 2, unpriced_requests: 4 } }))
-      .toMatch(/ 4 requests with no known cost are left out of the cost\.$/)
+    expect(orientationUnpriced({ ...orientation, summary: { ...orientation.summary, never: 2, unpriced_requests: 4 } }))
+      .toBe('4 requests with no known cost are left out of the cost.')
     expect(subagentFinding({ ...subagents, summary: { ...subagents.summary, unpriced_requests: 0 } }, label)).not.toContain('left out')
   })
 
@@ -258,9 +259,12 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     for (const id of Object.keys(bodies)) {
       const box = card(host, id)
       expect(box.querySelector('[data-finding]')?.textContent?.length, id).toBeGreaterThan(20)
-      // Each card leads with one figure and says what it is a figure of; the method is folded away.
-      expect(box.querySelector('[data-hero] strong')?.textContent, id).toMatch(/\d/)
-      expect(box.querySelector('[data-hero] span')?.textContent?.length, id).toBeGreaterThan(10)
+      // A card with a lead figure says what it is a figure of; the method is folded away. Orientation has none: its
+      // medians are per project, and no one of them is the view's total.
+      if (id !== 'orientation') {
+        expect(box.querySelector('[data-hero] strong')?.textContent, id).toMatch(/\d/)
+        expect(box.querySelector('[data-hero] span')?.textContent?.length, id).toBeGreaterThan(10)
+      }
       // One closed line holds the sessions, the data table, the KQL and the method, each closed inside it.
       expect(box.querySelectorAll(':scope details[data-more]:not([open])').length, id).toBe(1)
       expect(box.querySelectorAll('details[data-more] > details:not([open])').length, id).toBe(4)
@@ -522,31 +526,33 @@ describe('INS-06 · Context weight', () => {
 })
 
 describe('INS-07 · Orientation cost by repository', () => {
-  it('names the project with the most sessions that edit, the range of medians and the sessions that never edit', () => {
-    expect(orientationFinding(orientation)).toBe('alpha has the most sessions that edit (89); the median one made 4 requests ' +
-      'costing $0.21 before its first edit. Across 2 projects the median runs from 4 to 35 requests. 273 sessions recorded no ' +
-      "edit; their main agents' requests cost $159.")
-    const none = { ...orientation, projects: [] } as OrientationBody
-    expect(orientationFinding(none)).toBe('No project has 3 or more sessions that edit in this period. 273 sessions recorded no ' +
-      "edit; their main agents' requests cost $159.")
+  it('says under the title what is measured, with no figure and no lead number', () => {
+    expect(orientationLine(orientation)).toBe("Main-agent requests, and their list-price cost, before a session's first edit; medians " +
+      'per project over the sessions that edit, and per tool the sessions with and without an edit.')
+    expect(orientationLine({ ...orientation, summary: { ...orientation.summary, sessions: 0 } } as OrientationBody)).toBe('No session started in this period.')
   })
 
-  it('draws one bar per project with its median requests and cost, and an unpriced cost as not reported', () => {
+  it('draws a dot row per project with its median requests and cost, and an unpriced cost as not reported', () => {
     const { ctx } = context(ready)
     const { host, dispose } = mount(() => <Orientation {...props(ctx)} />)
     const box = card(host, 'orientation')
-    const requests = box.querySelector('[data-chart="orientation-requests"]')!
-    expect([...requests.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['/work/alpha', '/work/beta/'])
-    expect(requests.querySelector('[data-row="/work/alpha"] [data-total]')!.textContent).toBe('4 requests')
-    expect(requests.querySelector('[data-row="/work/alpha"] [role="tooltip"]')!.textContent).toBe('/work/alpha: median 4 main-agent ' +
+    expect(box.querySelector('[data-hero]')).toBeNull()
+    const projects = box.querySelector('[data-dots="orientation-projects"]')!
+    expect([...projects.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['/work/alpha', '/work/beta/'])
+    expect([...projects.querySelectorAll('[data-row="/work/alpha"] [data-value]')].map(value => value.textContent)).toEqual(['4 requests', '$0.21'])
+    expect(projects.querySelector('[data-row="/work/alpha"] [data-dot="requests"]')!.getAttribute('title')).toBe('/work/alpha: median 4 main-agent ' +
       'requests costing $0.21 at list price before the first edit, over 89 sessions that edit (copilot-cli).')
-    expect(box.querySelector('[data-chart="orientation-cost"] [data-row="/work/beta/"] [data-total]')!.textContent).toBe('not reported')
+    expect(projects.querySelectorAll('[data-row="/work/beta/"] [data-value]')[1].textContent).toBe('not reported')
+    expect(projects.querySelector('[data-row="/work/beta/"] [data-dot="cost"]')).toBeNull()
     expect(box.querySelector('[title="/work/alpha"]')).not.toBeNull()
     const tools = box.querySelector('[data-chart="orientation-tools"]')!
     expect([...tools.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['claude-code'])
     expect([...tools.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['106', '272'])
     expect(tools.querySelector('[data-part="never"] [role="tooltip"]')!.textContent).toBe('claude-code: 272 of 378 sessions (72%) ' +
       'recorded no edit; their main agents made 2,207 requests costing $159 at list price.')
+    expect(box.querySelector('[data-chart="orientation-never"] [data-row="claude-code"] [role="tooltip"]')!.textContent).toBe('claude-code: ' +
+      '272 of 378 sessions (72%) recorded no edit; their main agents made 2,207 requests costing $159 at list price. All tools: 273 ' +
+      'sessions with no edit, $159 at list price.')
     expect(box.querySelector('[data-few]')?.textContent).toBe('codex-cli: 1 session, too few to compare.')
     dispose()
   })

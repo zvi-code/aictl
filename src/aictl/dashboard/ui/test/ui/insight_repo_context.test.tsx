@@ -146,12 +146,17 @@ describe('INS-RS · Context group cards split by repository', () => {
     dispose()
   })
 
-  it('Orientation: keeps the edit bar, adds sessions and no-edit cost by repository, colours a project that is a repository', () => {
+  it('Orientation: by repository, the sessions and the no-edit cost per tool split by repository, a project that is a repository in its colour', () => {
+    const plain = mount(() => <Orientation {...props(orientation)} />)
+    expect(plain.host.querySelector('[data-repo-legend]')).toBeNull()
+    expect([...plain.host.querySelectorAll('[data-chart="orientation-tools"] [data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['edited', 'never'])
+    expect(plain.host.querySelector('[data-dots="orientation-projects"] [data-swatch]')).toBeNull()
+    plain.dispose()
+    history.replaceState(null, '', '/?screen=insights&range=all&view=orientation&by=repo')
     const { host, dispose } = mount(() => <Orientation {...props(orientation)} />)
     const box = host.querySelector('#insight-orientation')!
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect([...box.querySelectorAll('[data-chart="orientation-tools"] [data-part]')].map(part => part.getAttribute('data-part')))
-      .toEqual(['edited', 'never'])
     const sessions = box.querySelector('[data-chart="orientation-tools-repos"] [data-row="claude-code"]')!
     expect(repoAttrs(sessions)).toEqual(ALL)
     expect(sessions.querySelector('[data-total]')!.textContent).toBe('40 sessions')
@@ -161,18 +166,20 @@ describe('INS-RS · Context group cards split by repository', () => {
     const never = box.querySelector('[data-chart="orientation-never-repos"] [data-row="claude-code"]')!
     expect(texts(never)).toEqual(['$10.00', '$6.00', '$4.00'])
     // The project that is the ranked repository "app" takes its colour; the other project keeps its own.
-    const projects = [...box.querySelectorAll('[data-chart="orientation-requests"] [data-row]')]
-    expect(projects.map(row => repoAttrs(row)[0])).toEqual(['0', null])
-    expect(hover(projects[0], 'requests')).toMatch(/Coloured as the repository app in the legend\.$/)
+    const projects = [...box.querySelectorAll('[data-dots="orientation-projects"] [data-row]')]
+    expect(projects.map(row => row.querySelector('[data-swatch]') != null)).toEqual([true, false])
+    expect(projects[0].querySelector('[data-dot="requests"]')!.getAttribute('title')).toMatch(/Coloured as the repository app in the legend\.$/)
     dispose()
   })
-
-  it('Orientation: a body without repos draws the old bars only', () => {
+  it('Orientation: a body without repos draws the bars by edit only, with no switch', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&view=orientation&by=repo')
     const { host, dispose } = mount(() => <Orientation {...props(strip(orientation))} />)
     const box = host.querySelector('#insight-orientation')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="orientation-tools-repos"]')).toBeNull()
-    expect(repoAttrs(box.querySelector('[data-chart="orientation-requests"] [data-row]')!)).toEqual([null])
+    expect(box.querySelector('[data-chart="orientation-tools"]')).not.toBeNull()
+    expect(box.querySelector('[data-dots="orientation-projects"] [data-swatch]')).toBeNull()
     dispose()
   })
 

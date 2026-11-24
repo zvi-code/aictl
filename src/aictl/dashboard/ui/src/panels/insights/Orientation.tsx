@@ -1,35 +1,18 @@
 import { Show, untrack } from 'solid-js'
 import { fmtNum, projectName } from '../../design/format'
 import { Bars, type BarRow } from './Bars'
+import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { DotRows } from './charts/DotRows'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  orientationHero, count, money, orientationFinding, orientationNeverRepoMore, orientationProjectHover, orientationRepoMore,
-  orientationToolHover, plural, repoPartsWith, toolLabel, type Label, type OrientationBody,
+  money, orientationNeverRepoMore, orientationRepoMore, orientationToolHover, plural, repoPartsWith, toolLabel,
+  type Label, type OrientationBody,
 } from './insightsModel'
+import { neverCostRows, orientationLine, orientationUnpriced, projectDots } from './orientationModel'
 import { RepoLegend } from './RepoLegend'
-import { hasOther, OTHER, repoColour, repoName } from './repoSplit'
+import { hasOther } from './repoSplit'
 import styles from './Insights.module.css'
-
-/**
- * A project row is itself a repository or a folder: where its root is one of the ranked repositories, it takes that
- * repository's colour, so the card agrees with the legend; otherwise it keeps its own colour.
- */
-function projectRows(body: OrientationBody, label: Label, of: 'requests' | 'cost'): BarRow[] {
-  return body.projects.map(row => {
-    const colour = repoColour(body.repo_order, row.project_path)
-    return {
-      key: row.project_path, label: projectName(row.project_path), title: row.project_path,
-      sub: `${plural(row.sessions, 'session')} · ${row.tools.map(label).join(', ')}`,
-      total: of === 'requests' ? `${count(row.p50_requests)} requests` : money(row.p50_cost_usd),
-      parts: [{ key: of, label: of === 'requests' ? 'median requests' : 'median cost', tone: of === 'requests' ? 2 : 1,
-        value: of === 'requests' ? row.p50_requests : row.p50_cost_usd,
-        text: of === 'requests' ? count(row.p50_requests) : money(row.p50_cost_usd),
-        hover: orientationProjectHover(row, label) +
-          (colour === OTHER ? '' : ` Coloured as the repository ${repoName(body.repo_order, row.project_path)} in the legend.`),
-        ...(colour === OTHER ? {} : { repo: colour }) }],
-    }
-  })
-}
+import own from './Orientation.module.css'
 
 function toolRows(body: OrientationBody, label: Label): BarRow[] {
   return body.tools.map(tool => ({
@@ -41,7 +24,7 @@ function toolRows(body: OrientationBody, label: Label): BarRow[] {
   }))
 }
 
-/** Per tool: its sessions (or the cost of those with no edit) in a segment per repository; the split by edit is the bar above. */
+/** Per tool: its sessions (or the cost of those with no edit) in a segment per repository. */
 function repoRows(body: OrientationBody, label: Label, of: 'sessions' | 'never'): BarRow[] {
   return body.tools.filter(tool => tool.repos?.length && (of === 'sessions' || tool.never_cost_usd)).map(tool => ({
     key: tool.tool, label: label(tool.tool),
@@ -56,25 +39,36 @@ function repoRows(body: OrientationBody, label: Label, of: 'sessions' | 'never')
   }))
 }
 
-function ProjectBars(props: { body: OrientationBody; label: Label }) {
+/** Whether the answer splits any bar by repository, or ranks a repository a project row can take the colour of. */
+const orientationSplit = (body: OrientationBody) => body.tools.some(tool => tool.repos?.length) || !!body.repo_order?.length
+
+function Visual(props: { body: OrientationBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+  const byRepo = () => orientationSplit(props.body) && props.mode === 'repo'
+  const dots = () => projectDots(props.body, props.label, byRepo())
   return <>
-    <RepoLegend split={props.body} other={hasOther(props.body.tools)} />
-    <Show when={props.body.projects.length} fallback={<p class={styles.note}>No project has 3 or more sessions that edit in this period.</p>}>
-      <Bars name="orientation-requests" title="Median main-agent requests before the first edit, per project"
-        axis={'Length: requests, linear from 0; projects with 3 or more sessions that edit, the 10 with the most.' +
-          (props.body.repo_order?.length ? ' A project that is a ranked repository has its colour; medians are not split.' : '')}
-        rows={projectRows(props.body, props.label, 'requests')} />
-      <Bars name="orientation-cost" title="Median cost before the first edit, per project"
-        axis="Length: cost at list price, linear from $0." rows={projectRows(props.body, props.label, 'cost')} />
-    </Show>
-    <Bars name="orientation-tools" title="Sessions per tool: with an edit and with no edit" scale="whole"
-      legend={[{ label: 'Recorded an edit', tone: 2 }, { label: 'No edit (not in the medians)', tone: 7 }]}
-      axis="Bar: the tool's sessions that started in the period (100%)." rows={toolRows(props.body, props.label)} />
-    <Bars name="orientation-tools-repos" title="Sessions per tool, by repository"
-      axis="Length: sessions that started in the period, one linear scale from 0; a segment per repository."
-      rows={repoRows(props.body, props.label, 'sessions')} />
-    <Bars name="orientation-never-repos" title="Cost of the main-agent requests of sessions with no edit, per tool, by repository"
-      axis="Length: cost at list price, one linear scale from $0; a segment per repository." rows={repoRows(props.body, props.label, 'never')} />
+    <ColourBy parts="Edit" value={byRepo() ? 'repo' : 'parts'} onChange={props.setMode} split={orientationSplit(props.body)} />
+    <Show when={byRepo()}><RepoLegend split={props.body} other={hasOther(props.body.tools)} /></Show>
+    <div class={own.grid}>
+      <div class={own.wide}>
+        <DotRows name="orientation-projects" title="Before the first edit, per project" measures={dots().measures} rows={dots().rows}
+          empty="No project has 3 or more sessions that edit in this period."
+          axis="Medians over the project's sessions that edit; projects with 3 or more such sessions, the 10 with the most. Each measure on its own axis from 0." />
+      </div>
+      <Show when={byRepo()} fallback={<Bars name="orientation-tools" title="Sessions per tool, with and without an edit" scale="whole"
+        legend={[{ label: 'Recorded an edit', tone: 2 }, { label: 'No edit (not in the medians)', tone: 7 }]}
+        axis="Bar: the tool's sessions that started in the period, 100%." rows={toolRows(props.body, props.label)} />}>
+        <Bars name="orientation-tools-repos" title="Sessions per tool"
+          axis="Length: sessions that started in the period, one linear scale from 0; a segment per repository."
+          rows={repoRows(props.body, props.label, 'sessions')} />
+      </Show>
+      <Show when={byRepo()} fallback={<Bars name="orientation-never" title="Cost of the sessions with no edit, per tool"
+        axis="Length: list price of their main-agent requests, linear from $0." rows={neverCostRows(props.body, props.label)} />}>
+        <Bars name="orientation-never-repos" title="Cost of the sessions with no edit, per tool"
+          axis="Length: list price of their main-agent requests, one linear scale from $0; a segment per repository."
+          rows={repoRows(props.body, props.label, 'never')} />
+      </Show>
+    </div>
+    <Show when={orientationUnpriced(props.body)}>{text => <p class={styles.note} data-unpriced>{text()}</p>}</Show>
   </>
 }
 
@@ -83,16 +77,17 @@ type Row = Record<string, unknown>
 export default function Orientation(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const [mode, setMode] = useColourBy()
   return <InsightCard<OrientationBody> {...props} card="orientation" tab="flow"
-    hero={orientationHero}
-    finding={body => orientationFinding(body)}
-    visual={body => <ProjectBars body={body} label={label} />}
+    finding={orientationLine}
+    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} />}
     note={'Before the first edit: the requests of the main agent (agent id empty or equal to the session id) up to the ' +
       'session\'s first edit call, by any agent; an edit call is one the board counts as an edit. A session resumed from an ' +
       'earlier one starts oriented, so it shows few requests. A session whose first edit is by a subagent counts the main ' +
       'agent\'s requests up to that time. A session counts in the period it started in. Only projects with 3 or more ' +
       'sessions that edit are shown, the 10 with the most; sessions that never edit are counted per tool, not in the medians. ' +
-      'Cost is list price, not a bill.'}
+      'Cost is list price, not a bill. Colour by Repository gives a project that is one of the ranked repositories that ' +
+      'repository\'s colour (medians are not split) and splits the bars per tool by repository.'}
     table={{
       label: 'Orientation cost by project',
       rows: body => body.projects.map((row): Row => ({

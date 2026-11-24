@@ -9,10 +9,11 @@
 .name { overflow-wrap: anywhere; }
 .name small { display: block; color: var(--color-muted); }
 .swatch { display: inline-block; inline-size: .75em; block-size: .75em; border-radius: var(--radius-sm); margin-inline-end: var(--space-2); vertical-align: middle; }
-.cell { display: grid; grid-template-columns: minmax(4rem, 1fr) auto; gap: var(--space-2); align-items: center; min-inline-size: 0; }
+/* The value column has one width in every row, so that the axes of a measure line up. */
+.cell { display: grid; grid-template-columns: minmax(4rem, 1fr) 8rem; gap: var(--space-4); align-items: center; min-inline-size: 0; }
 .track { position: relative; display: block; block-size: var(--space-4); border-block-end: var(--border-size) solid var(--color-border); }
 .dot {
   position: absolute; inset-block-start: 50%; inline-size: .75rem; block-size: .75rem; margin-inline-start: -.375rem; margin-block-start: -.375rem;
   border-radius: 50%; background: var(--color-chart-1); border: var(--border-size) solid var(--color-surface);
 }
-.value { white-space: nowrap; }
+.value { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

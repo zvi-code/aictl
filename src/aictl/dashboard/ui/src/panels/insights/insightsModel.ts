@@ -2,7 +2,11 @@
 // The server returns None for a figure the source does not report; every sentence here says
 // "not reported" for it and never reads it as zero.
 import { createSignal, untrack } from 'solid-js'
+<<<<<<< HEAD
 import { fmtBytes, fmtDur, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtUsd, projectName } from '../../design/format'
+=======
+import { fmtBytes, fmtDur, fmtHours, fmtMs, fmtN, fmtNum, fmtShare, fmtTimes, fmtUsd } from '../../design/format'
+>>>>>>> 6bf01728 (Draw Orientation cost as dot rows per project and one switch between edit and repository)
 import { parseFilters, PERIODS, windowOf } from '../../data/filters'
 import type { QueryBlock } from '../overview/b/patternsModel'
 import type { AutonomyBody } from './autonomyModel'
@@ -668,20 +672,6 @@ export function smallStepHover(tool: ContextTool, label: Label) {
 /** A repository's small steps of one tool: their cost. */
 export const smallRepoMore = (segment: RepoSegment) => `Their cost: ${money(segmentValue(segment, 'small_cost_usd'))} at list price.`
 
-export function orientationFinding(body: OrientationBody) {
-  const s = body.summary
-  const never = s.never ? ` ${fmtNum(s.never)} sessions recorded no edit; their main agents' requests cost ${money(s.never_cost_usd)}.` +
-    leftOut(s.unpriced_requests) : ''
-  if (!s.sessions) return 'No session started in this period.'
-  const top = body.projects[0]
-  if (!top) return `No project has 3 or more sessions that edit in this period.${never}`
-  const medians = body.projects.map(row => row.p50_requests).filter((value): value is number => value != null)
-  const range = body.projects.length > 1 && medians.length
-    ? ` Across ${fmtNum(body.projects.length)} projects the median runs from ${fmtNum(Math.min(...medians))} to ${fmtNum(Math.max(...medians))} requests.` : ''
-  return `${projectName(top.project_path)} has the most sessions that edit (${fmtNum(top.sessions)}); the median one made ` +
-    `${count(top.p50_requests)} requests costing ${money(top.p50_cost_usd)} before its first edit.${range}${never}`
-}
-
 export function orientationProjectHover(row: OrientationProject, label: Label) {
   return `${row.project_path}: median ${count(row.p50_requests)} main-agent requests costing ${money(row.p50_cost_usd)} at list price ` +
     `before the first edit, over ${plural(row.sessions, 'session')} that edit (${row.tools.map(label).join(', ')}).`
@@ -902,9 +892,3 @@ export const fixedHero = (body: FixedBody) => body.summary.never_used_share != n
 export const problemHero = (body: ProblemBody) => hero(body.summary.flagged_share, fmtShare,
   `of ${plural(body.summary.sessions, 'session')} recorded one or more signals (${fmtNum(body.summary.flagged)}; ` +
   `${fmtNum(body.summary.multi)} two or more) · ${money(body.summary.flagged_cost_usd)} at list price`)
-export function orientationHero(body: OrientationBody) {
-  // The project with the most sessions that edit leads, not the one with the largest median.
-  const top = body.projects.find(project => project.p50_requests != null)
-  return top ? hero(top.p50_requests, fmtNum, `requests before the first edit in the median session of ${projectName(top.project_path)}, ` +
-    `the repository with the most sessions that edit (${fmtNum(top.sessions)}); costing ${money(top.p50_cost_usd)}`) : undefined
-}
