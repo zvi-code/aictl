@@ -150,6 +150,39 @@ describe('BOARD-SECTIONS-03 · a section no panel on screen needs is not asked f
     } finally { board.dispose() }
   })
 
+  it('does not bring back the earlier selection while a failed section is read again', async () => {
+    let fail = false
+    const waiting: ReturnType<typeof held>[] = []
+    const board = fleet(url => {
+      if (!fail) return answer(url, { loops: [{ id: 'earlier' }] })
+      const next = held()
+      waiting.push(next)
+      return next.response
+    })
+    try {
+      const gone = onScreen(board.ctx, [{ field: 'loops' }])
+      flush()
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'loops' }).state).toBe('ready'))
+      // A new range is read and fails: the panel says so.
+      fail = true
+      board.setRange('7d')
+      await vi.waitFor(() => expect(waiting.length).toBe(1))
+      expect(board.ctx.read({ field: 'loops' }).state).toBe('stale')
+      waiting[0].release(failed('History distribution is incomplete; narrow the filters'))
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'loops' }).state).toBe('error'))
+      // Retry: while it reads again the panel shows no figures of the 24 h selection.
+      board.ctx.refresh()
+      flush()
+      await vi.waitFor(() => expect(waiting.length).toBe(2))
+      const during = board.ctx.read({ field: 'loops' })
+      expect(during.state).not.toBe('stale')
+      expect(during.value).toBeUndefined()
+      waiting[1].release(failed('History distribution is incomplete; narrow the filters'))
+      await vi.waitFor(() => expect(board.ctx.read({ field: 'loops' }).state).toBe('error'))
+      gone()
+    } finally { board.dispose() }
+  })
+
   it('keeps the whole board while another screen is open, and reads it again only after Refresh', async () => {
     // More sections than a cache keeps by default: every one of them must still be there on return.
     const sources = ['loops', 'agents', 'projects', 'attention', 'options', 'kpis.running', 'kpis.p50_ms']

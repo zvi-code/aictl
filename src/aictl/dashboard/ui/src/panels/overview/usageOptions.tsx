@@ -11,9 +11,10 @@ import { promptSummary } from './RowSummaries'
 import { copilotBilledText } from './copilotCost'
 import css from './overviewA.module.css'
 
-const splits = [['tool', 'Tool'], ['project', 'Project'], ['model', 'Model']] as const
+// The model first: a split by tool sets one front end of the same assistant against another.
+const splits = [['model', 'Model'], ['project', 'Project'], ['tool', 'Tool']] as const
 export function costOptions({ ctx, def }: PanelProps) {
-  const [split, setSplit] = createSignal<typeof splits[number][0]>('tool')
+  const [split, setSplit] = createSignal<typeof splits[number][0]>('model')
   const base = createMemo(() => ctx.read(def.sources[0]))
   const entries = createMemo(() => rankedSeries(object(at(base().value, `by_${split()}`))))
   const columns = createMemo(() => {

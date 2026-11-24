@@ -160,6 +160,9 @@ export function panelData(ctx: Omit<PanelContext, 'board' | 'read' | 'metadata' 
   const section = (lane: Lane, id: SectionId) => {
     const state = lanes[lane][id](), key = sectionPath(lane, id), slot = `${lane}:${id}`
     if (state?.data && key) shown.set(slot, { key, data: state.data })
+    // A selection whose own read failed shows that, also while it is read again: the earlier selection's
+    // figures do not come back for the moment of a retry.
+    else if (state?.status === 'error' && key && shown.get(slot)?.key !== key) shown.delete(slot)
     const before = shown.get(slot)
     if (before && key && (!state || state.status === 'loading')) {
       // The same selection read again (its kept answer was let go) shows what it showed, without the mark.
