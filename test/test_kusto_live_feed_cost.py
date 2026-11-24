@@ -146,12 +146,9 @@ def test_an_idle_feed_sends_at_most_six_queries_a_minute_whatever_the_number_of_
     sent = requests_and_commands(cluster) - before
     assert sent <= 6 * 60, f"{sent} queries in an idle hour"
     assert not [b for b in batches if b.kind == "changes"]
-    # One probe a poll, no per-table or per-group probe, no key or winner pages; every table is probed
-    # at least once a minute, and with nothing stored no arm reads its table.
-    probes = [q for q in cluster.queries if q.startswith("let aictl_upper")]
-    assert probes and all(q.count("cursor_after(") <= len(TABLES) for q in probes)
-    assert sum("['metrics'] |" in q for q in probes) >= 59
-    assert not any("aictl_live_key" in q for q in cluster.queries)
+    # With nothing stored, a poll reads the cursor alone: no table, no key or winner pages.
+    polls = cluster.queries[before:] if before < len(cluster.queries) else []
+    assert polls and all(q.startswith("print aictl_live_cursor") or q.startswith("print aictl_count_") for q in polls)
     assert not any(cluster.reads.values())
 
 

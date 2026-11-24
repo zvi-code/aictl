@@ -338,6 +338,7 @@ class SharedKustoReader:
         self._tick_next = 0.0
         self._busy_until = 0.0
         self._slow_next = self._background_next = self._local_next = 0.0
+        self._still = False
         # Until when each table this process wrote to is probed (and previewed) on every poll.
         self._local_until: dict[str, float] = {}
         self._counts: dict[str, tuple[Any, ...]] = {}
@@ -1046,6 +1047,19 @@ class SharedKustoReader:
         if now < self._tick_next:
             return False
         names, previews = self._due_tables(now)
+        # Even an arm that reads no table costs query planning: while the store is still (the last
+        # poll found the cursor where it was), a cursor read alone says whether anything was stored.
+        if (self._still and not previews and names
+                and all(self._frontier[name] == self._last_cursor for name in names)):
+            upper, anchor = self._read_cursor()
+            with self._lock:
+                self._server_now = anchor
+            self._still = upper == self._last_cursor
+            if self._still:
+                busy = time.monotonic() < self._busy_until
+                self._tick_next = time.monotonic() + (self.config.busy_poll_s if busy else self.config.idle_poll_s)
+                return True
+        before = self._last_cursor
         try:
             self._probe_all(names, previews)
         except _QueryMemoryError:
@@ -1055,6 +1069,7 @@ class SharedKustoReader:
                 self._last_cursor, self._server_now = upper, anchor
             for start in range(0, len(names), self.config.tables_per_probe):
                 self._detect(names[start:start + self.config.tables_per_probe], upper)
+        self._still = self._last_cursor == before
         busy = time.monotonic() < self._busy_until
         self._tick_next = time.monotonic() + (self.config.busy_poll_s if busy else self.config.idle_poll_s)
         return True
