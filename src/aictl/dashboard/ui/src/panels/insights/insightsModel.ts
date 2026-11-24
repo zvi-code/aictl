@@ -892,8 +892,7 @@ const hero = (value: Num, format: (value: number) => string, label: string): Her
 
 export const pauseHero = (body: PauseBody) => body.summary.requests ? hero(body.summary.cost_usd, fmtUsd,
   `at list price for the ${plural(body.summary.requests, 'request')} that followed a pause of 5 minutes or more` +
-  (body.summary.sessions ? ` in ${plural(body.summary.sessions, 'session')}` : '') +
-  `; estimate at each tool's under-1-minute average: ${money(body.summary.baseline_usd)}, difference ${money(body.summary.extra_usd)}`) : undefined
+  (body.summary.sessions ? ` in ${plural(body.summary.sessions, 'session')}` : '')) : undefined
 export const carryHero = (body: CarryBody) => hero(ratio(body.summary.carried_bytes, body.summary.output_bytes), fmtTimes,
   `estimate (upper bound) of how many times a byte of a tool result was sent again with later requests: ` +
   `${bytes(body.summary.output_bytes)} of results, up to ${bytes(body.summary.carried_bytes)} sent again`)

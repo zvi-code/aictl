@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import type { JSX } from '@solidjs/web'
+import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import type { CardProps } from '../../src/panels/insights/InsightCard'
 import PauseTax from '../../src/panels/insights/PauseTax'
@@ -87,37 +88,41 @@ const pause = {
 } as unknown as PauseBody
 
 describe('INS-RS-F · Pause tax: bars split by repository', () => {
-  it('keeps the bars by pause and adds a bar per tool and pause split by repository, with the legend once', () => {
+  /** The view's own encoding first; the switch above the charts turns every split mark into a segment per repository. */
+  const byRepo = (box: Element) => {
+    box.querySelector<HTMLButtonElement>('[data-colour-by] button[role="radio"]:nth-of-type(2)')!.click()
+    flush()
+  }
+
+  it('draws columns by pause length, then one segment per repository in each column with the legend once', () => {
     const { box, dispose } = draw(PauseTax, 'pause', pause)
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(texts(box.querySelectorAll('[data-chart="pause-requests-claude-code"] [data-part]'), part => part.getAttribute('data-part')))
+      .toEqual(['under_1m', '1_5m', '5_60m'])
+    byRepo(box)
     expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
     expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect(texts(box.querySelectorAll('[data-chart="pause-requests"] [data-part]'), part => part.getAttribute('data-part')))
-      .toEqual(['under_1m', '1_5m', '5_60m'])
-    // A bucket with no split (empty `repos`) has no row; a zero bucket none either.
-    const chart = box.querySelector('[data-chart="pause-requests-repos"]')!
-    expect(texts(chart.querySelectorAll('[data-row]'), row => row.getAttribute('data-row'))).toEqual(['claude-code:under_1m', 'claude-code:5_60m'])
-    const short = chart.querySelector('[data-row="claude-code:under_1m"]')!
+    const chart = box.querySelector('[data-chart="pause-requests-claude-code"]')!
+    const short = chart.querySelector('[data-column="under_1m"]')!
     expect(repos(short)).toEqual(['0', '1', OTHER_TEXT])
-    // The "other" segment (10% of the longest row) writes its value on hover only.
-    expect(written(short)).toEqual(['60', '30', ''])
-    expect(short.querySelector('[data-total]')!.textContent).toBe('100 requests')
+    expect(short.querySelector('[data-total]')!.textContent).toBe('100')
     expect(tip(short, 'repo:/src/app')).toMatch(/^claude-code, pause under 1 min, requests — app \(\/src\/app\): 60 · 60% of this bar · 80% of app own requests after any pause\. claude-code, pause under 1 minute: 100 requests/)
-    const cost = box.querySelector('[data-chart="pause-cost-repos"] [data-row="claude-code:5_60m"]')!
-    expect(repos(cost)).toEqual(['0', OTHER_TEXT])
-    // One scale for every row: $0.60 is 6% of the $10 row, so it is written on hover only.
-    expect(written(cost)).toEqual(['$2.40', ''])
+    // A bucket the store did not split (empty `repos`) keeps one whole segment.
+    expect(texts(chart.querySelectorAll('[data-column="1_5m"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['1_5m'])
+    expect(repos(box.querySelector('[data-chart="pause-cost-claude-code"] [data-column="5_60m"]')!)).toEqual(['0', OTHER_TEXT])
     // The average per bucket is not a sum: whole, and its hover says so.
-    expect(tip(box.querySelector('[data-chart="pause-average-claude-code"] [data-row="under_1m"]')!, 'under_1m')).toContain(notSplitNote('average'))
+    expect(tip(box.querySelector('[data-chart="pause-average-claude-code"] [data-column="under_1m"]')!, 'under_1m')).toContain(notSplitNote('average'))
     dispose()
   })
 
   it('splits the measured cost and the estimate after long pauses, the estimate still named as one', () => {
     const { box, dispose } = draw(PauseTax, 'pause', pause)
-    const measured = box.querySelector('[data-chart="pause-estimate"] [data-row="claude-code:measured"]')!
-    const estimate = box.querySelector('[data-chart="pause-estimate"] [data-row="claude-code:estimate"]')!
+    byRepo(box)
+    const row = box.querySelector('[data-chart="pause-estimate"] [data-row="claude-code"]')!
+    const [measured, estimate] = [row.querySelector('[data-lane="0"]')!, row.querySelector('[data-lane="1"]')!]
     expect([repos(measured), repos(estimate)]).toEqual([['0', OTHER_TEXT], ['0', OTHER_TEXT]])
-    expect(written(measured)).toEqual(['$2.40', '$0.60'])
-    expect(estimate.querySelector('[data-total]')!.textContent).toBe('$1.00')
+    expect(estimate.hasAttribute('data-estimate')).toBe(true)
+    expect(estimate.querySelector('[data-total]')!.textContent).toBe('$1.00 (estimate)')
     expect(tip(estimate, 'repo:/src/app')).toMatch(new RegExp('^claude-code, after pauses of 5 minutes or more, estimate \\(not measured: ' +
       'the repository\'s priced requests × \\$0\\.10\\) — app \\(/src/app\\): \\$0\\.80 · 80% of this bar · 20% of app own estimate\\. ' +
       'claude-code, estimate: 10 priced requests'))
@@ -127,31 +132,31 @@ describe('INS-RS-F · Pause tax: bars split by repository', () => {
 
   it('splits the projects, the causes and the calls through pauses, and leaves the summed "Other projects" bar whole', () => {
     const { box, dispose } = draw(PauseTax, 'pause', pause)
+    expect(box.querySelector('[data-chart="pause-causes"] [data-part="tool_running"]')).not.toBeNull()
+    byRepo(box)
     expect(repos(box.querySelector('[data-chart="pause-projects"] [data-row="/src/app"]')!)).toEqual(['0'])
     const rest = box.querySelector('[data-chart="pause-projects"] [data-row="rest"]')!
     expect(texts(rest.querySelectorAll('[data-part]'), part => part.getAttribute('data-part'))).toEqual(['difference'])
     expect(tip(rest, 'difference')).toContain('Not split by repository')
-    const cause = box.querySelector('[data-chart="pause-causes-repos"] [data-row="claude-code:tool_running"]')!
+    const cause = box.querySelector('[data-chart="pause-causes"] [data-row="claude-code:tool_running"]')!
     expect(repos(cause)).toEqual(['0', OTHER_TEXT])
-    expect(box.querySelector('[data-chart="pause-causes"] [data-part="tool_running"]')).not.toBeNull()
     const call = box.querySelector('[data-chart="pause-calls"] [data-row]')!
     expect(repos(call)).toEqual(['0'])
     expect(tip(call, 'repo:/src/app')).toContain('The median and longest call durations are of all the row\'s calls, not split by repository.')
     dispose()
   })
 
-  it('draws the old bars when the answer carries no split', () => {
+  it('draws no switch and no legend when the answer carries no split', () => {
     const plain = { ...pause, repo_order: [], repo_others: null,
       tools: pause.tools.map(tool => ({ ...tool, long_pause: undefined, buckets: tool.buckets.map(cell => ({ ...cell, repos: undefined })) })),
       projects: pause.projects!.map(row => ({ ...row, repos: undefined })), causes: pause.causes!.map(row => ({ ...row, repos: undefined })),
       cause_tools: pause.cause_tools!.map(row => ({ ...row, repos: undefined })) } as unknown as PauseBody
     const { box, dispose } = draw(PauseTax, 'pause', plain)
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
-    expect(box.querySelector('[data-chart="pause-requests-repos"]')).toBeNull()
-    expect(box.querySelector('[data-chart="pause-causes-repos"]')).toBeNull()
     expect(texts(box.querySelectorAll('[data-chart="pause-estimate"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['measured', 'estimate'])
     expect(texts(box.querySelectorAll('[data-chart="pause-projects"] [data-part]'), part => part.getAttribute('data-part'))).toEqual(['difference', 'difference'])
-    expect(tip(box.querySelector('[data-chart="pause-average-claude-code"] [data-row="under_1m"]')!, 'under_1m')).not.toContain('Not split')
+    expect(tip(box.querySelector('[data-chart="pause-average-claude-code"] [data-column="under_1m"]')!, 'under_1m')).not.toContain('Not split')
     dispose()
   })
 
