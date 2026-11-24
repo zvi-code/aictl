@@ -138,9 +138,9 @@ describe('INS-11 · Work per instruction states its figures from the response', 
   it('builds the hover of every mark from the figures behind it', () => {
     expect(runHover(claude, label)).toBe('claude-code: longest run of main-agent tool calls between two turns of a person, one ' +
       'value per session. Sessions with 2 or more instructions (18 of 30): median 25, 90th percentile 110, mean 40 tool calls. ' +
-      'All 30 sessions: median 20, 90th percentile 90, mean 31.5 tool calls. Bar to the median, thin line on to the 90th ' +
-      'percentile. Bar drawn from sessions with 2 or more instructions (10 or more needed).')
-    expect(runHover(cli, label)).toContain('Bar drawn from all sessions: fewer than 10 sessions with 2 or more instructions.')
+      'All 30 sessions: median 20, 90th percentile 90, mean 31.5 tool calls. Dot: the median; ring: the 90th percentile. ' +
+      'Drawn from sessions with 2 or more instructions (10 or more needed).')
+    expect(runHover(cli, label)).toContain('Drawn grey from all sessions: fewer than 10 sessions with 2 or more instructions.')
     expect(waitHover(claude, 'over', label)).toBe('claude-code: 24 of 80 answered waits (30%) ended after more than 5 minutes. ' +
       'Median wait 1 min 50 s over 80 waits; 90 answered turns; 9 prompts queued (sent less than 2 s after the agent stopped, not ' +
       "a wait); 1 gap over 24 hours counted as resumed, not a wait. A wait runs from the agent's stop to the person's next prompt.")
@@ -163,45 +163,43 @@ describe('INS-11 · Work per instruction states its figures from the response', 
   })
 })
 
-describe('INS-11 · Work per instruction draws one bar per tool on a shared linear axis', () => {
-  it('draws the median bar and the line to the 90th percentile with their values written out', () => {
+describe('INS-11 · Work per instruction draws the runs on one strip, the waits as bars and the trend across the width', () => {
+  it('draws the median and the 90th percentile of the longest run as marks on one linear axis, with their values written', () => {
     const { card: root, dispose } = card()
-    const runs = [...root.querySelectorAll('[data-run]')]
-    expect(runs.map(row => row.getAttribute('data-run'))).toEqual(['claude-code', 'copilot-cli'])
+    const strip = root.querySelector('[data-chart="autonomy-runs"]')!
+    const runs = [...strip.querySelectorAll('[data-row]')]
+    expect(runs.map(row => row.getAttribute('data-row'))).toEqual(['claude-code', 'copilot-cli'])
     const [first, second] = runs
-    expect(first.querySelector<HTMLElement>('[data-median]')!.style.inlineSize).toBe('22.7%')
-    expect(first.querySelector<HTMLElement>('[data-p90]')!.style.insetInlineStart).toBe('22.7%')
-    expect(first.querySelector<HTMLElement>('[data-p90]')!.style.inlineSize).toBe('77.3%')
-    expect(first.querySelector('[data-run-text]')!.textContent).toBe('median 25 · 90th pct 110 tool calls in a row')
-    expect(first.querySelector('[data-figures]')!.textContent).toBe('20 tool calls per instruction · 120 instructions in 30 sessions · ' +
-      '12 sessions ran on one instruction · 40 calls started a subagent')
-    // Each mark writes its value and carries its hover; a narrow mark keeps its value for screen readers only.
-    expect(first.querySelector('[data-median] button')!.textContent).toBe('25')
-    expect(first.querySelector('[data-median] [role="tooltip"]')!.textContent).toBe(runHover(claude, label))
-    expect(first.querySelector('[data-p90] [role="tooltip"]')!.textContent).toBe(runHover(claude, label))
-    expect(root.querySelector('[data-run-axis]')!.textContent).toBe('0110 tool calls')
-    expect(second.querySelector<HTMLElement>('[data-median]')!.style.inlineSize).toBe('7.3%')
-    expect(second.querySelector('[data-run-text]')!.textContent).toContain('all sessions: median 8 · 90th pct 30')
-    expect(root.querySelector('[data-hero]')!.textContent).toContain('25 calls')
-    expect(root.querySelector('[data-finding]')!.textContent).toContain('In claude-code sessions with two or more instructions (18)')
+    expect(first.querySelector<HTMLElement>('[data-mark="median"]')!.style.insetInlineStart).toBe(`${25 / 110 * 100}%`)
+    expect(first.querySelector<HTMLElement>('[data-mark="p90"]')!.style.insetInlineStart).toBe('100%')
+    expect(first.querySelector('[data-text]')!.textContent).toBe('median 25 · p90 110')
+    expect(first.querySelector('[data-mark="median"] [role="tooltip"]')!.textContent).toBe(`Median: 25 tool calls. ${runHover(claude, label)} ` +
+      `${figuresText(claude)}.`)
+    expect(first.querySelector('[data-mark="p90"] [role="tooltip"]')!.textContent).toMatch(/^90th percentile: 110 tool calls\. claude-code: /)
+    expect(strip.querySelector('[data-scale]')!.textContent).toBe('0110 tool calls')
+    // Too few sessions with 2 or more instructions: drawn grey from all sessions, and the row says so.
+    expect(second.hasAttribute('data-muted')).toBe(true)
+    expect(second.querySelector('[data-text]')!.textContent).toBe('median 8 · p90 30, all sessions')
+    // The line under the title says what is measured; no headline number.
+    expect(root.querySelector('[data-hero]')).toBeNull()
+    expect(root.querySelector('[data-finding]')!.textContent).toBe('Per session, the longest run of main-agent tool calls between ' +
+      'two turns of a person (tool calls); per tool, the answered waits for a person, split at 5 minutes.')
     dispose()
   })
 
-  it('splits the answered waits at 5 minutes and writes the queued count; a tool without waits reads not reported', () => {
+  it('splits the answered waits at 5 minutes and writes the median wait; a tool without waits reads not reported', () => {
     const { card: root, dispose } = card()
-    const claudeWait = root.querySelector('[data-wait="claude-code"]')!
-    expect(claudeWait.querySelector<HTMLElement>('[data-under]')!.style.flexGrow).toBe('56')
-    expect(claudeWait.querySelector<HTMLElement>('[data-over]')!.style.flexGrow).toBe('24')
-    expect(claudeWait.querySelector('[data-under] button')!.textContent).toBe('56 · 70%')
-    expect(claudeWait.querySelector('[data-over] button')!.textContent).toBe('24 · 30%')
-    expect(claudeWait.querySelector('[data-over] [role="tooltip"]')!.textContent).toBe(waitHover(claude, 'over', label))
-    expect(claudeWait.querySelector('[data-wait-text]')!.textContent).toBe('56 answered within 5 min · 24 after more than 5 min (30%) · ' +
-      'median wait 1 min 50 s')
-    expect(claudeWait.querySelector('[data-queued]')!.textContent).toBe('9 instructions were typed while the agent was still working')
-    const cliWait = root.querySelector('[data-wait="copilot-cli"]')!
-    expect(cliWait.querySelector('[data-under]')).toBeNull()
-    expect(cliWait.querySelector('[data-wait-text]')!.textContent).toBe('not reported')
-    expect(cliWait.querySelector('[data-queued]')).toBeNull()
+    const waits = root.querySelector('[data-chart="autonomy-waits"]')!
+    const claudeWait = waits.querySelector('[data-row="claude-code"]')!
+    expect(claudeWait.querySelector<HTMLElement>('[data-part="under"]')!.style.flexGrow).toBe('56')
+    expect(claudeWait.querySelector<HTMLElement>('[data-part="over"]')!.style.flexGrow).toBe('24')
+    expect([...claudeWait.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['56 · 70%', '24 · 30%'])
+    expect(claudeWait.querySelector('[data-part="over"] [role="tooltip"]')!.textContent).toBe(waitHover(claude, 'over', label))
+    expect(claudeWait.querySelector('[data-total]')!.textContent).toBe('median wait 1 min 50 s')
+    expect(claudeWait.querySelector('small')!.textContent).toBe('80 answered waits · 9 queued')
+    const cliWait = waits.querySelector('[data-row="copilot-cli"]')!
+    expect(cliWait.querySelector('[data-part]')).toBeNull()
+    expect(cliWait.querySelector('[data-total]')!.textContent).toBe('not reported')
     dispose()
   })
 
@@ -209,13 +207,15 @@ describe('INS-11 · Work per instruction draws one bar per tool on a shared line
     const { card: root, dispose } = card()
     const line = root.querySelector('[data-trend="claude-code"]')!
     expect([...line.querySelectorAll('[data-point]')].map(point => point.getAttribute('data-point'))).toEqual([NOV_12, NOV_26, DEC_3].map(String))
-    expect([...line.querySelectorAll('[data-point] text')].map(text => text.textContent)).toEqual(['20', '32', '40'])
-    expect(line.querySelector('[data-point] title')!.textContent).toBe(trendHover(body.bins[0], 'week'))
-    expect(line.querySelector('svg')!.textContent).toContain('tool calls, median')
+    expect([...line.querySelectorAll('[data-point] [data-value]')].map(text => text.textContent)).toEqual(['20', '32', '40'])
+    expect(line.querySelector('[data-point] [role="tooltip"]')!.textContent).toBe(trendHover(body.bins[0], 'week'))
+    expect(line.querySelector<HTMLElement>('[data-point]')!.style.insetInlineStart).toBe('0.0%')
+    expect(line.querySelector<HTMLElement>(`[data-point="${DEC_3}"]`)!.style.insetBlockStart).toBe('0.0%')
+    expect(line.querySelector('polyline')!.getAttribute('points')).toBe('0.00,50.00 66.67,20.00 100.00,0.00')
     expect(root.querySelector('[data-trend="copilot-cli"] [data-no-trend]')!.textContent).toContain('Too few sessions per week to draw a trend')
-    expect(root.querySelector('[data-trend="copilot-cli"] svg')).toBeNull()
+    expect(root.querySelector('[data-trend="copilot-cli"] [data-point]')).toBeNull()
     // No log axis, hollow dots or "n=" labels on the marks.
-    for (const svg of root.querySelectorAll('svg')) expect(svg.textContent).not.toContain('n=')
+    for (const trend of root.querySelectorAll('[data-trend]')) expect(trend.textContent).not.toContain('n=')
     dispose()
   })
 
@@ -223,17 +223,17 @@ describe('INS-11 · Work per instruction draws one bar per tool on a shared line
     const p50s = [30, 31, 32, 33, 80, 34, 35, 36, 12, 37, 38, 39, 40, 41]
     const many = { ...body, bins: p50s.map((p50, i) => bin('claude-code', NOV_12 + i * WEEK, 6, p50)) }
     const { card: root, dispose } = card(many)
-    expect([...root.querySelectorAll('[data-trend="claude-code"] [data-point] text')].map(text => text.textContent))
+    expect([...root.querySelectorAll('[data-trend="claude-code"] [data-point] [data-value]')].map(text => text.textContent))
       .toEqual(['30', '80', '12', '41'])
     // Every bin keeps a dot with its hover, written or not.
-    expect(root.querySelectorAll('[data-trend="claude-code"] [data-point] title')).toHaveLength(14)
+    expect(root.querySelectorAll('[data-trend="claude-code"] [data-point] [role="tooltip"]')).toHaveLength(14)
     dispose()
   })
 
   it('names a tool under the evidence minimum in one line and lists unreported tools', () => {
     const { card: root, dispose } = card()
-    expect(root.querySelector('[data-run="copilot-vscode"]')).toBeNull()
-    expect(root.querySelector('[data-wait="copilot-vscode"]')).toBeNull()
+    expect(root.querySelector('[data-chart="autonomy-runs"] [data-row="copilot-vscode"]')).toBeNull()
+    expect(root.querySelector('[data-chart="autonomy-waits"] [data-row="copilot-vscode"]')).toBeNull()
     expect(root.querySelector('[data-trend="copilot-vscode"]')).toBeNull()
     expect(root.querySelector('[data-few]')!.textContent).toBe('copilot-vscode: 4 sessions, too few to compare.')
     expect(root.querySelector('[data-silent="codex-cli"]')!.textContent).toBe("codex-cli: not reported (aictl does not read this tool's prompts)")

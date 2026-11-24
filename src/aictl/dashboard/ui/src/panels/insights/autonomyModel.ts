@@ -5,6 +5,7 @@
 import { dayLabel, fmtDur, fmtNum, fmtShare } from '../../design/format'
 import { EVIDENCE } from './evidence'
 import type { BarRow } from './Bars'
+import type { StripChart, StripMark, StripRow } from './charts/PercentileStrip'
 import { count, NOT_REPORTED, plural, type Hero, type InsightBase, type Label } from './insightsModel'
 import { notSplitNote, repoParts, type RepoSegment } from './repoSplit'
 
@@ -92,11 +93,11 @@ export function runHover(tool: AutonomyTool, label: Label) {
     `${count(tool.p50_multi)}, 90th percentile ${count(tool.p90_multi)}, mean ${count(tool.mean_multi)} tool calls.`
   const all = `All ${plural(tool.sessions, 'session')}: median ${count(tool.p50_longest)}, 90th percentile ${count(tool.p90_longest)}, ` +
     `mean ${count(tool.mean_longest)} tool calls.`
-  const drawn = !run ? 'No bar: not reported.' : run.all
-    ? `Bar drawn from all sessions: fewer than ${fmtNum(MIN_MULTI)} sessions with 2 or more instructions.`
-    : `Bar drawn from sessions with 2 or more instructions (${fmtNum(MIN_MULTI)} or more needed).`
+  const drawn = !run ? 'No marks: not reported.' : run.all
+    ? `Drawn grey from all sessions: fewer than ${fmtNum(MIN_MULTI)} sessions with 2 or more instructions.`
+    : `Drawn from sessions with 2 or more instructions (${fmtNum(MIN_MULTI)} or more needed).`
   return `${name}: longest run of main-agent tool calls between two turns of a person, one value per session. ${multi} ${all} ` +
-    `Bar to the median, thin line on to the 90th percentile. ${drawn}`
+    `Dot: the median; ring: the 90th percentile. ${drawn}`
 }
 
 /** Tool calls per instruction, the average over the period; null with no instruction. */
@@ -239,4 +240,92 @@ export function waitRepoRows(body: AutonomyBody, label: Label): BarRow[] {
     return { key: tool.tool, label: name, sub: plural(tool.waits, 'answered wait'), parts,
       total: `${fmtNum(tool.waits)} · ${tool.over_5m == null ? NOT_REPORTED : fmtNum(tool.over_5m)} over 5 min` }
   })
+}
+
+// ─── The view: what each chart draws ───────────────────────────────────────────────────────────────────────────────
+
+/** The one line under the title: what is measured, in what unit, over what; or why nothing is drawn. */
+export function autonomyLine(body: AutonomyBody, label: Label): string {
+  if (!measuredTools(body).length) return autonomyFinding(body, undefined, label)
+  return 'Per session, the longest run of main-agent tool calls between two turns of a person (tool calls); per tool, the ' +
+    'answered waits for a person, split at 5 minutes.'
+}
+
+/** "median 25 · p90 110", "median 8 · p90 30, all sessions": the figures written at the end of a run strip row. */
+export function runLabel(tool: AutonomyTool) {
+  const run = runRange(tool)
+  if (!run) return NOT_REPORTED
+  return `median ${fmtNum(run.p50)} · p90 ${count(run.p90)}${run.all ? ', all sessions' : ''}`
+}
+
+/** The longest run per session, per tool: the median and 90th percentile on one axis, muted when drawn from all
+ * sessions (too few with 2 or more instructions). Every mark's hover holds both medians, the figures of the tool and the rule. */
+export function runStrip(body: AutonomyBody, label: Label): StripChart {
+  const rows = measuredTools(body).map((tool): StripRow => {
+    const run = runRange(tool)
+    const hover = `${runHover(tool, label)} ${figuresText(tool)}.${medianNote(body)}`
+    const marks: StripMark[] = !run ? [] : [
+      { key: 'median', shape: 'mid', label: 'median', value: run.p50, text: fmtNum(run.p50), hover: `Median: ${fmtNum(run.p50)} tool calls. ${hover}` },
+      ...(run.p90 == null ? [] : [{ key: 'p90', shape: 'high' as const, label: '90th percentile', value: run.p90, text: fmtNum(run.p90),
+        hover: `90th percentile: ${fmtNum(run.p90)} tool calls. ${hover}` }]),
+    ]
+    return { key: tool.tool, label: label(tool.tool), marks, text: runLabel(tool), muted: run?.all ?? false,
+      sub: `${plural(tool.sessions, 'session')} · ${fmtNum(tool.multi_sessions)} with 2+ instructions` }
+  })
+  const top = runTop(measuredTools(body))
+  return { name: 'autonomy-runs', title: 'Longest run of tool calls per session', rows, top, start: '0', end: `${fmtNum(top)} tool calls`,
+    axis: 'Position: tool calls in a row, one linear scale from 0. Sessions with 2 or more instructions; grey: all sessions.',
+    legend: [{ shape: 'mid', label: 'Median' }, { shape: 'high', label: '90th percentile' }] }
+}
+
+/** Per tool, its answered waits: a 100% bar split at 5 minutes, or (by repository) a bar of waits per repository on one
+ * scale. A tool with too few waits keeps its row, with no bar and the reason written. */
+export function waitRows(body: AutonomyBody, label: Label, mode: 'parts' | 'repo'): BarRow[] {
+  if (mode === 'repo') {
+    const split = waitRepoRows(body, label)
+    return measuredTools(body).filter(tool => tool.waits > 0).map(tool => split.find(row => row.key === tool.tool) ?? {
+      key: tool.tool, label: label(tool.tool), sub: plural(tool.waits, 'answered wait'), total: `${fmtNum(tool.waits)} waits`,
+      parts: [{ key: 'whole', label: 'answered waits', value: tool.waits, tone: 7, text: plural(tool.waits, 'wait'),
+        hover: `${label(tool.tool)}: ${plural(tool.waits, 'answered wait')}. Not split by repository in this answer.` }],
+    })
+  }
+  return measuredTools(body).map(tool => {
+    const split = waitSplit(tool)
+    const part = (key: 'under' | 'over', value: number, tone: number) => ({ key, value, tone,
+      label: key === 'under' ? 'within 5 minutes' : 'after more than 5 minutes',
+      text: `${fmtNum(value)} · ${fmtShare(value / tool.waits)}`, hover: waitHover(tool, key, label) })
+    return {
+      key: tool.tool, label: label(tool.tool),
+      sub: `${plural(tool.waits, 'answered wait')} · ${fmtNum(tool.queued)} queued`,
+      total: !split ? waitText(tool) : `median wait ${fmtDur(tool.p50_wait_s)}`,
+      parts: split ? [part('under', split.under, 2), part('over', split.over, 1)] : [],
+    }
+  })
+}
+
+/** One dot of a trend: its place (0 to 1 along the period, 0 to 1 up the scale), its value, whether it is written, its hover. */
+export type TrendPoint = { ts: number; x: number; y: number; value: number; written: boolean; hover: string }
+const MAX_WRITTEN = 12
+
+/** A tool's trend: the bins it may use, placed on the period from the first to the last, each with its hover. With more
+ * than 12 bins only the first, last, lowest and highest carry their value; every dot keeps its hover. */
+export function trendPoints(body: AutonomyBody, tool: string): { points: TrendPoint[]; top: number } {
+  const rows = trendBins(body, tool)
+  const top = Math.max(1, ...rows.map(row => row.p50_multi!))
+  const first = rows[0]?.bin_ts ?? 0, last = rows.at(-1)?.bin_ts ?? 0
+  const values = rows.map(row => row.p50_multi!)
+  const written = values.length <= MAX_WRITTEN ? new Set(values.map((_, i) => i))
+    : new Set([0, values.length - 1, values.indexOf(Math.min(...values)), values.indexOf(Math.max(...values))])
+  return { top, points: rows.map((row, i) => ({
+    ts: row.bin_ts, x: last > first ? (row.bin_ts - first) / (last - first) : 0.5, y: row.p50_multi! / top, value: row.p50_multi!,
+    written: written.has(i), hover: trendHover(row, body.bin_unit) + medianNote(body),
+  })) }
+}
+
+const TICKS = 6
+/** The bins named under a trend: every one up to 6, else 6 spread evenly with the first and the last. */
+export function trendTicks(points: readonly TrendPoint[]): TrendPoint[] {
+  if (points.length <= TICKS) return [...points]
+  const step = (points.length - 1) / (TICKS - 1)
+  return Array.from({ length: TICKS }, (_, i) => points[Math.round(i * step)])
 }

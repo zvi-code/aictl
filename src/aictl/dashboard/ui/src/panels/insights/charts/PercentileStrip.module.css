@@ -15,7 +15,7 @@
 .swatch { display: inline-block; inline-size: .75em; block-size: .75em; border-radius: var(--radius-sm); margin-inline-end: var(--space-2); vertical-align: middle; }
 .lane {
   position: relative; display: block; block-size: calc(var(--space-5) + var(--space-1)); min-inline-size: 0;
-  border-block-end: var(--border-size) solid var(--color-border-subtle);
+  margin-inline: var(--space-2); border-block-end: var(--border-size) solid var(--color-border-subtle);
 }
 .span { position: absolute; inset-block-start: calc(50% - 1px); block-size: 2px; background: var(--color-chart-1); }
 .mark { position: absolute; inset-block: 0; inline-size: 0; display: flex; align-items: center; justify-content: center; }
@@ -36,7 +36,7 @@
 .row[data-muted] .high .dot { border-color: var(--color-muted); }
 .text { font-variant-numeric: tabular-nums; color: var(--color-text); overflow-wrap: anywhere; }
 .scale { color: var(--color-muted); }
-.ends { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+.ends { display: flex; justify-content: space-between; margin-inline: var(--space-2); font-variant-numeric: tabular-nums; }
 @media (max-width: 40rem) {
   .row, .scale { grid-template-columns: minmax(0, 1fr) auto; }
   .lane, .ends { grid-column: 1 / -1; grid-row: 2; }

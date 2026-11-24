@@ -161,30 +161,32 @@ const autonomy = {
 } as unknown as AutonomyBody
 
 describe('INS-RW · Work per instruction split by repository', () => {
-  it('keeps the wait bar split at 5 minutes and adds a bar of the waits by repository; the run bar stays whole', () => {
+  it('coloured by repository, draws the waits per repository; the run strip stays whole', () => {
+    history.replaceState(null, '', '/?screen=insights&view=autonomy&by=repo')
     const { host, dispose } = mount(() => <WorkPerInstruction {...props(ready(autonomy))} />)
     const box = host.querySelector('#insight-autonomy')!
     expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect(box.querySelector('[data-wait="claude-code"] [data-under]')).not.toBeNull()
-    const row = box.querySelector('[data-chart="autonomy-waits-repos"] [data-row="claude-code"]')!
+    const row = box.querySelector('[data-chart="autonomy-waits"] [data-row="claude-code"]')!
     expect([...row.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1', String(OTHER)])
     expect([...row.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['50 waits', '20 waits', '10 waits'])
     expect(row.querySelector('[data-total]')!.textContent).toBe('80 · 24 over 5 min')
     expect(row.querySelector('[data-part="repo:/src/docs"] [role="tooltip"]')!.textContent).toBe('claude-code, answered waits — docs ' +
       '(/src/docs): 20 waits · 25% of this bar. 9 of them after more than 5 minutes. claude-code: 80 answered waits in all, 24 after ' +
       'more than 5 minutes. A wait runs from the agent\'s stop to the person\'s next prompt.')
-    expect(box.querySelector('[data-run="claude-code"] [data-median] [role="tooltip"]')!.textContent)
+    expect(box.querySelector('[data-chart="autonomy-runs"] [data-row="claude-code"] [data-mark="median"] [role="tooltip"]')!.textContent)
       .toMatch(/Not split by repository: the median of a whole is not the sum of the medians of its parts\.$/)
     dispose()
   })
 
-  it('draws no repository bar and no legend without a split', () => {
+  it('draws the wait bar split at 5 minutes, no switch and no legend, without a split', () => {
+    history.replaceState(null, '', '/?screen=insights&view=autonomy&by=repo')
     const { host, dispose } = mount(() => <WorkPerInstruction {...props(ready(unsplit(autonomy)))} />)
     const box = host.querySelector('#insight-autonomy')!
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
-    expect(box.querySelector('[data-chart="autonomy-waits-repos"]')).toBeNull()
-    expect(box.querySelectorAll('[data-wait="claude-code"] [data-under], [data-wait="claude-code"] [data-over]').length).toBe(2)
-    expect(box.querySelector('[data-run="claude-code"] [data-median] [role="tooltip"]')!.textContent).not.toContain('Not split')
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect([...box.querySelectorAll('[data-chart="autonomy-waits"] [data-row="claude-code"] [data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['under', 'over'])
+    expect(box.querySelector('[data-chart="autonomy-runs"] [data-mark="median"] [role="tooltip"]')!.textContent).not.toContain('Not split')
     dispose()
   })
 })

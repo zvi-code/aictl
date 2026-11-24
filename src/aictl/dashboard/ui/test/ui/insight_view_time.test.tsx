@@ -12,6 +12,8 @@ import { countedText, programStrip, timeLine } from '../../src/panels/insights/t
 import Durations from '../../src/panels/insights/Durations'
 import { durationLine, sessionStrip, sessionTimeRows, toolStrip } from '../../src/panels/insights/durationsModel'
 import type { DurationBody } from '../../src/panels/insights/workModel'
+import WorkPerInstruction from '../../src/panels/insights/WorkPerInstruction'
+import { runStrip, trendPoints, trendTicks, waitRows, type AutonomyBody } from '../../src/panels/insights/autonomyModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -346,6 +348,92 @@ describe('INS-VIEW · Where session time goes', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(parts(box.querySelector('[data-chart="work"] [data-row="alpha"]')!)).toEqual(['working', 'waiting'])
     expect(parts(box.querySelector('[data-chart="tools"] [data-row="make"]')!)).toEqual(['time'])
+    dispose()
+  })
+})
+
+// ─── Work per instruction ───────────────────────────────────────────────────────────────────────────────────────────
+const DAY = 86_400
+const blank = { p50_longest: null, p90_longest: null, mean_longest: null, p50_multi: null, p90_multi: null, mean_multi: null,
+  turns_answered: 0, waits: 0, queued: 0, p50_wait_s: null, over_5m: null, over_5m_share: null }
+const tally = { active: 0, prompted: 0, scripted: 0, store_only: 0, start_unread: 0, no_calls: 0, unread: 0, unread_sessions: 0,
+  instructions: 0, calls: 0, delegated: 0, one_instruction: 0, resumed: 0, no_stop: 0, sessions: 0, multi_sessions: 0 }
+const runTool = (tool: string, sessions: number, multi: number, p50: number, p90: number, waits: number, over: number) => ({
+  ...tally, ...blank, tool, reported: true, sessions, multi_sessions: multi, instructions: sessions * 3, calls: sessions * 40,
+  one_instruction: sessions - multi, p50_longest: p50 - 2, p90_longest: p90 - 10, mean_longest: p50, p50_multi: p50, p90_multi: p90,
+  mean_multi: p50 + 5, turns_answered: waits + 4, waits, queued: 3, p50_wait_s: 90, over_5m: over, over_5m_share: over / waits,
+  repos: split([['/w/alpha', { waits: waits - 10, over_5m: over - 2 }], ['/w/beta', { waits: 10, over_5m: 2 }]]),
+})
+const trendBin = (tool: string, day: number, p50: number) => ({ ...blank, tool, bin_ts: 1_700_006_400 + day * DAY, sessions: 9,
+  multi_sessions: 6, p50_longest: p50, p90_longest: p50 * 2, p50_multi: p50, p90_multi: p50 * 2 })
+const autonomy = {
+  ...base, card: 'autonomy', view: 'insights.work_per_instruction', query: query('insights.work_per_instruction'), repo_order: order,
+  repo_others: others,
+  tools: [runTool('tool-a', 40, 20, 30, 120, 60, 15), runTool('tool-b', 25, 12, 60, 90, 20, 10)],
+  bins: [trendBin('tool-a', 0, 20), trendBin('tool-a', 1, 40), trendBin('tool-a', 3, 30)],
+  bin_unit: 'day', prompts_from: null,
+  summary: { lead: 'tool-a', sessions: 65, multi_sessions: 32, one_instruction: 33, not_reported: [] }, sessions: [],
+} as unknown as AutonomyBody
+
+describe('INS-VIEW · Work per instruction', () => {
+  it('says in one line what is measured, with no headline number', () => {
+    const { host, dispose } = mount(() => <WorkPerInstruction {...props(autonomy)} />)
+    const box = host.querySelector('#insight-autonomy')!
+    expect(box.querySelector('[data-finding]')!.textContent).toBe('Per session, the longest run of main-agent tool calls between two ' +
+      'turns of a person (tool calls); per tool, the answered waits for a person, split at 5 minutes.')
+    expect(box.querySelector('[data-hero]')).toBeNull()
+    dispose()
+  })
+
+  it('draws the runs on one strip, the waits as 100% bars and the trend with its bins named', () => {
+    const { host, dispose } = mount(() => <WorkPerInstruction {...props(autonomy)} />)
+    const box = host.querySelector('#insight-autonomy')!
+    const strip = box.querySelector('[data-chart="autonomy-runs"]')
+    expect(rows(strip)).toEqual(['tool-a', 'tool-b'])
+    expect(runStrip(autonomy, label).top).toBe(120)
+    const b = strip!.querySelector('[data-row="tool-b"]')!
+    expect(b.querySelector<HTMLElement>('[data-mark="median"]')!.style.insetInlineStart).toBe('50%')
+    expect(b.querySelector('[data-text]')!.textContent).toBe('median 60 · p90 90')
+    expect(tip(b, '[data-mark="p90"]')).toMatch(/^90th percentile: 90 tool calls\. tool-b: longest run of main-agent tool calls/)
+    expect(tip(b, '[data-mark="p90"]')).toContain('13.3 tool calls per instruction · 75 instructions in 25 sessions')
+    const waits = box.querySelector('[data-chart="autonomy-waits"]')
+    expect(rows(waits)).toEqual(['tool-a', 'tool-b'])
+    const a = waits!.querySelector('[data-row="tool-a"]')!
+    expect([parts(a), written(a), a.querySelector('[data-total]')!.textContent]).toEqual([['under', 'over'], ['45 · 75%', '15 · 25%'],
+      'median wait 1 min 30 s'])
+    expect(tip(a, '[data-part="under"]')).toMatch(/^tool-a: 45 of 60 answered waits \(75%\) ended within 5 minutes\./)
+    const trend = box.querySelector('[data-trend="tool-a"]')!
+    expect([...trend.querySelectorAll('[data-point] [data-value]')].map(value => value.textContent)).toEqual(['20', '40', '30'])
+    expect(trendPoints(autonomy, 'tool-a').points.map(point => [point.x, point.y])).toEqual([[0, 0.5], [1 / 3, 1], [1, 0.75]])
+    expect(tip(trend, `[data-point="${1_700_006_400 + DAY}"]`)).toMatch(/^Nov 16 \(UTC day\): median 40, 90th percentile 80 tool calls/)
+    expect(trendTicks(trendPoints(autonomy, 'tool-a').points)).toHaveLength(3)
+    expect(box.querySelector('[data-trend="tool-b"] [data-no-trend]')).not.toBeNull()
+    dispose()
+  })
+
+  it('switches the waits to the repositories and back; the run strip stays whole', () => {
+    const { host, dispose } = mount(() => <WorkPerInstruction {...props(autonomy)} />)
+    const box = host.querySelector('#insight-autonomy')!
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(colourBy(box, 'repo')).toContain('by=repo')
+    expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
+    const a = box.querySelector('[data-chart="autonomy-waits"] [data-row="tool-a"]')!
+    expect([...a.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1'])
+    expect(a.querySelector('[data-total]')!.textContent).toBe('60 · 15 over 5 min')
+    expect(box.querySelectorAll('[data-chart="autonomy-runs"] [data-mark]').length).toBe(4)
+    colourBy(box, 'parts')
+    expect(parts(box.querySelector('[data-chart="autonomy-waits"] [data-row="tool-a"]')!)).toEqual(['under', 'over'])
+    dispose()
+  })
+
+  it('draws without repos, and keeps a tool the answer did not split as one grey part', () => {
+    const half = { ...autonomy, tools: [autonomy.tools[0], { ...autonomy.tools[1], repos: undefined }] } as AutonomyBody
+    expect(waitRows(half, label, 'repo')[1].parts.map(part => [part.key, part.tone])).toEqual([['whole', 7]])
+    history.replaceState(null, '', '/?screen=insights&view=autonomy&by=repo')
+    const { host, dispose } = mount(() => <WorkPerInstruction {...props(unsplit(autonomy))} />)
+    const box = host.querySelector('#insight-autonomy')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(parts(box.querySelector('[data-chart="autonomy-waits"] [data-row="tool-a"]')!)).toEqual(['under', 'over'])
     dispose()
   })
 })

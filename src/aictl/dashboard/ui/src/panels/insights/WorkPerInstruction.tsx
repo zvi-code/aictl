@@ -1,165 +1,93 @@
 import { For, Show, untrack } from 'solid-js'
-import type { JSX } from '@solidjs/web'
 import { fmtDur, fmtNum, fmtShare, stamp } from '../../design/format'
 import type { Field } from '../../ui/tableModel'
 import { Tooltip } from '../../ui/Tooltip'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  autonomyFinding, autonomyHero, binDay, canTrend, figuresText, leadTool, measuredTools, MIN_MULTI, MIN_TREND_BINS,
-  medianNote, MIN_TREND_SESSIONS, MIN_WAITS, queuedText, runHover, runRange, runText, runTop, silence, trendBins, trendHover,
-  waitHover, waitRepoRows, waitSplit, waitText,
-  type AutonomyBody, type AutonomyTool,
+  autonomyLine, binDay, canTrend, MIN_MULTI, MIN_TREND_BINS, MIN_TREND_SESSIONS, MIN_WAITS, measuredTools, runStrip, silence, trendPoints, trendTicks,
+  waitRows, type AutonomyBody, type AutonomyTool,
 } from './autonomyModel'
 import { Bars } from './Bars'
-import { NOT_REPORTED, plural, toolLabel, type Label } from './insightsModel'
+import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { PercentileStrip } from './charts/PercentileStrip'
+import { NOT_REPORTED, toolLabel, type Label } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
 import { hasOther } from './repoSplit'
 import base from './Insights.module.css'
 import styles from './WorkPerInstruction.module.css'
 
-const pct = (value: number, top: number) => `${(Math.max(0, Math.min(1, value / top)) * 100).toFixed(1)}%`
+const pct = (share: number) => `${(Math.max(0, Math.min(1, share)) * 100).toFixed(1)}%`
 
-/** One mark of an HTML bar: its value written on it (visually hidden when the mark is too narrow), its detail on hover. */
-function Mark(props: { class: string; style?: JSX.CSSProperties; text: string; hover: string; wide?: boolean; data: string }) {
-  return <span class={`${props.class} ${styles.mark}`} style={props.style} {...{ [`data-${props.data}`]: '' }}>
-    <Tooltip label={props.text} text={props.hover} class={styles.hit} onClick={() => {}}>
-      <span class={props.wide === false ? styles.clip : undefined}>{props.text}</span>
-    </Tooltip>
-  </span>
-}
-
-/** One tool on the shared linear axis: a bar to the median longest run, a thin line on to the 90th percentile. */
-function RunRow(props: { tool: AutonomyTool; top: number; label: Label; note: string }) {
-  const run = () => runRange(props.tool)
-  return <li class={base.barRow} data-run={props.tool.tool}>
-    <span class={base.barName}>{props.label(props.tool.tool)}
-      <small>{plural(props.tool.sessions, 'session')} · {fmtNum(props.tool.multi_sessions)} with 2 or more instructions</small></span>
-    <span class={styles.figures}>
-      <Show when={run()} fallback={<span class={styles.text}>{NOT_REPORTED}</span>}>{range => <>
-        <span class={styles.track} role="group" aria-label={`${props.label(props.tool.tool)}: ${runText(props.tool)}`}>
-          <Mark class={range().all ? styles.runAll : styles.run} style={{ 'inline-size': pct(range().p50, props.top) }} data="median"
-            wide={range().p50 / props.top >= 0.12} text={fmtNum(range().p50)} hover={runHover(props.tool, props.label) + props.note} />
-          <Show when={range().p90 != null && range().p90! > range().p50}>
-            <Mark class={range().all ? styles.tailAll : styles.tail} data="p90" wide={false}
-              style={{ 'inset-inline-start': pct(range().p50, props.top), 'inline-size': pct(range().p90! - range().p50, props.top) }}
-              text={`90th percentile ${fmtNum(range().p90)}`} hover={runHover(props.tool, props.label) + props.note} />
-          </Show>
-        </span>
-        <span class={styles.text} data-run-text>{runText(props.tool)}</span>
-      </>}</Show>
-      <small data-figures>{figuresText(props.tool)}</small>
-    </span>
-  </li>
-}
-
-/** One tool's answered waits, split at 5 minutes, with the median wait and the queued instructions written out. */
-function WaitRow(props: { tool: AutonomyTool; label: Label }) {
-  const split = () => waitSplit(props.tool)
-  return <li class={base.barRow} data-wait={props.tool.tool}>
-    <span class={base.barName}>{props.label(props.tool.tool)}
-      <small>{plural(props.tool.waits, 'answered wait')}</small></span>
-    <span class={styles.figures}>
-      <Show when={split()}>{parts => <span class={styles.split} role="group" aria-label={waitText(props.tool)}>
-        <Show when={parts().under}><Mark class={styles.quick} style={{ 'flex-grow': parts().under }} data="under"
-          wide={parts().under / props.tool.waits >= 0.15} text={`${fmtNum(parts().under)} · ${fmtShare(parts().under / props.tool.waits)}`}
-          hover={waitHover(props.tool, 'under', props.label)} /></Show>
-        <Show when={parts().over}><Mark class={styles.slow} style={{ 'flex-grow': parts().over }} data="over"
-          wide={parts().over / props.tool.waits >= 0.15} text={`${fmtNum(parts().over)} · ${fmtShare(parts().over / props.tool.waits)}`}
-          hover={waitHover(props.tool, 'over', props.label)} /></Show>
-      </span>}</Show>
-      <span class={styles.text} data-wait-text>{waitText(props.tool)}</span>
-      <Show when={queuedText(props.tool)}>{text => <small data-queued>{text()}</small>}</Show>
-    </span>
-  </li>
-}
-
-const TW = 360, TH = 66, TTOP = 16, TBOTTOM = 14, TSIDE = 14
-const MAX_LABELS = 12
-
-/** A tool's median longest run per bin, from the bins with enough sessions only; every dot carries its value. */
+/** One tool's median longest run per bin, from the bins with enough sessions only, across the full width: a line through
+ * every bin, a dot with its hover on each, the value written above the dots the model marks, the bins named under it. */
 function TrendRow(props: { body: AutonomyBody; tool: AutonomyTool; label: Label }) {
   const unit = () => props.body.bin_unit ?? 'bin'
-  const rows = () => trendBins(props.body, props.tool.tool)
-  const top = () => Math.max(1, ...rows().map(row => row.p50_multi!))
-  const first = () => rows()[0].bin_ts, last = () => rows()[rows().length - 1].bin_ts
-  const x = (ts: number) => TSIDE + (last() > first() ? (ts - first()) / (last() - first()) : 0.5) * (TW - 2 * TSIDE)
-  const y = (value: number) => TTOP + (1 - value / top()) * (TH - TTOP - TBOTTOM)
-  // With many bins, the first, last, lowest and highest carry the dots and values; the line still passes every bin.
-  const marked = () => {
-    const values = rows().map(row => row.p50_multi!)
-    if (values.length <= MAX_LABELS) return new Set(values.map((_, i) => i))
-    return new Set([0, values.length - 1, values.indexOf(Math.min(...values)), values.indexOf(Math.max(...values))])
-  }
+  const trend = () => trendPoints(props.body, props.tool.tool)
   return <li class={styles.trendRow} data-trend={props.tool.tool}>
     <span class={base.barName}>{props.label(props.tool.tool)}</span>
     <Show when={canTrend(props.body, props.tool.tool)} fallback={<span class={base.note} data-no-trend>
       Too few sessions per {unit()} to draw a trend ({MIN_TREND_BINS} {unit()}s with {MIN_TREND_SESSIONS} or more sessions of 2 or more
       {' '}instructions are needed).</span>}>
-      <svg class={base.chart} viewBox={`0 0 ${TW} ${TH}`} role="img"
-        aria-label={`${props.label(props.tool.tool)}: median longest run of tool calls per ${unit()}`}>
-        <text class={base.muted} x={0} y={9}>tool calls, median</text>
-        <line class={base.axis} x1={TSIDE} x2={TW - TSIDE} y1={y(0)} y2={y(0)} />
-        <polyline class={styles.line} points={rows().map(row => `${x(row.bin_ts).toFixed(1)},${y(row.p50_multi!).toFixed(1)}`).join(' ')} />
-        <For each={rows()}>{(row, i) => <g data-point={row.bin_ts}>
-          <circle class={styles.dot} cx={x(row.bin_ts)} cy={y(row.p50_multi!)} r={marked().has(i()) ? 3 : 2}>
-            <title>{trendHover(row, props.body.bin_unit) + medianNote(props.body)}</title>
-          </circle>
-          <Show when={marked().has(i())}>
-            <text x={x(row.bin_ts)} y={y(row.p50_multi!) - 6} text-anchor="middle">{fmtNum(row.p50_multi)}</text>
-          </Show>
-        </g>}</For>
-        <text class={base.muted} x={TSIDE} y={TH - 2}>{binDay(first())}</text>
-        <text class={base.muted} x={TW - TSIDE} y={TH - 2} text-anchor="end">{binDay(last())}</text>
-      </svg>
+      <div class={styles.trend} role="group" aria-label={`${props.label(props.tool.tool)}: median longest run of tool calls per ${unit()}`}>
+        <span class={styles.yTop} aria-hidden="true">{fmtNum(trend().top)}</span>
+        <span class={styles.yZero} aria-hidden="true">0</span>
+        <div class={styles.plot}>
+          <svg class={styles.lineSvg} viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+            <polyline class={styles.line} vector-effect="non-scaling-stroke"
+              points={trend().points.map(point => `${(point.x * 100).toFixed(2)},${((1 - point.y) * 100).toFixed(2)}`).join(' ')} />
+          </svg>
+          <For each={trend().points}>{point => <span class={styles.point} data-point={point.ts}
+            style={{ 'inset-inline-start': pct(point.x), 'inset-block-start': pct(1 - point.y) }}>
+            <Show when={point.written}><span class={styles.value} data-value>{fmtNum(point.value)}</span></Show>
+            <Tooltip class={styles.hit} label={`${binDay(point.ts)}: median ${fmtNum(point.value)} tool calls`} text={point.hover}
+              onClick={() => undefined}><span class={point.written ? styles.dot : styles.smallDot} /></Tooltip>
+          </span>}</For>
+        </div>
+        <div class={styles.ticks} aria-hidden="true">
+          <For each={trendTicks(trend().points)}>{point => <span style={{ 'inset-inline-start': pct(point.x) }}>{binDay(point.ts)}</span>}</For>
+        </div>
+      </div>
     </Show>
   </li>
 }
 
-function Visual(props: { body: AutonomyBody; label: Label }) {
+function Visual(props: { body: AutonomyBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
   const measured = () => measuredTools(props.body)
-  const top = () => runTop(measured())
   const silent = () => props.body.tools.filter(tool => !tool.sessions)
   const start = () => Math.max(props.body.range.since, props.body.prompts_from ?? 0)
+  const split = () => !!props.body.repo_order?.length && props.body.tools.some(tool => tool.repos?.length)
+  const mode = (): ColourMode => split() && props.mode === 'repo' ? 'repo' : 'parts'
+  const unit = () => props.body.bin_unit ?? 'bin'
   return <>
     <Show when={props.body.prompts_from != null && props.body.prompts_from > props.body.range.since}>
       <p class={base.note}>Prompts are stored from {stamp(props.body.prompts_from, true)}; no session before that can be read.</p>
     </Show>
     <Show when={measured().length}>
-      <RepoLegend split={props.body} other={hasOther(props.body.tools)} />
-      <h3 class={base.subhead}>Longest run of tool calls between a person's turns, per session (tool calls)</h3>
-      <ol class={base.bars} aria-label="Longest run of tool calls between a person's turns, per tool">
-        <For each={measured()}>{tool => <RunRow tool={tool} top={top()} label={props.label} note={medianNote(props.body)} />}</For>
-      </ol>
-      <div class={styles.scaleRow} aria-hidden="true" data-run-axis><span />
-        <span class={styles.scale}><span>0</span><span>{fmtNum(top())} tool calls</span></span></div>
-      <ul class={base.legend}>
-        <li><span class={`${base.swatch} ${styles.run}`} />Median, sessions with 2 or more instructions</li>
-        <li><span class={`${base.swatch} ${styles.runAll}`} />Median, all sessions (fewer than {MIN_MULTI} with 2 or more instructions)</li>
-        <li><span class={`${base.swatch} ${styles.tailSwatch}`} />On to the 90th percentile</li>
-      </ul>
-      <p class={base.note}>One linear scale for every tool, 0 to {fmtNum(top())} tool calls.</p>
-      <h3 class={base.subhead}>Answered waits per tool: time from the agent's stop to the person's next prompt (waits; share)</h3>
-      <ul class={base.legend}>
-        <li><span class={`${base.swatch} ${styles.quick}`} />Answered within 5 minutes</li>
-        <li><span class={`${base.swatch} ${styles.slow}`} />Answered after more than 5 minutes</li>
-      </ul>
-      <ol class={base.bars} aria-label="Answered waits split at 5 minutes, per tool">
-        <For each={measured()}>{tool => <WaitRow tool={tool} label={props.label} />}</For>
-      </ol>
-      <Bars name="autonomy-waits-repos" title="Answered waits per tool, by repository (waits)"
-        axis="Length: answered waits, one linear scale for every tool from 0; a segment per repository. Beside it: all waits · those over 5 minutes."
-        rows={waitRepoRows(props.body, props.label)} />
-      <h3 class={base.subhead}>Median longest run per {props.body.bin_unit ?? 'bin'} (tool calls; sessions with 2 or more
-        {' '}instructions; {props.body.bin_unit ?? 'bin'}s with {MIN_TREND_SESSIONS} or more such sessions)</h3>
-      <ol class={base.bars} aria-label={`Median longest run of tool calls per ${props.body.bin_unit ?? 'bin'}, per tool`}>
-        <For each={measured()}>{tool => <TrendRow body={props.body} tool={tool} label={props.label} />}</For>
-      </ol>
-      <Show when={start() > 0}><p class={base.note}>From {stamp(start(), true)}.</p></Show>
+      <div class={styles.grid}>
+        <PercentileStrip chart={runStrip(props.body, props.label)} />
+        <div class={styles.waits}>
+          <ColourBy parts="Answer time" value={mode()} onChange={props.setMode} split={split()} />
+          <Show when={mode() === 'repo'}><RepoLegend split={props.body} other={hasOther(props.body.tools)} /></Show>
+          <Bars name="autonomy-waits" title="Answered waits per tool" scale={mode() === 'repo' ? 'shared' : 'whole'}
+            legend={mode() === 'repo' ? undefined : [{ label: 'Within 5 minutes', tone: 2 }, { label: 'After more than 5 minutes', tone: 1 }]}
+            axis={mode() === 'repo' ? 'Length: answered waits, one linear scale from 0; a segment per repository.'
+              : 'Each bar: the tool\'s answered waits (100%). Beside it: the median wait.'}
+            rows={waitRows(props.body, props.label, mode())} />
+        </div>
+        <section class={styles.wide} aria-labelledby="autonomy-trend-title">
+          <h3 class={base.subhead} id="autonomy-trend-title">Median longest run per {unit()} (tool calls)</h3>
+          <p class={base.note}>Sessions with 2 or more instructions, in the {unit()} of their first instruction; a {unit()} is drawn
+            {' '}with {MIN_TREND_SESSIONS} or more such sessions. Each tool on its own scale from 0.</p>
+          <ol class={styles.trends} aria-label={`Median longest run of tool calls per ${unit()}, per tool`}>
+            <For each={measured()}>{tool => <TrendRow body={props.body} tool={tool} label={props.label} />}</For>
+          </ol>
+          <Show when={start() > 0}><p class={base.note}>From {stamp(start(), true)}.</p></Show>
+        </section>
+      </div>
     </Show>
     <For each={silent()}>{tool => <p class={styles.silent} data-silent={tool.tool}>{props.label(tool.tool)}: {silence(tool)}</p>}</For>
   </>
 }
-
 
 type Row = Record<string, unknown>
 
@@ -172,10 +100,10 @@ function figure(id: string, label: string, format: (value: number) => string): F
 export default function WorkPerInstruction(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const [mode, setMode] = useColourBy()
   return <InsightCard<AutonomyBody> {...props} card="autonomy" tab="flow"
-    hero={body => autonomyHero(body, leadTool(body), label)}
-    finding={body => autonomyFinding(body, leadTool(body), label)}
-    visual={body => <Visual body={body} label={label} />}
+    finding={body => autonomyLine(body, label)}
+    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} />}
     note={'A person\'s turn is a prompt of the main agent, or the answer to a question the agent asked: a call named ask_user, ' +
       'askuser, ask_question, askuserquestion or vscode_askquestions (a fixed list; ask tools served by an MCP server are ordinary ' +
       'calls). An answer starts a new run but is not an instruction. Session-control commands (/compact, /autocompact, /model, ' +
@@ -202,7 +130,9 @@ export default function WorkPerInstruction(props: CardProps) {
       `answered turns, and only over ${MIN_WAITS} or more waits. Tools whose prompts aictl does not read (Codex CLI, Cursor) ` +
       'are not reported; Copilot in Visual Studio and JetBrains is not ' +
       'read. Prompts have their own retention: no session before the oldest stored prompt can be read. Bins are UTC days up to ' +
-      '14 days, weeks up to 180 days, months beyond.'}
+      '14 days, weeks up to 180 days, months beyond. The run strip draws the median and 90th percentile of sessions with 2 or ' +
+      `more instructions, or, with fewer than ${MIN_MULTI} of them, of all sessions (grey). Medians and percentiles are not split ` +
+      'by repository; "Colour by: Repository" splits the answered waits only.'}
     table={{
       label: 'Work per instruction by tool',
       rows: body => body.tools.map((row): Row => {
