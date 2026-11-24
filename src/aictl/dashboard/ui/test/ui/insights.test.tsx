@@ -315,8 +315,8 @@ describe('INS-01 · Each card states its finding from the numbers of its own res
     // Rereads: bytes not reported stays not reported.
     const reads = card(host, 'rereads').querySelector('[data-chart="reread-reads"] [data-row="copilot-cli"]')!
     expect([...reads.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['58', '42'])
-    expect(reads.querySelector('[data-total]')!.textContent).toBe('42 of 100 again · 42%')
-    expect(reads.textContent).toContain('not reported returned again')
+    expect(reads.querySelector('[data-total]')!.textContent).toBe('42 again · 42%')
+    expect(card(host, 'rereads').querySelector('[data-chart="reread-bytes"] [data-total]')!.textContent).toBe('not reported')
     expect(reads.querySelector('[data-part="again"] [role="tooltip"]')!.textContent).toBe('copilot-cli, read of a file the same ' +
       'agent had already read: 42 reads, 42% of 100 reads with a recorded path over 58 files; not reported returned again.')
     expect(card(host, 'rereads').querySelector('[data-chart="reread-files"] [data-total]')!.textContent).toBe('3 of 58 files')

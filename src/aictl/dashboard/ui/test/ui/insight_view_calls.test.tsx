@@ -6,9 +6,10 @@ import { flush } from 'solid-js'
 import type { JSX } from '@solidjs/web'
 import { beforeEach, describe, expect, it } from 'vitest'
 import AfterFailure from '../../src/panels/insights/AfterFailure'
+import Rereads from '../../src/panels/insights/Rereads'
 import { readColourBy } from '../../src/panels/insights/charts/ColourBy'
 import type { CardProps } from '../../src/panels/insights/InsightCard'
-import type { FailureBody } from '../../src/panels/insights/insightsModel'
+import type { FailureBody, RereadBody } from '../../src/panels/insights/insightsModel'
 import { notSplitNote, OTHER, OTHER_REPOS, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -186,6 +187,81 @@ describe('INS-V-C · After a failure', () => {
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(rows(box, 'failure-next')).toEqual(['all', 'claude-code', 'codex'])
     expect(parts(box.querySelector('[data-chart="failure-calls"] [data-row="claude-code"]')!)).toEqual(['runs', 'other'])
+    dispose()
+  })
+})
+
+// ─── Repeated file reads ─────────────────────────────────────────────────────────────────────────────────────────────
+const readWhole = { reads: 1000, repeat_reads: 400, files: 300, files_5plus: 20, repeat_bytes: 4_000_000 }
+const rereads = {
+  ...base, card: 'rereads', repo_order: order, repo_others: others, sessions: [],
+  tools: [{ tool: 'claude-code', ...readWhole, repeat_share: 0.4, most_reads: 30, unmatched: 0,
+    repos: [seg('/src/app', { reads: 700, repeat_reads: 300, files: 200, files_5plus: 15, repeat_bytes: 3_000_000 }, readWhole),
+      seg('/src/docs', { reads: 200, repeat_reads: 60, files: 70, files_5plus: 4, repeat_bytes: 600_000 }, readWhole),
+      seg('', { reads: 100, repeat_reads: 40, files: 30, files_5plus: 1, repeat_bytes: 400_000 }, readWhole)] },
+  { tool: 'copilot-cli', reads: 200, repeat_reads: 0, repeat_share: 0, files: 150, files_5plus: 0, most_reads: 1, repeat_bytes: null, unmatched: 7 }],
+  summary: { reads: 1200, repeat_reads: 400, repeat_share: 1 / 3, files_5plus: 20, repeat_bytes: 4_000_000, unmatched: 7 },
+} as unknown as RereadBody
+
+describe('INS-V-C · Repeated file reads', () => {
+  it('states what is measured and leads with the reads of a file already read, of all reads', () => {
+    const { box, dispose } = draw(Rereads, 'rereads', rereads)
+    expect(finding(box)).toBe('File reads with a recorded path, per tool; read again: a file the same session and agent had already read in the period.')
+    expect(box.querySelector('[data-hero]')!.textContent).toBe('400reads of a file the same agent had already read, of 1,200 file reads with a recorded path (33%)')
+    expect(box.querySelector('[data-unmatched]')!.textContent).toBe('7 reads had no recorded path and are not compared.')
+    expect(box.querySelector('[data-totals] p')!.textContent).toMatch(/^33% of file reads \(400 of 1,200\)/)
+    dispose()
+  })
+
+  it('draws each tool\'s reads as 100%, first read and read again, every tool first', () => {
+    const { box, dispose } = draw(Rereads, 'rereads', rereads)
+    expect(rows(box, 'reread-reads')).toEqual(['all', 'claude-code', 'copilot-cli'])
+    const all = box.querySelector('[data-chart="reread-reads"] [data-row="all"]')!
+    expect([parts(all), written(all)]).toEqual([['first', 'again'], ['800', '400']])
+    expect(all.querySelector('[data-total]')!.textContent).toBe('400 again · 33%')
+    expect(tip(all, 'again')).toBe('All tools, read of a file the same agent had already read: 400 reads, 33% of 1,200 reads with a recorded path; ' +
+      '4 MB returned again.')
+    const tool = box.querySelector('[data-chart="reread-reads"] [data-row="claude-code"]')!
+    expect(tip(tool, 'first')).toBe('claude-code, first read of a file by its agent: 600 reads, 60% of 1,000 reads with a recorded path over 300 files.')
+    // A tool with no read again has no bytes bar.
+    expect(rows(box, 'reread-bytes')).toEqual(['claude-code'])
+    const bytes = box.querySelector('[data-chart="reread-bytes"] [data-row="claude-code"]')!
+    expect(tip(bytes, 'bytes')).toBe('claude-code: 4 MB returned by 400 reads of a file the same agent had already read, each at the average ' +
+      'result size of reads of that file.')
+    const files = box.querySelector('[data-chart="reread-files"] [data-row="claude-code"]')!
+    expect(files.querySelector('[data-total]')!.textContent).toBe('20 of 300 files')
+    expect(tip(files, 'files')).toBe('claude-code: 20 files read 5 times or more by one agent, of 300 files read; the most reads of one file: 30.')
+    dispose()
+  })
+
+  it('switches to reads and reads again by repository, and splits the bytes and the files', () => {
+    const { box, dispose, navigated } = draw(Rereads, 'rereads', rereads)
+    colourBy(box, 'Repository')
+    expect(navigated).toEqual([{ by: 'repo' }])
+    expect(box.querySelector('[data-chart="reread-reads"]')).toBeNull()
+    expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
+    expect(rows(box, 'reread-reads-repos')).toEqual(['claude-code:reads', 'claude-code:again'])
+    const reads = box.querySelector('[data-chart="reread-reads-repos"] [data-row="claude-code:reads"]')!
+    expect([repos(reads), written(reads)]).toEqual([['0', '1', OTHER_TEXT], ['700 reads', '200 reads', '']])
+    expect(tip(reads, 'repo:/src/app')).toBe('claude-code, file reads — app (/src/app): 700 reads · 70% of this bar. First reads 400, ' +
+      'read again 300, over 200 files; 3 MB returned again. claude-code: 1,000 reads with a recorded path over 300 files, 400 of them ' +
+      'of a file the same agent had already read (40%).')
+    const bytes = box.querySelector('[data-chart="reread-bytes"] [data-row="claude-code"]')!
+    expect(repos(bytes)).toEqual(['0', '1', OTHER_TEXT])
+    expect(tip(bytes, 'repo:/src/docs')).toMatch(/^claude-code, bytes returned again — docs \(\/src\/docs\): 600 KB · 15% of this bar\. 60 reads again in this repository\./)
+    const files = box.querySelector('[data-chart="reread-files"] [data-row="claude-code"]')!
+    expect(tip(files, 'repo:/src/docs')).toMatch(/Of 70 files read in this repository\. .* Not split by repository: the maximum of a whole/)
+    dispose()
+  })
+
+  it('draws by first read and again with no switch when the answer carries no split', () => {
+    const plain = { ...rereads, repo_order: [], repo_others: null,
+      tools: rereads.tools.map(tool => ({ ...tool, repos: undefined })) } as unknown as RereadBody
+    const { box, dispose } = draw(Rereads, 'rereads', plain)
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(rows(box, 'reread-reads')).toEqual(['all', 'claude-code', 'copilot-cli'])
+    expect(parts(box.querySelector('[data-chart="reread-files"] [data-row="claude-code"]')!)).toEqual(['files'])
     dispose()
   })
 })

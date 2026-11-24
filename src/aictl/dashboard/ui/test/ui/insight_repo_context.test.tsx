@@ -3,8 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import ContextWeight from '../../src/panels/insights/ContextWeight'
 import FixedContext from '../../src/panels/insights/FixedContext'
 import Orientation from '../../src/panels/insights/Orientation'
-import Rereads from '../../src/panels/insights/Rereads'
-import type { ContextBody, FixedBody, OrientationBody, RereadBody } from '../../src/panels/insights/insightsModel'
+import type { ContextBody, FixedBody, OrientationBody } from '../../src/panels/insights/insightsModel'
 import { OTHER, OTHER_REPOS, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
@@ -65,16 +64,6 @@ const orientation = {
   summary: { sessions: 40, edited: 30, projects: 2, never: 10, never_cost_usd: 20, no_project: 0 },
   sessions: [],
 } as unknown as OrientationBody
-
-const rereads = {
-  ...base, card: 'rereads', repo_order: order, repo_others: others,
-  tools: [{ tool: 'claude-code', reads: 1000, repeat_reads: 400, repeat_share: 0.4, files: 300, files_5plus: 20, most_reads: 30,
-    repeat_bytes: 4_000_000, unmatched: 0,
-    repos: segments({ reads: [700, 200, 100], repeat_reads: [300, 60, 40], files: [200, 70, 30], files_5plus: [15, 4, 1],
-      repeat_bytes: [3_000_000, 600_000, 400_000] }) }],
-  summary: { reads: 1000, repeat_reads: 400, repeat_share: 0.4, files_5plus: 20, repeat_bytes: 4_000_000, unmatched: 0 },
-  sessions: [],
-} as unknown as RereadBody
 
 const FIXED_KINDS = ['instruction_file', 'memory_file', 'system_prompt_other', 'skills', 'mcp_instructions', 'custom_agents', 'tools_listed']
 const fixed = {
@@ -181,36 +170,6 @@ describe('INS-RS · Context group cards split by repository', () => {
     expect(box.querySelector('[data-repo-legend]')).toBeNull()
     expect(box.querySelector('[data-chart="orientation-tools-repos"]')).toBeNull()
     expect(repoAttrs(box.querySelector('[data-chart="orientation-requests"] [data-row]')!)).toEqual([null])
-    dispose()
-  })
-
-  it('Repeated file reads: keeps the first/again bar, adds reads and reads again by repository, splits files read 5+ times', () => {
-    const { host, dispose } = mount(() => <Rereads {...props(rereads)} />)
-    const box = host.querySelector('#insight-rereads')!
-    expect(legend(box)).toEqual(['app', 'docs', OTHER_REPOS])
-    expect([...box.querySelectorAll('[data-chart="reread-reads"] [data-part]')].map(part => part.getAttribute('data-part')))
-      .toEqual(['first', 'again'])
-    const reads = box.querySelector('[data-chart="reread-reads-repos"] [data-row="claude-code"]')!
-    expect(repoAttrs(reads)).toEqual(ALL)
-    expect(texts(reads)).toEqual(['700 reads', '200 reads', ''])
-    expect(hover(reads, 'repo:/src/app')).toBe('claude-code, file reads — app (/src/app): 700 reads · 70% of this bar. First reads 400, ' +
-      'read again 300, over 200 files; 3 MB returned again. claude-code: 1,000 reads with a recorded path over 300 files, 400 of them ' +
-      'of a file the same agent had already read (40%).')
-    const again = box.querySelector('[data-chart="reread-again-repos"] [data-row="claude-code"]')!
-    expect(again.querySelector('[data-total]')!.textContent).toBe('400 reads again')
-    expect(repoAttrs(again)).toEqual(ALL)
-    const files = box.querySelector('[data-chart="reread-files"] [data-row="claude-code"]')!
-    expect(repoAttrs(files)).toEqual(ALL)
-    expect(hover(files, 'repo:/src/docs')).toMatch(/^claude-code, files read 5 times or more — docs \(\/src\/docs\): 4 files · 20% of this bar\. Of 70 files read in this repository\. .* Not split by repository: the maximum of a whole/)
-    dispose()
-  })
-
-  it('Repeated file reads: a body without repos draws the old bars only', () => {
-    const { host, dispose } = mount(() => <Rereads {...props(strip(rereads))} />)
-    const box = host.querySelector('#insight-rereads')!
-    expect(box.querySelector('[data-repo-legend]')).toBeNull()
-    expect(box.querySelector('[data-chart="reread-reads-repos"]')).toBeNull()
-    expect([...box.querySelectorAll('[data-chart="reread-files"] [data-part]')].map(part => part.getAttribute('data-part'))).toEqual(['files'])
     dispose()
   })
 
