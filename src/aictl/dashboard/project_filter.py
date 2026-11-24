@@ -130,14 +130,34 @@ def catalog(history: HistoryScope) -> dict:
     from .projections.history import node_scope
 
     result = unrestricted(history.reader).read("projects.catalog", {**node_scope(history.node), "limit": CATALOG_LIMIT})
-    projects = [{
+    projects = one_per_folder([{
         "project": row["project_path"], "name": project_name(row["project_path"]), "sessions": int(row["sessions"] or 0),
         "last_ts": row["last_ts"], "nodes": int(row["nodes"] or 0),
-    } for row in result.rows if row["row_type"] == "project"]
+    } for row in result.rows if row["row_type"] == "project"])
     evidence = [row for row in result.rows if row["row_type"] == "root"]
     # This node's own git folders are evidence only for this node's paths.
     return {"projects": projects, "repos": repositories(projects, evidence, local=not history.qualified),
             "truncated": bool(result.truncated)}
+
+
+def one_per_folder(projects: list[dict]) -> list[dict]:
+    """*projects* with the spellings of one folder as one project.
+
+    A Windows folder is stored as each tool spells it (``C:\\Work\\app``, ``c:\\work\\app``, ``C:/Work/app``). The filter
+    already reads every spelling of a chosen project (``spellings``), so the picker lists the folder once, under the
+    spelling with the most sessions, with the sessions of all of them.
+    """
+    merged: dict[str, dict] = {}
+    for item in projects:
+        known = merged.setdefault(project_key(item["project"]), item)
+        if known is item:
+            continue
+        if item["sessions"] > known["sessions"]:
+            known["project"], known["name"] = item["project"], item["name"]
+        known["sessions"] += item["sessions"]
+        known["nodes"] = max(known["nodes"], item["nodes"])
+        known["last_ts"] = max((ts for ts in (known["last_ts"], item["last_ts"]) if ts is not None), default=None)
+    return list(merged.values())
 
 
 # Why a project belongs to a repository, in the words the picker shows.
@@ -162,10 +182,13 @@ def repositories(projects: list[dict], evidence: list[dict], *, local: bool) -> 
     common name or prefix alone.
     """
     paths = [p["project"] for p in projects]
+    # Evidence is stored under the spelling its source used: match it to the listed project by folder, not by text.
+    listed = {project_key(path): path for path in paths}
     parent: dict[str, tuple[str, str]] = {}
     for row in sorted(evidence, key=lambda r: (r["evidence"] != "commit", -(r["sessions"] or 0), r["root"])):
-        if row["project_path"] in paths:
-            parent.setdefault(row["project_path"], (row["root"], row["evidence"]))
+        path = listed.get(project_key(row["project_path"]))
+        if path is not None:
+            parent.setdefault(path, (row["root"], row["evidence"]))
     roots_on_disk: set[str] = set()
     for path in paths:
         if path in parent:
@@ -204,13 +227,16 @@ def repositories(projects: list[dict], evidence: list[dict], *, local: bool) -> 
         if len(members) < 2:
             continue
         root = root_of(members[0])
+        root_key = project_key(root)
         rows = [facts[m] for m in members]
         groups.append({
             "root": root, "name": project_name(root),
             "members": sorted(({"project": m, "name": facts[m]["name"], "sessions": facts[m]["sessions"],
                                 "last_ts": facts[m]["last_ts"],
-                                "evidence": EVIDENCE["root" if m == root else parent[m][1]]} for m in members),
-                              key=lambda m: (m["project"] != root, -(m["last_ts"] or 0), m["project"])),
+                                # The root may be listed under another spelling than its members name it by.
+                                "evidence": EVIDENCE["root" if project_key(m) == root_key else parent[m][1]]}
+                               for m in members),
+                              key=lambda m: (project_key(m["project"]) != root_key, -(m["last_ts"] or 0), m["project"])),
             "sessions": sum(r["sessions"] for r in rows),
             "last_ts": max((r["last_ts"] for r in rows if r["last_ts"] is not None), default=None),
         })

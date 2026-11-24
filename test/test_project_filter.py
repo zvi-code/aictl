@@ -264,6 +264,33 @@ def test_a_repository_groups_its_worktrees_and_folders_by_evidence_never_by_a_co
     assert repositories([_project(REPO), _project(LOOKALIKE)], [], local=False) == []
 
 
+def test_two_spellings_of_one_windows_folder_are_one_project_and_never_break_the_list():
+    # Tools on Windows store one folder with either drive-letter case and either separator. The picker failed with
+    # "Could not read the selected node history" when two spellings met: they were grouped as one repository whose
+    # second member had no evidence.
+    from aictl.dashboard.project_filter import EVIDENCE, one_per_folder, repositories
+
+    def item(path, sessions, last_ts, nodes=1):
+        return {"project": path, "name": path.replace("/", "\\").split("\\")[-1], "sessions": sessions, "last_ts": last_ts, "nodes": nodes}
+
+    listed = one_per_folder([item("C:\\OSS\\app", 3, 50.0), item("c:\\oss\\app", 9, 40.0, nodes=2), item("C:/OSS/app", 1, None),
+                             item("C:\\OSS\\other", 2, 10.0), item("/srv/App", 1, 5.0), item("/srv/app", 1, 6.0)])
+    assert [(p["project"], p["sessions"], p["last_ts"], p["nodes"]) for p in listed] == [
+        ("c:\\oss\\app", 13, 50.0, 2), ("C:\\OSS\\other", 2, 10.0, 1), ("/srv/App", 1, 5.0, 1), ("/srv/app", 1, 6.0, 1)]
+
+    # Even when both spellings reach the grouping (older callers), it answers: both are the repository's own folder.
+    both = [item("C:\\OSS\\app", 3, 50.0), item("c:\\oss\\app", 9, 40.0)]
+    (group,) = repositories(both, [], local=False)
+    assert {m["evidence"] for m in group["members"]} == {EVIDENCE["root"]}
+
+    # Evidence stored under one spelling places the project listed under the other.
+    listed = [item("C:\\OSS\\app", 3, 50.0), item("c:\\oss\\app-wt", 2, 45.0)]
+    evidence = [{"row_type": "root", "project_path": "C:\\oss\\app-wt", "root": "c:\\oss\\app", "evidence": "worktree", "sessions": 2}]
+    (group,) = repositories(listed, evidence, local=False)
+    assert [(m["project"], m["evidence"]) for m in group["members"]] == [
+        ("C:\\OSS\\app", EVIDENCE["root"]), ("c:\\oss\\app-wt", EVIDENCE["worktree"])]
+
+
 def test_a_worktree_of_a_worktree_belongs_to_the_first_repository():
     from aictl.dashboard.project_filter import repositories
 
