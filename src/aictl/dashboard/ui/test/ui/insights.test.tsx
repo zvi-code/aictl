@@ -13,7 +13,8 @@ import FixedContext from '../../src/panels/insights/FixedContext'
 import ProblemSessions from '../../src/panels/insights/ProblemSessions'
 import { fmtHours } from '../../src/design/format'
 import {
-  carryFinding, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, toolLabel, rereadFinding, subagentFinding,
+  carryFinding, causeText, failureFinding, flowBands, insightWindow, learnToolLabels, pauseFinding, toolLabel, rereadFinding, subagentFinding,
+  type PauseCauseLead,
   contextFinding, fixedFinding, fixedHero, orientationFinding, problemFinding, problemHero, timeFinding, type FixedBody,
   type ProblemBody, type CarryBody, type ContextBody, type OrientationBody, type FailureBody, type InsightBody, type PauseBody, type RereadBody, type SubagentBody,
   type TimeBody,
@@ -28,6 +29,10 @@ const base = {
   data_range: { first_ts: 1_700_000_100, last_ts: 1_700_080_000 }, computed_at: 1_700_086_000,
   query: { view: 'insights.x', kql: '// aictl view insights.x\nrequests | take 1', kusto_url: 'https://c.kusto.windows.net/db' },
 }
+/** The cause sentence of the pause tax, as the card and the findings summary both end with it. */
+const PAUSE_CAUSE_TEXT = 'The largest cause by cost is a call still running (a long command outlives the 5-minute cache): ' +
+  '$12.00, 48% of the long-pause cost. The agent itself was busy for 76% of that cost (a call running or another agent ' +
+  'working); it waited for the person for 20% (a new prompt, an approval or an answer).'
 const cell = (bucket: string, requests: number, avg: number | null, hit: number | null) =>
   ({ bucket, requests, priced: requests, cache_hit_share: hit, avg_cost_usd: avg, cost_usd: avg == null ? null : avg * requests })
 const pause = {
@@ -589,5 +594,46 @@ describe('INS-09 · Problem sessions', () => {
     expect(card(second.host, 'fixed').querySelector('[data-finding]')).toBeNull()
     expect(card(second.host, 'orientation').querySelector('[data-finding]')).not.toBeNull()
     second.dispose()
+  })
+})
+
+describe('INS-PAUSE-CAUSE · The pause tax says what each long pause was', () => {
+  const cause = { top: 'tool_running', top_usd: 12, top_share: 0.48, cost_usd: 25, busy_usd: 19, busy_share: 0.76, person_usd: 5, person_share: 0.2 }
+  const row = (tool: string, name: string, requests: number, cost: number, share: number) =>
+    ({ tool, cause: name, requests, priced: requests, cost_usd: cost, share, buckets: [] })
+  const withCauses = {
+    ...pause,
+    causes: [row('claude-code', 'tool_running', 3, 12, 0.48), row('claude-code', 'other_agent_working', 4, 7, 0.28),
+      row('claude-code', 'new_prompt', 2, 5, 0.2), row('claude-code', 'nothing_recorded', 1, 1, 0.04),
+      row('copilot-vscode', 'tool_running', 2, 9, 1)],
+    cause_tools: [{ tool: 'claude-code', tool_name: 'Bash', program: 'cargo', requests: 2, cost_usd: 8, p50_call_s: 420, max_call_s: 600 },
+      { tool: 'copilot-vscode', tool_name: 'run_in_terminal', program: null, requests: 2, cost_usd: 9, p50_call_s: 400, max_call_s: 400 }],
+    summary: { ...pause.summary, cause },
+  } as unknown as PauseBody
+
+  it('names the largest cause and the parts when the agent was busy and when it waited for the person', () => {
+    expect(pauseFinding(withCauses, tool => tool)).toBe('25 claude-code requests followed a pause of over 5 minutes and cost $31.75 ' +
+      "at list price; the same number at each tool's under-1-minute average would cost $3.00. " + PAUSE_CAUSE_TEXT)
+    expect(causeText(cause as PauseCauseLead)).toBe(` ${PAUSE_CAUSE_TEXT}`)
+    // Without a priced long pause, the sentence names no cause.
+    expect(pauseFinding({ ...withCauses, summary: { ...withCauses.summary, cause: null } }, tool => tool)).not.toContain('largest cause')
+  })
+
+  it('draws the cost by cause for the compared tools only and lists the calls that ran through a pause', () => {
+    const { ctx } = context(id => id === 'pause' ? { data: withCauses, status: 'ready', error: null } : ready(id))
+    const { host, dispose } = mount(() => <PauseTax {...props(ctx)} />)
+    const box = card(host, 'pause')
+    // copilot-vscode is under the card's minimum: no bar and no line in the list, only its one line.
+    const bars = box.querySelectorAll('[data-pause-causes] > li')
+    expect([...bars].map(bar => bar.getAttribute('data-tool'))).toEqual(['claude-code'])
+    expect(bars[0].querySelectorAll('[role="img"] > span')).toHaveLength(4)
+    expect(bars[0].querySelector('[role="img"]')!.getAttribute('aria-label')).toContain('A call still running $12.00 (48%)')
+    expect(bars[0].textContent).toContain('$25.00 in all')
+    const tools = box.querySelectorAll('[data-pause-tools] > li')
+    expect(tools).toHaveLength(1)
+    expect(tools[0].textContent).toContain('Bash (cargo) · claude-code')
+    expect(tools[0].textContent).toContain('2 pauses, $8.00 after them; the call ran 7 min at the median, 10 min at most')
+    expect(box.querySelector('[data-few]')?.textContent).toBe('copilot-vscode: 14 requests, too few to compare.')
+    dispose()
   })
 })

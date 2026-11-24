@@ -3,6 +3,16 @@ declare query_parameters(all_nodes:bool = true, requested_node:string = '', sinc
 // ended. Only requests in the period count, so the first request of each session and agent in the period
 // has no pause. A prompt cache entry lapses after about 5 minutes without use. A project is the last folder of
 // the request's project path; the project rows are the ten projects and tools with the highest cost after a long pause.
+// The cause of a long pause (5 minutes or more), from what the session recorded between the two requests: the agent's own
+// calls and the prompts it was given, and the requests of the session's other agents. In this order, the first that holds:
+// tool_running: the agent's calls ran for at least half the pause (summed; a call that starts a subagent is not counted
+// here, a duration over 24 hours is a recording error and left out); other_agent_working: another agent of the session
+// made a request in the pause, or a call that starts a subagent ran for at least half of it; person_asked: a call waited
+// for a person to approve it or to answer a question; new_prompt: a prompt arrived; tool_short_or_untimed: the agent made
+// calls, but they ran for less than half the pause or have no duration; nothing_recorded. A call's time is its start, a
+// prompt's the time it was sent: a call at the time of the request that made it falls after that request, a prompt at the
+// time of the request it started before it. The cause_tool rows name the call that ran longest in each tool_running pause:
+// its tool name and, for a command, its program (the first word of the command line), the ten with the most pauses.
 // Stored times are UTC datetimes and flags bools; this view reads them as epoch seconds and 0/1.
 // requests_current holds the current row of each key per hour of its time (event_hour); the hours one
 // either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
@@ -14,24 +24,84 @@ let requests_secs = union (requests_current_rows | where dedup_key !in (requests
         (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
     | where not(coalesce(_deleted, false))
     | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// requests_secs holds one row per key already, tombstones dropped.
 let calls = materialize(requests_secs
     | where all_nodes or node_id == requested_node
-    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
-    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, input_tokens,
-              cache_read_tokens, cache_creation_tokens, cost_usd, duration_ms, project_path
-    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
-    | where not(coalesce(deleted, false)) and ts >= since and ts < until
+    | where ts >= since and ts < until
     | where coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0
     // A stored cost of 0 for a request with tokens is a model with no list price at ingest: unpriced, not free.
     | extend cost_usd=iff(cost_usd == 0 and coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0) + coalesce(cache_creation_tokens, 0) > 0, real(null), cost_usd)
     | project node_id, session_id, agent_id, ts, tool, input_tokens, cache_read_tokens, cache_creation_tokens,
               cost_usd, duration_ms, project_path);
-let paused = materialize(calls
+// nth: the request's place among all requests of its session, so the requests of other agents between two requests
+// of one agent are counted by a difference. seq: its place among the requests of its session and agent.
+let numbered = materialize(calls
+    | sort by node_id asc, session_id asc, ts asc
+    | extend nth=row_cumsum(1, not(prev(node_id) == node_id and prev(session_id) == session_id)));
+let paused = materialize(numbered
     | sort by node_id asc, session_id asc, agent_id asc, ts asc
-    | extend pause_s=iff(prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id,
-                         ts - prev(ts) - coalesce(prev(duration_ms), 0.0) / 1000, real(null))
+    | extend fresh=not(prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id)
+    | extend seq=row_cumsum(1, fresh)
+    | extend pause_s=iff(not(fresh), ts - prev(ts) - coalesce(prev(duration_ms), 0.0) / 1000, real(null)),
+             between_n=iff(not(fresh), nth - prev(nth) - 1, long(null))
     | where isnotnull(pause_s)
     | extend bucket=case(pause_s < 60, 'under_1m', pause_s < 300, '1_5m', pause_s < 3600, '5_60m', 'over_60m'));
+let long_keys = materialize(paused | where bucket in ('5_60m', 'over_60m') | distinct node_id, session_id, agent_id);
+// tool_invocations_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let tool_invocations_current_rows = tool_invocations_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let tool_invocations_crossed = tool_invocations_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let tool_invocations_secs = union (tool_invocations_current_rows | where dedup_key !in (tool_invocations_crossed)),
+        (tool_invocations_current_rows | where dedup_key in (tool_invocations_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+// session_prompts_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let session_prompts_current_rows = session_prompts_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let session_prompts_crossed = session_prompts_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let session_prompts_secs = union (session_prompts_current_rows | where dedup_key !in (session_prompts_crossed)),
+        (session_prompts_current_rows | where dedup_key in (session_prompts_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | extend ts = (ts - datetime(1970-01-01)) / 1s;
+let DayMs = 86400000.0;
+// What happened between two requests of an agent (gap n lies after its n-th request), for the agents with a long pause.
+let gap_events = union
+        (numbered | project node_id, session_id, agent_id, ts, k=1),
+        (tool_invocations_secs
+            | where all_nodes or node_id == requested_node
+            | where ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
+            | project node_id, session_id, agent_id, ts, k=2, subagent=target_kind == 'agent',
+                      call_ms=iff(duration_ms between (0.0 .. DayMs), duration_ms, real(null)),
+                      asked=confirm in ('approved', 'denied') or tool_name in ('AskUserQuestion', 'ask_user')
+                            or coalesce(confirm_wait_ms, 0.0) > 0,
+                      tool_name, program=iff(target_kind == 'command', command_name, '')),
+        (session_prompts_secs
+            | where all_nodes or node_id == requested_node
+            | where ts >= since and ts < until
+            | project node_id, session_id, agent_id, ts, k=0)
+    | join kind=leftsemi long_keys on node_id, session_id, agent_id
+    | sort by node_id asc, session_id asc, agent_id asc, ts asc, k asc
+    | extend gap=row_cumsum(tolong(k == 1), not(prev(node_id) == node_id and prev(session_id) == session_id and prev(agent_id) == agent_id))
+    | where k != 1
+    | summarize tool_ms=sumif(call_ms, k == 2 and not(subagent)), subagent_ms=sumif(call_ms, k == 2 and subagent),
+                calls=countif(k == 2), asked=countif(k == 2 and asked), prompts=countif(k == 0),
+                (longest_ms, tool_name, program)=arg_max(iff(k == 2 and not(subagent), coalesce(call_ms, 0.0), -1.0), tool_name, program)
+          by node_id, session_id, agent_id, gap;
+let caused = materialize(paused
+    | where bucket in ('5_60m', 'over_60m')
+    | extend gap=seq - 1
+    | join kind=leftouter gap_events on node_id, session_id, agent_id, gap
+    | extend tool_s=coalesce(tool_ms, 0.0) / 1000, subagent_s=coalesce(subagent_ms, 0.0) / 1000
+    | extend cause=case(tool_s >= 0.5 * pause_s, 'tool_running',
+                        between_n > 0 or subagent_s >= 0.5 * pause_s, 'other_agent_working',
+                        coalesce(asked, 0) > 0, 'person_asked',
+                        coalesce(prompts, 0) > 0, 'new_prompt',
+                        coalesce(calls, 0) > 0, 'tool_short_or_untimed',
+                        'nothing_recorded')
+    | project node_id, session_id, tool, bucket, cost_usd, cause, tool_name, program, longest_ms);
 union
     (paused
         | summarize requests=count(), input_tokens=sum(input_tokens), cache_read_tokens=sum(cache_read_tokens),
@@ -60,6 +130,16 @@ union
         | where bucket in ('5_60m', 'over_60m')
         | summarize reached=count_distinct(strcat(node_id, '|', session_id))
         | extend row_type='reach'),
+    (caused
+        | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd),
+                    reached=count_distinct(strcat(node_id, '|', session_id)) by tool, bucket, cause
+        | extend row_type='cause'),
+    (caused
+        | where cause == 'tool_running'
+        | summarize requests=count(), priced=countif(isnotnull(cost_usd)), sum_cost=sum(cost_usd),
+                    p50_call_s=percentile(longest_ms, 50) / 1000, max_call_s=max(longest_ms) / 1000 by tool, tool_name, program
+        | top 10 by requests desc
+        | extend row_type='cause_tool'),
     (calls
         | summarize first_ts=min(ts), last_ts=max(ts)
         | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)

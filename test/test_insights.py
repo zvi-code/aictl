@@ -140,10 +140,15 @@ def test_pause_tax_buckets_pauses_within_one_session_and_agent(kusto_store):
     vscode = tools["copilot-vscode"]
     assert vscode["cache_reported"] is False
     assert all(cell["cache_hit_share"] is None for cell in vscode["buckets"])
+    causes, cause = body["summary"].pop("causes"), body["summary"].pop("cause")
     assert body["summary"] == {
         "sessions": 2, "tools": ["claude-code"], "requests": 2, "cost_usd": pytest.approx(12.0), "baseline_usd": pytest.approx(1.0),
         "extra_usd": pytest.approx(11.0), "not_reported": ["copilot-vscode"], "unpriced_requests": 0,
     }
+    # The 300 s pause held a request of the subagent (a2 at 1130 s); nothing was recorded in the 3600 s one.
+    assert [(row["cause"], row["requests"], row["cost_usd"]) for row in causes] == [
+        ("other_agent_working", 1, pytest.approx(5.0)), ("nothing_recorded", 1, pytest.approx(7.0))]
+    assert cause["top"] == "nothing_recorded" and cause["busy_share"] == pytest.approx(5.0 / 12.0)
     assert [row["session_id"] for row in body["sessions"]] == ["s1", "s3"]
     assert body["sessions"][0]["cost_usd"] == pytest.approx(12.0)
 
@@ -156,6 +161,113 @@ def test_pause_tax_counts_only_requests_in_the_period(kusto_store):
     assert status == 200
     assert sum(cell["requests"] for tool in body["tools"] for cell in tool["buckets"]) == 0
     assert body["summary"]["cost_usd"] is None
+
+
+def _pause_causes(s):
+    """One main agent (session s1) with a long pause of each cause, in the order the view tests them; a second node."""
+    def req(key, ts, cost, **values):
+        _request(s, key, ts, cost=cost, project_path="/p/alpha", **values)
+
+    def tool_call(key, ts, name, ms, **values):
+        s.insert("tool_invocations", dedup_key=key, ts=ts, session_id="s1", agent_id="", tool="claude-code", tool_name=name,
+                 duration_ms=ms, **values)
+
+    def prompt(key, ts):
+        s.insert("session_prompts", dedup_key=key, ts=ts, session_id="s1", agent_id="", tool="claude-code", text="")
+
+    req("r0", 1000.0, 1.0)
+    # 400 s: a command started at the time of the request that made it (so after it) ran 300 s. The prompt in the
+    # same pause does not make it a new prompt: a running call comes first.
+    tool_call("t1", 1000.0, "Bash", 300_000.0, target_kind="command", command_name="pytest")
+    prompt("p1", 1350.0)
+    req("r1", 1400.0, 5.0)
+    # 400 s: a subagent made a request in the pause (the main agent waited for it); a prompt too.
+    _request(s, "a1", 1500.0, agent="sub", cost=0.5, project_path="/p/alpha")
+    prompt("p2", 1700.0)
+    req("r2", 1800.0, 4.0)
+    # 400 s: a call that starts a subagent ran 350 s: another agent working, not a tool running.
+    tool_call("t3", 1850.0, "Agent", 350_000.0, target_kind="agent")
+    req("r3", 2200.0, 3.0)
+    # 400 s: a call a person approved (its wait is not timed).
+    tool_call("t4", 2210.0, "Bash", 0.0, target_kind="command", command_name="make", confirm="approved")
+    req("r4", 2600.0, 2.0)
+    # 400 s: a prompt sent at the time of the request it started (so before it).
+    prompt("p5", 3000.0)
+    req("r5", 3000.0, 1.0)
+    # 400 s: one call of 1 s.
+    tool_call("t6", 3100.0, "Read", 1000.0)
+    req("r6", 3400.0, 0.5)
+    req("r7", 3800.0, 0.25)                    # 400 s: nothing recorded
+    prompt("p8", 7000.0)
+    req("r8", 7800.0, 10.0)                    # 4000 s: over 60 min, a new prompt
+    req("r9", 7810.0, 0.1)                     # 10 s: the no-pause price
+    # Another node: a 400 s pause with a 250 s command.
+    for key, ts, cost in (("n0", 1000.0, 1.0), ("n1", 1400.0, 7.0)):
+        s.insert("requests", node_id="n2", dedup_key=key, ts=ts, session_id="s9", agent_id="", tool="claude-code",
+                 input_tokens=5, cache_read_tokens=100, cache_creation_tokens=10, cost_usd=cost, duration_ms=0.0,
+                 project_path="/p/beta")
+    s.insert("tool_invocations", node_id="n2", dedup_key="n1t", ts=1100.0, session_id="s9", agent_id="", tool="claude-code",
+             tool_name="Bash", duration_ms=250_000.0, target_kind="command", command_name="cargo")
+
+
+def _causes(body):
+    return {row["cause"]: (row["requests"], row["cost_usd"]) for row in body["summary"]["causes"]}
+
+
+def test_pause_tax_names_the_cause_of_each_long_pause_in_order(kusto_store):
+    _pause_causes(kusto_store)
+    body = _card(kusto_store, "pause")
+    assert _causes(body) == {
+        "tool_running": (2, pytest.approx(12.0)), "other_agent_working": (2, pytest.approx(7.0)),
+        "person_asked": (1, pytest.approx(2.0)), "new_prompt": (2, pytest.approx(11.0)),
+        "tool_short_or_untimed": (1, pytest.approx(0.5)), "nothing_recorded": (1, pytest.approx(0.25)),
+    }
+    assert [row["cause"] for row in body["summary"]["causes"]] == list(insights.PAUSE_CAUSES)
+    assert sum(row["share"] for row in body["summary"]["causes"]) == pytest.approx(1.0)
+    lead = body["summary"]["cause"]
+    assert lead["top"] == "tool_running" and lead["top_usd"] == pytest.approx(12.0)
+    assert lead["cost_usd"] == pytest.approx(32.75) == body["summary"]["cost_usd"]
+    assert lead["busy_share"] == pytest.approx(19.0 / 32.75) and lead["person_share"] == pytest.approx(13.0 / 32.75)
+    # Per tool and pause bucket: the over-60-minute pause is a new prompt; the sessions are counted per bucket.
+    prompt = next(row for row in body["causes"] if row["cause"] == "new_prompt")
+    assert prompt["tool"] == "claude-code" and prompt["share"] == pytest.approx(11.0 / 32.75)
+    assert prompt["buckets"] == [{"bucket": "5_60m", "requests": 1, "sessions": 1, "cost_usd": pytest.approx(1.0)},
+                                 {"bucket": "over_60m", "requests": 1, "sessions": 1, "cost_usd": pytest.approx(10.0)}]
+    running = next(row for row in body["causes"] if row["cause"] == "tool_running")
+    assert running["buckets"] == [{"bucket": "5_60m", "requests": 2, "sessions": 2, "cost_usd": pytest.approx(12.0)}]
+    # The call that ran longest in each tool_running pause, by tool name and program.
+    assert body["cause_tools"] == [
+        {"tool": "claude-code", "tool_name": "Bash", "program": name, "requests": 1, "cost_usd": pytest.approx(cost),
+         "p50_call_s": pytest.approx(seconds), "max_call_s": pytest.approx(seconds)}
+        for name, cost, seconds in (("cargo", 7.0, 250.0), ("pytest", 5.0, 300.0))]
+
+
+def test_pause_tax_causes_keep_the_other_rows_and_follow_the_node_scope(kusto_store):
+    _pause_causes(kusto_store)
+    body = _card(kusto_store, "pause")
+    claude = {cell["bucket"]: cell["requests"] for cell in body["tools"][0]["buckets"]}
+    assert claude == {"under_1m": 1, "1_5m": 0, "5_60m": 8, "over_60m": 1}
+    assert body["projects"] == [
+        {"project": "alpha", "tool": "claude-code", "requests": 8, "sessions": 1, "cost_usd": pytest.approx(25.75),
+         "extra_usd": pytest.approx(24.95)},
+        {"project": "beta", "tool": "claude-code", "requests": 1, "sessions": 1, "cost_usd": pytest.approx(7.0),
+         "extra_usd": pytest.approx(6.9)}]
+    assert body["summary"]["extra_usd"] == pytest.approx(32.75 - 0.9) and body["summary"]["sessions"] == 2
+    # This node only: the other node's pause and its command are left out.
+    status, local = insights.insight("pause", PERIOD, 200_000.0,
+                                     history=HistoryScope(kusto_store.history_store.reader, "test-node"))
+    assert status == 200
+    assert _causes(local)["tool_running"] == (1, pytest.approx(5.0))
+    assert [row["program"] for row in local["cause_tools"]] == ["pytest"]
+    assert local["summary"]["cause"]["cost_usd"] == pytest.approx(25.75)
+
+
+def test_the_pause_tax_finding_carries_its_cause():
+    answers = _answers(pause={"summary": {"extra_usd": 30.0, "sessions": 2, "requests": 4, "cost_usd": 32.0, "baseline_usd": 2.0,
+                                          "cause": {"top": "tool_running", "top_usd": 20.0, "top_share": 0.625}},
+                              "projects": []})
+    found = {item["kind"]: item for item in insights.findings(answers)["findings"]}
+    assert found["pause_tax"]["cause"]["top"] == "tool_running"
 
 
 def _call(store, key, ts, name="Bash", *, session="s1", agent="", tool="claude-code", target="", failed=0, output=None,

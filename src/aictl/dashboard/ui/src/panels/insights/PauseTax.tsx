@@ -1,8 +1,9 @@
 import { For, Show, untrack } from 'solid-js'
-import { fmtNum, projectName } from '../../design/format'
+import { fmtDur, fmtNum, projectName } from '../../design/format'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
 import {
-  pauseHero, BUCKET_LABELS, money, pauseFinding, pauseProjects, plural, scaled, share, toolLabel, type Label, type PauseBody,
+  pauseHero, BUCKET_LABELS, CAUSE_LABELS, money, PAUSE_CAUSES, pauseCauseBars, pauseFinding, pauseProjects, plural, scaled, share,
+  toolLabel, type Label, type PauseBody,
 } from './insightsModel'
 import styles from './Insights.module.css'
 
@@ -70,6 +71,48 @@ function ProjectBars(props: { body: PauseBody }) {
   </Show>
 }
 
+/** The long-pause cost of each tool by cause: what the session recorded while the cache lapsed. */
+function CauseBars(props: { body: PauseBody; label: Label }) {
+  const bars = () => pauseCauseBars(props.body)
+  const shown = () => PAUSE_CAUSES.filter(cause => bars().some(bar => bar.causes.some(row => row.cause === cause)))
+  const width = (cost: number | null, total: number) => `${(total > 0 ? (cost ?? 0) / total * 100 : 0).toFixed(2)}%`
+  return <Show when={bars().length}>
+    <ul class={styles.legend} aria-label="Causes of pauses over 5 minutes">
+      <For each={shown()}>{cause => <li><span class={`${styles.swatch} ${styles[`c${PAUSE_CAUSES.indexOf(cause)}`]}`} />{CAUSE_LABELS[cause]}</li>}</For>
+    </ul>
+    <ol class={styles.bars} aria-label="Cost of pauses over 5 minutes by cause, per tool" data-pause-causes>
+      <For each={bars()}>{bar => <li class={styles.barRow} data-tool={bar.tool}>
+        <span class={styles.barName}>{props.label(bar.tool)}<small>{plural(bar.requests, 'request')} after a pause over 5 min</small></span>
+        <span class={styles.barTrack}>
+          <span class={styles.split} role="img" aria-label={`${props.label(bar.tool)}, cost after pauses over 5 minutes by cause: ` +
+            bar.causes.map(row => `${CAUSE_LABELS[row.cause]} ${money(row.cost_usd)} (${share(row.share)})`).join(', ')}>
+            <For each={bar.causes}>{row => <span class={styles[`c${PAUSE_CAUSES.indexOf(row.cause)}`]}
+              style={{ 'inline-size': width(row.cost_usd, bar.total) }}
+              title={`${CAUSE_LABELS[row.cause]}: ${plural(row.requests, 'request')}, ${money(row.cost_usd)}, ${share(row.share)}`} />}</For>
+          </span>
+          <span class={styles.splitText}>{money(bar.total)} in all</span>
+        </span>
+      </li>}</For>
+    </ol>
+  </Show>
+}
+
+/** The calls that ran through a pause: the one that ran longest in each pause where a call was still running. */
+function CauseTools(props: { body: PauseBody; label: Label }) {
+  return <Show when={props.body.cause_tools?.length}>
+    <section>
+      <h3>Calls still running through a pause</h3>
+      <ol class={styles.rankList} aria-label="Calls that ran longest through pauses over 5 minutes" data-pause-tools>
+        <For each={props.body.cause_tools}>{row => <li>
+          <span>{row.tool_name ?? 'unnamed call'}{row.program ? ` (${row.program})` : ''} · {props.label(row.tool)}</span>
+          <span>{plural(row.requests, 'pause')}, {money(row.cost_usd)} after them; the call ran {fmtDur(row.p50_call_s)} at the
+            median, {fmtDur(row.max_call_s)} at most</span>
+        </li>}</For>
+      </ol>
+    </section>
+  </Show>
+}
+
 type Row = Record<string, unknown>
 
 export default function PauseTax(props: CardProps) {
@@ -80,6 +123,8 @@ export default function PauseTax(props: CardProps) {
     finding={body => pauseFinding(body, label)}
     visual={body => <>
       <ProjectBars body={body} />
+      <CauseBars body={body} label={label} />
+      <CauseTools body={body} label={label} />
       <div class={styles.flows}>
         <For each={body.tools}>{(tool, i) => <ToolChart tool={tool} index={i()} label={label} />}</For>
       </div>
@@ -89,7 +134,11 @@ export default function PauseTax(props: CardProps) {
       'priced request; cost is list price, not a bill. "Cache not reported": the source writes no cache tokens, so its ' +
       'costs cannot show a lapsed cache and it is left out of the finding. Per project: the cost of its requests after a ' +
       'pause of over 5 minutes less the same number at its tool\'s under-1-minute average; the five projects that cost the ' +
-      'most extra are drawn, every other project and the requests with no project are summed.'}
+      'most extra are drawn, every other project and the requests with no project are summed. Cause of a pause over 5 ' +
+      'minutes, the first that holds: the agent\'s own calls ran for at least half the pause (a call still running; a call ' +
+      'that starts a subagent is not counted); another agent of the session made a request in it, or a call that starts a ' +
+      'subagent ran for half of it (another agent working); a call waited for a person to approve it or answer; a prompt ' +
+      'arrived; the agent made only short or untimed calls; nothing was recorded. A call is placed by its start time.'}
     table={{
       label: 'Pause tax by tool and pause',
       rows: body => body.tools.flatMap(tool => tool.buckets.map((cell): Row => ({

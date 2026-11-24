@@ -279,7 +279,8 @@ BOUNDED = {
     "insights.problem_sessions": "one row per tool and signal, per tool, 10 pairs, 10 projects, 10 sessions and one meta row",
     "insights.context_carry": "the 25 tool names that carry most, one row per tool, 10 sessions and one meta row",
     "insights.orientation": "10 projects, one row per tool, 10 sessions and one meta row",
-    "insights.pause_tax": "one row per tool and pause bucket, per tool, 10 sessions and one meta row",
+    "insights.pause_tax": "one row per tool and pause bucket, per tool, 10 sessions, 10 projects, one reach row, one row "
+                          "per tool, long-pause bucket and cause, 10 tools and programs of long pauses and one meta row",
     "insights.rereads": "two rows per tool, 10 sessions and one meta row",
     "insights.subagents": "two rows per tool, 10 sessions and one meta row",
     "insights.time_split": "two rows per tool, 10 programs, 3 program groups, 10 sessions and one meta row",

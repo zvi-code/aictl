@@ -99,6 +99,15 @@ describe('INS-SUM · The findings summary ranks what the cards found by its stak
       detail: { requests: 5, cost_usd: 40, baseline_usd: 1 } })))
       .toBe('5 requests came after a pause of over 5 minutes in 2 sessions and cost $40.00; without the pause they would cost ' +
         'about $1.00, so the pauses cost $39.00 more.')
+    // With the cause of the long pauses: the same words as the card's own finding.
+    const cause = { top: 'other_agent_working', top_usd: 20, top_share: 0.5, cost_usd: 40, busy_usd: 30, busy_share: 0.75,
+      person_usd: 4, person_share: 0.1 } as const
+    expect(findingText(finding({ kind: 'pause_tax', card: 'pause', stake: 39, sessions: 2,
+      detail: { requests: 5, cost_usd: 40, baseline_usd: 1 }, cause })))
+      .toBe('5 requests came after a pause of over 5 minutes in 2 sessions and cost $40.00; without the pause they would cost ' +
+        'about $1.00, so the pauses cost $39.00 more. The largest cause by cost is another agent working (the main agent waits ' +
+        'while subagents work): $20.00, 50% of the long-pause cost. The agent itself was busy for 75% of that cost (a call ' +
+        'running or another agent working); it waited for the person for 10% (a new prompt, an approval or an answer).')
     expect(findingText(finding({ kind: 'failure_runs', card: 'failures', stake: 1, unit: 'runs', detail: { streak_calls: 3, longest: null } })))
       .toBe('1 run of 3 or more failed calls in a row, 3 calls in all.')
   })

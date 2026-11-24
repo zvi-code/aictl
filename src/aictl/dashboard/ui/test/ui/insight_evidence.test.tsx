@@ -92,6 +92,13 @@ describe('INS-EVID · A group below its card\'s minimum is named in one line, ne
     expect(modelHero(later, label)?.label).toContain('Their periods do not overlap')
   })
 
+  it('takes the small group out of the pause causes and the calls that ran through a pause', () => {
+    const rows = TOOLS.pause.map(tool => ({ tool: tool.tool }))
+    const { body } = withEvidence({ card: 'pause', tools: TOOLS.pause, causes: rows, cause_tools: rows })
+    expect((body as { causes: { tool: string }[] }).causes.map(row => row.tool)).toEqual([BIG])
+    expect((body as { cause_tools: { tool: string }[] }).cause_tools.map(row => row.tool)).toEqual([BIG])
+  })
+
   it('leaves a card without an entry as it came: its lists are not rows per tool', () => {
     const body = { card: 'skills', tools: [{ tool: BIG, uses: 9 }], skills: [{ name: 'review', uses: 9 }] }
     expect(withEvidence(body)).toEqual({ body, few: [] })

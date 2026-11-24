@@ -101,6 +101,13 @@
 .k4 { background: var(--color-chart-4); }
 .k5 { background: color-mix(in srgb, var(--color-chart-3) 45%, var(--color-surface)); }
 .k6 { background: color-mix(in srgb, var(--color-chart-2) 45%, var(--color-surface)); }
+/* Pause tax: the long-pause cost by cause, warm when the agent was busy, blue when it waited for the person. */
+.c0 { background: var(--color-chart-2); }
+.c1 { background: color-mix(in srgb, var(--color-chart-2) 45%, var(--color-surface)); }
+.c2 { background: color-mix(in srgb, var(--color-chart-1) 45%, var(--color-surface)); }
+.c3 { background: var(--color-chart-1); }
+.c4 { background: var(--color-chart-4); }
+.c5 { background: var(--color-border); }
 .lists { display: grid; gap: var(--space-4) var(--space-6); grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
 .lists section { display: grid; gap: var(--space-2); align-content: start; min-inline-size: 0; }
 .rankList { display: grid; gap: var(--space-1); margin: 0; padding-inline-start: var(--space-5); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }

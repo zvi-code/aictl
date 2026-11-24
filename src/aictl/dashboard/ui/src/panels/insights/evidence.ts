@@ -76,7 +76,7 @@ export function withEvidence<T extends { card: string; tools?: unknown }>(body: 
   const names = new Set(kept.map(tool => tool.tool))
   const keep = (rows: unknown) => Array.isArray(rows) ? (rows as Row[]).filter(row => names.has(row.tool)) : rows
   const out: Record<string, unknown> = { ...body, tools: kept }
-  for (const key of ['tool_names', 'skills', 'top_skills', 'files', 'bins']) if (key in body) out[key] = keep((body as Record<string, unknown>)[key])
+  for (const key of ['tool_names', 'skills', 'top_skills', 'files', 'bins', 'causes', 'cause_tools']) if (key in body) out[key] = keep((body as Record<string, unknown>)[key])
   if (body.card === 'models') {
     out.tools = kept.map(tool => {
       const models = (tool.models as (Row & { model: string; sessions: number })[]) ?? []

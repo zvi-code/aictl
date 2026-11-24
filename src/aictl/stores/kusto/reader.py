@@ -292,8 +292,8 @@ _VIEWS = {
     "context.telemetry": (f"{_TIME}", "node_id ts tool source confidence"),
     "insights.pause_tax": (
         _TIME,
-        "row_type tool bucket node_id session_id requests input_tokens cache_read_tokens cache_creation_tokens priced "
-        "cost_usd first_ts last_ts computed_at",
+        "row_type tool bucket node_id session_id project_name requests input_tokens cache_read_tokens cache_creation_tokens "
+        "priced cost_usd reached cause tool_name program p50_call_s max_call_s first_ts last_ts computed_at",
     ),
     "insights.context_carry": (
         _TIME,

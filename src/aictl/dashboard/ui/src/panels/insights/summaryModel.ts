@@ -2,7 +2,7 @@
 // The server builds the ranked list from the cards' own answers; this file only words it.
 import { createSignal } from 'solid-js'
 import { fmtBytes, fmtNum, fmtShare, fmtUsd, projectName } from '../../design/format'
-import { plural, SMALL_STEP_OUTPUT, type CardId } from './insightsModel'
+import { causeText, plural, SMALL_STEP_OUTPUT, type CardId, type PauseCauseLead } from './insightsModel'
 
 type Num = number | null
 export type FindingKind = 'problem_sessions' | 'top_session' | 'never_edited' | 'heavy_context' | 'small_steps' | 'pause_tax'
@@ -12,6 +12,8 @@ export type Finding = {
   project: { name: string; sessions: Num; stake: number } | null
   session: { session_id: string; node_id?: string | null; tool?: string | null } | null
   opens: 'sessions' | 'session' | 'card'; detail: Record<string, number | null | undefined>
+  /** The pause tax only: the largest cause of the long pauses, as the card states it. */
+  cause?: PauseCauseLead | null
 }
 export type SummaryBody = {
   card: 'summary'; range: { since: number; until: number }; computed_at: number; total_usd: Num; findings: Finding[]; missing: CardId[]
@@ -39,7 +41,8 @@ export function findingText(item: Finding) {
     case 'small_steps': return `${plural(d.requests ?? 0, 'request')} were small steps (under ${SMALL_STEP_OUTPUT} output tokens, no thinking) ` +
       `and cost ${fmtUsd(item.stake)}.`
     case 'pause_tax': return `${plural(d.requests ?? 0, 'request')} came after a pause of over 5 minutes${sessions} and cost ` +
-      `${fmtUsd(d.cost_usd)}; without the pause they would cost about ${fmtUsd(d.baseline_usd)}, so the pauses cost ${fmtUsd(item.stake)} more.`
+      `${fmtUsd(d.cost_usd)}; without the pause they would cost about ${fmtUsd(d.baseline_usd)}, so the pauses cost ${fmtUsd(item.stake)} more.` +
+      causeText(item.cause)
     case 'subagents': return `${plural(d.subagents ?? 0, 'subagent')}${sessions} made ${plural(d.requests ?? 0, 'request')} and cost ${fmtUsd(item.stake)}.`
     case 'untested': return `${n(item.stake)} of ${plural(d.edit_sessions ?? 0, 'session')} that changed source code never ran a test.`
     case 'rereads': return `${n(item.stake)} of ${plural(d.reads ?? 0, 'file read')} read a file the same agent had already read` +

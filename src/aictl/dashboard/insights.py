@@ -44,6 +44,11 @@ SUMMARY_CARDS = ("problems", "orientation", "context", "pause", "subagents", "ve
 ROUTES = {**{f"/api/board/insights/{card}": card for card in CARDS}, "/api/board/insights/summary": "summary"}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
 LONG_PAUSE = ("5_60m", "over_60m")
+# The causes of a long pause, in the order insights.pause_tax tests them (the first that holds is the cause).
+PAUSE_CAUSES = ("tool_running", "other_agent_working", "person_asked", "new_prompt", "tool_short_or_untimed", "nothing_recorded")
+# The causes where the agent itself was busy, and those where it waited for the person.
+AGENT_BUSY = ("tool_running", "other_agent_working")
+PERSON_WAIT = ("person_asked", "new_prompt")
 OUTCOMES = ("identical_failed", "identical_succeeded", "changed_failed", "changed_succeeded", "other_tool")
 SHOWN_TOOL_NAMES = 10
 CONTEXT_BUCKETS = ("under_50k", "50_100k", "100_200k", "200_500k", "over_500k")
@@ -149,9 +154,17 @@ def pause_tax(rows: list[dict]) -> dict:
                          "sessions": _int(row.get("reached")), "cost_usd": cost,
                          "extra_usd": cost - priced * quick if cost is not None and quick is not None else None})
     projects.sort(key=lambda row: -_n(row["extra_usd"]))
+    causes, overall = _pause_causes(_of(rows, "cause"), counted)
+    cause_tools = [{
+        "tool": row.get("tool"), "tool_name": row.get("tool_name") or None, "program": row.get("program") or None,
+        "requests": _int(row.get("requests")), "cost_usd": _cost(row.get("cost_usd")) if _int(row.get("priced")) else None,
+        "p50_call_s": _cost(row.get("p50_call_s")), "max_call_s": _cost(row.get("max_call_s")),
+    } for row in _of(rows, "cause_tool")]
+    cause_tools.sort(key=lambda row: (-row["requests"], -_n(row["cost_usd"])))
     return {
-        "tools": tools, "projects": projects,
+        "tools": tools, "projects": projects, "causes": causes, "cause_tools": cause_tools,
         "summary": {
+            "causes": overall, "cause": _cause_lead(overall),
             "sessions": _int(next(iter(_of(rows, "reach")), {}).get("reached")),
             "tools": counted, "requests": long_requests, "cost_usd": long_cost if counted else None,
             "baseline_usd": baseline if counted else None, "extra_usd": long_cost - baseline if counted else None,
@@ -162,6 +175,53 @@ def pause_tax(rows: list[dict]) -> dict:
         "sessions": sorted(_sessions(rows, ("requests", "cost_usd")),
                            key=lambda row: (-_n(row["cost_usd"]), -_n(row["requests"]))),
     }
+
+
+def _pause_causes(rows: list[dict], counted: list[str]) -> tuple[list[dict], list[dict]]:
+    """The long pauses by cause: per tool (each with its share of the tool's long-pause cost and its rows per pause
+    bucket), and over the tools the card's finding counts (each with its share of their long-pause cost)."""
+    def cell(group: list[dict]) -> dict:
+        priced = sum(_int(row.get("priced")) for row in group)
+        return {"requests": sum(_int(row.get("requests")) for row in group), "priced": priced,
+                "cost_usd": sum(_n(row.get("cost_usd")) for row in group) if priced else None}
+
+    order = {cause: i for i, cause in enumerate(PAUSE_CAUSES)}
+    per_tool = []
+    for tool in sorted({row.get("tool") for row in rows}, key=str):
+        mine = [row for row in rows if row.get("tool") == tool]
+        total = sum(_n(row.get("cost_usd")) for row in mine)
+        for cause in sorted({row.get("cause") for row in mine}, key=lambda cause: order.get(cause, len(order))):
+            group = [row for row in mine if row.get("cause") == cause]
+            figures = cell(group)
+            per_tool.append({"tool": tool, "cause": cause, **figures, "share": _ratio(_n(figures["cost_usd"]), total),
+                             "buckets": [{"bucket": row.get("bucket"), "requests": _int(row.get("requests")),
+                                          "sessions": _int(row.get("reached")),
+                                          "cost_usd": _cost(row.get("cost_usd")) if _int(row.get("priced")) else None}
+                                         for row in sorted(group, key=lambda row: BUCKETS.index(row["bucket"])
+                                                           if row.get("bucket") in BUCKETS else len(BUCKETS))]})
+    chosen = [row for row in rows if row.get("tool") in counted]
+    total = sum(_n(row.get("cost_usd")) for row in chosen)
+    overall = []
+    for cause in PAUSE_CAUSES:
+        group = [row for row in chosen if row.get("cause") == cause]
+        if group:
+            figures = cell(group)
+            overall.append({"cause": cause, **figures, "share": _ratio(_n(figures["cost_usd"]), total)})
+    return per_tool, overall
+
+
+def _cause_lead(overall: list[dict]) -> dict | None:
+    """The largest cause of the long-pause cost, and the parts of that cost when the agent was busy and when it waited
+    for the person; none without a priced long pause."""
+    priced = [row for row in overall if row["cost_usd"]]
+    if not priced:
+        return None
+    total = sum(row["cost_usd"] for row in priced)
+    top = max(priced, key=lambda row: (row["cost_usd"], -PAUSE_CAUSES.index(row["cause"])))
+    busy = sum(row["cost_usd"] for row in priced if row["cause"] in AGENT_BUSY)
+    person = sum(row["cost_usd"] for row in priced if row["cause"] in PERSON_WAIT)
+    return {"top": top["cause"], "top_usd": top["cost_usd"], "top_share": top["cost_usd"] / total, "cost_usd": total,
+            "busy_usd": busy, "busy_share": busy / total, "person_usd": person, "person_share": person / total}
 
 
 def _unpriced(cells: list[dict]) -> int:
@@ -992,9 +1052,13 @@ def findings(answers: dict[str, dict]) -> dict:
                               requests=s["small_requests"]))
     if pause:
         s = pause["summary"]
-        found.append(_finding("pause_tax", "pause", s["extra_usd"], share=part(s["extra_usd"]), sessions=s.get("sessions"),
-                              project=_top(pause.get("projects", []), "extra_usd"), requests=s["requests"],
-                              cost_usd=s["cost_usd"], baseline_usd=s["baseline_usd"]))
+        item = _finding("pause_tax", "pause", s["extra_usd"], share=part(s["extra_usd"]), sessions=s.get("sessions"),
+                        project=_top(pause.get("projects", []), "extra_usd"), requests=s["requests"],
+                        cost_usd=s["cost_usd"], baseline_usd=s["baseline_usd"])
+        if item:
+            # What the long pauses were: the card's own finding words it the same way.
+            item["cause"] = s.get("cause")
+        found.append(item)
     if subagent:
         s = subagent["summary"]
         found.append(_finding("subagents", "subagents", s["subagent_cost_usd"], share=part(s["subagent_cost_usd"]),

@@ -36,9 +36,25 @@ export type Base<C extends CardId> = {
 export type InsightBase<C extends CardId> = Base<C>
 export type PauseCell = { bucket: Bucket; requests: number; priced: number; cache_hit_share: Num; avg_cost_usd: Num; cost_usd: Num }
 export type PauseProject = { project: string | null; tool: string; requests: number; sessions: number; cost_usd: Num; extra_usd: Num }
+export type PauseCause = 'tool_running' | 'other_agent_working' | 'person_asked' | 'new_prompt' | 'tool_short_or_untimed' | 'nothing_recorded'
+/** A cause of the long pauses: its requests and cost, and its share of the long-pause cost (of one tool, or of all). */
+export type PauseCauseRow = { cause: PauseCause; requests: number; priced: number; cost_usd: Num; share: Num }
+/** The largest cause by cost, and the parts of the long-pause cost when the agent was busy and when it waited for the person. */
+export type PauseCauseLead = {
+  top: PauseCause; top_usd: number; top_share: number; cost_usd: number; busy_usd: number; busy_share: number; person_usd: number; person_share: number
+}
+/** A call that ran longest in a pause where a call was still running: its tool name and, for a command, its program. */
+export type PauseCauseTool = {
+  tool: string; tool_name: string | null; program: string | null; requests: number; cost_usd: Num; p50_call_s: Num; max_call_s: Num
+}
 export type PauseBody = Base<'pause'> & {
   tools: { tool: string; cache_reported: boolean; buckets: PauseCell[] }[]; projects?: PauseProject[]
-  summary: { sessions?: number; tools: string[]; requests: number; cost_usd: Num; baseline_usd: Num; extra_usd: Num; not_reported: string[]; unpriced_requests?: number }
+  causes?: (PauseCauseRow & { tool: string; buckets: { bucket: Bucket; requests: number; sessions: number; cost_usd: Num }[] })[]
+  cause_tools?: PauseCauseTool[]
+  summary: {
+    sessions?: number; tools: string[]; requests: number; cost_usd: Num; baseline_usd: Num; extra_usd: Num; not_reported: string[]; unpriced_requests?: number
+    causes?: PauseCauseRow[]; cause?: PauseCauseLead | null
+  }
 }
 export type CarryName = { tool: string; tool_name: string; calls: number; output_bytes: number; carried_bytes: number; avg_later_requests: Num }
 export type CarryBody = Base<'carry'> & {
@@ -198,6 +214,43 @@ export function leftOut(requests: number | undefined) {
   return requests ? ` ${fmtNum(requests)} ${requests === 1 ? 'request' : 'requests'} with no known cost ${requests === 1 ? 'is' : 'are'} left out of the cost.` : ''
 }
 
+export const PAUSE_CAUSES: readonly PauseCause[] = ['tool_running', 'other_agent_working', 'person_asked', 'new_prompt',
+  'tool_short_or_untimed', 'nothing_recorded']
+/** What the session recorded in a long pause, in the order the view tests it: the first that holds is the cause. */
+export const CAUSE_LABELS: Record<PauseCause, string> = {
+  tool_running: 'A call still running', other_agent_working: 'Another agent working', person_asked: 'Waiting for an approval or answer',
+  new_prompt: 'A new prompt', tool_short_or_untimed: 'Short or untimed calls', nothing_recorded: 'Nothing recorded',
+}
+/** What each cause means, in one plain sentence part. */
+export const CAUSE_MEANING: Record<PauseCause, string> = {
+  tool_running: 'a long command outlives the 5-minute cache', other_agent_working: 'the main agent waits while subagents work',
+  person_asked: 'the agent asked a person to approve a call or answer a question', new_prompt: 'the person came back later',
+  tool_short_or_untimed: 'the calls recorded ran for less than half the pause, or have no duration',
+  nothing_recorded: 'no call, prompt or other agent was recorded in the pause',
+}
+const lower = (text: string) => text.charAt(0).toLowerCase() + text.slice(1)
+
+/** The cause of the long pauses as the card and the findings summary both word it; empty without a priced long pause. */
+export function causeText(cause: PauseCauseLead | null | undefined) {
+  if (!cause) return ''
+  return ` The largest cause by cost is ${lower(CAUSE_LABELS[cause.top])} (${CAUSE_MEANING[cause.top]}): ${money(cause.top_usd)}, ` +
+    `${fmtShare(cause.top_share)} of the long-pause cost. The agent itself was busy for ${fmtShare(cause.busy_share)} of that cost ` +
+    `(a call running or another agent working); it waited for the person for ${fmtShare(cause.person_share)} ` +
+    '(a new prompt, an approval or an answer).'
+}
+
+/** The long-pause cost of each compared tool by cause, in the order of the causes, with the tool's total. */
+export function pauseCauseBars(body: PauseBody) {
+  const rows = body.causes ?? []
+  return body.tools.map(tool => {
+    const mine = rows.filter(row => row.tool === tool.tool)
+    const total = mine.reduce((sum, row) => sum + (row.cost_usd ?? 0), 0)
+    const requests = mine.reduce((sum, row) => sum + row.requests, 0)
+    const causes = PAUSE_CAUSES.map(cause => mine.find(row => row.cause === cause)).filter(row => row != null)
+    return { tool: tool.tool, total, requests, causes }
+  }).filter(row => row.requests > 0)
+}
+
 export function pauseFinding(body: PauseBody, label: Label) {
   const s = body.summary
   if (!s.tools.length) {
@@ -208,7 +261,8 @@ export function pauseFinding(body: PauseBody, label: Label) {
   const named = s.tools.filter(tool => body.tools.some(row => row.tool === tool))
   const sentence = `${fmtNum(s.requests)} ${list(named.map(label))} requests followed a pause of over 5 minutes and cost ` +
     `${money(s.cost_usd)} at list price; the same number at each tool's under-1-minute average would cost ${money(s.baseline_usd)}.`
-  return s.requests ? sentence + leftOut(s.unpriced_requests) : `No ${list(named.map(label))} request followed a pause of over 5 minutes in this period.`
+  return s.requests ? sentence + leftOut(s.unpriced_requests) + causeText(s.cause)
+    : `No ${list(named.map(label))} request followed a pause of over 5 minutes in this period.`
 }
 
 /** The card's primary split: the projects whose long pauses cost the most extra, five at most, every other one summed. */
