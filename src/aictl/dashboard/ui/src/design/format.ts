@@ -101,6 +101,8 @@ export const fmtMoney = (n: NumberValue) => {
   const digits = n !== 0 && Math.abs(n) < 0.01 ? 4 : 2;
   return n.toLocaleString('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: digits, maximumFractionDigits: digits });
 };
+/** A cost per request: three significant digits below a dollar, so $0.327 and $0.075 stay apart. */
+export const fmtUsdEach = (n: NumberValue) => (isNil(n) ? NA : n >= 1 ? fmtUsd(n) : '$' + Number(n.toPrecision(3)));
 /** A plain number: whole from 1,000 up, else three significant digits. */
 export const fmtNum = (n: NumberValue) => {
   if (isNil(n)) return NA;

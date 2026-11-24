@@ -30,6 +30,7 @@ CARDS = {
     "problems": "insights.problem_sessions",
     "autonomy": "insights.work_per_instruction",
     "verified": "insights.verified_commits",
+    "models": "insights.model_report",
 }
 ROUTES = {f"/api/board/insights/{card}": card for card in CARDS}
 BUCKETS = ("under_1m", "1_5m", "5_60m", "over_60m")
@@ -707,12 +708,150 @@ def verified_commits(rows: list[dict]) -> dict:
     }
 
 
+# The model report's thresholds: a failure share needs this many calls in this many sessions, a per-request
+# figure this many requests, and a share of unknown shell outcomes this large makes the share a lower bound.
+RATE_CALLS = 100
+RATE_SESSIONS = 3
+PER_REQUEST = 20
+UNKNOWN_FLOOR = 0.05
+
+
+def _per(total: Any, of: int) -> float | None:
+    """A sum per counted request, when enough requests are counted to state one."""
+    return _n(total) / of if of >= PER_REQUEST and isinstance(total, (int, float)) and not isinstance(total, bool) else None
+
+
+def _calls(row: dict) -> dict:
+    """The tool calls of a model or effort row: None throughout when the tool recorded none for it."""
+    calls = row.get("calls")
+    if calls is None:
+        return {"calls": None, "failures": None, "refused": None, "exit_unknown": None, "call_sessions": None,
+                "failure_share": None, "at_least": False}
+    calls, failures, unknown = _int(calls), _int(row.get("failures")), _int(row.get("exit_unknown"))
+    shown = calls >= RATE_CALLS and _int(row.get("call_sessions")) >= RATE_SESSIONS
+    return {"calls": calls, "failures": failures, "refused": _int(row.get("refused")), "exit_unknown": unknown,
+            "call_sessions": _int(row.get("call_sessions")), "failure_share": failures / calls if shown else None,
+            "at_least": bool(shown and unknown / calls >= UNKNOWN_FLOOR)}
+
+
+def _figures(row: dict) -> dict:
+    """The per-request figures of a model or effort row; each is None when its source reports too little."""
+    requests, priced = _int(row.get("requests")), _int(row.get("priced"))
+    split, thinking, reasoning = _int(row.get("cache_reported")), _int(row.get("thinking_reported")), _int(row.get("reasoning_reported"))
+    # Copilot in VS Code never reports cache writes: they count only over the requests of tools that do.
+    write = _int(row.get("cache_write_reported"))
+    return {
+        "requests": requests, "sessions": _int(row.get("sessions")), "priced": priced,
+        "cost_usd": _cost(row.get("cost_usd")) if priced else None,
+        "cost_per_request": _per(row.get("cost_usd"), priced),
+        "cache_reported": split, "cache_write_reported": write,
+        "input_per_request": _per(row.get("input_tokens"), split),
+        "cache_write_per_request": _per(row.get("cache_creation_tokens"), write),
+        "cache_read_per_request": _per(row.get("cache_read_tokens"), split),
+        # The view sums output tokens over every request, not only those that report the cache split.
+        "output_per_request": _per(row.get("output_tokens"), requests),
+        "unsplit_prompt_per_request": _per(row.get("unsplit_prompt_tokens"), requests - split),
+        "thinking_reported": thinking,
+        "p50_thinking_ms": _cost(row.get("p50_thinking_ms")) if thinking >= PER_REQUEST else None,
+        "reasoning_reported": reasoning, "reasoning_per_request": _per(row.get("reasoning_tokens"), reasoning),
+        "first_ts": _cost(row.get("first_ts")), "last_ts": _cost(row.get("last_ts")),
+        **_calls(row),
+    }
+
+
+def model_report(rows: list[dict]) -> dict:
+    """Per tool and model: requests, cost per priced request, tokens per request, thinking or reasoning, effort, and
+    the failure share of the tool calls its requests asked for. Real work, not a controlled comparison.
+
+    A figure a tool does not record is None; a failure share needs RATE_CALLS calls in RATE_SESSIONS sessions and is
+    a lower bound ("at least") when UNKNOWN_FLOOR or more of the calls are shell commands with no known outcome.
+    """
+    efforts: dict[tuple, list[dict]] = {}
+    for row in _of(rows, "effort"):
+        efforts.setdefault((row.get("tool"), row.get("model")), []).append({"effort": row.get("effort"), **_figures(row)})
+    failing: dict[tuple, list[dict]] = {}
+    for row in _of(rows, "failing"):
+        failing.setdefault((row.get("tool"), row.get("model")), []).append(
+            {"tool_name": row.get("tool_name"), "failures": _int(row.get("failures"))})
+    models: dict[str, list[dict]] = {}
+    for row in _of(rows, "model"):
+        key = (row.get("tool"), row.get("model"))
+        figures = _figures(row)
+        names = sorted(failing.get(key, []), key=lambda item: (-item["failures"], str(item["tool_name"])))
+        models.setdefault(str(row.get("tool")), []).append({
+            "tool": row.get("tool"), "model": row.get("model"), **figures,
+            "recorded_sessions": _int(row.get("recorded_sessions")),
+            "helper": figures["calls"] == 0 and figures["requests"] <= 2 * max(figures["sessions"], 1),
+            "failing": [{**item, "share": _ratio(item["failures"], _n(figures["failures"]))} for item in names[:3]],
+            "efforts": sorted(efforts.get(key, []), key=lambda item: (-item["requests"], str(item["effort"]))),
+        })
+    tools = []
+    for row in _of(rows, "tool"):
+        tool = str(row.get("tool"))
+        requests, recorded = _int(row.get("requests")), row.get("calls") is not None
+        tools.append({
+            "tool": tool, "requests": requests, "sessions": _int(row.get("sessions")),
+            "no_model": _int(row.get("no_model")), "priced": _int(row.get("priced")),
+            "cache_reported": _int(row.get("cache_reported")), "cache_write_reported": _int(row.get("cache_write_reported")),
+            "effort_reported": _int(row.get("effort_reported")),
+            "thinking_reported": _int(row.get("thinking_reported")), "reasoning_reported": _int(row.get("reasoning_reported")),
+            "recorded_sessions": _int(row.get("recorded_sessions")), "recorded_calls": _int(row.get("recorded_calls")),
+            "calls": _int(row.get("calls")) if recorded else None, "failures": _int(row.get("failures")) if recorded else None,
+            "refused": _int(row.get("refused")) if recorded else None,
+            "exit_unknown": _int(row.get("exit_unknown")) if recorded else None,
+            "unattributed": _int(row.get("unattributed")) if recorded else None,
+            "call_sessions": _int(row.get("call_sessions")), "call_only_sessions": _int(row.get("call_only_sessions")),
+            "store_calls": _int(row.get("store_calls")), "store_sessions": _int(row.get("store_sessions")),
+            "unsplit_calls": _int(row.get("unsplit_calls")), "unsplit_sessions": _int(row.get("unsplit_sessions")),
+            "models": sorted(models.pop(tool, []), key=lambda item: (-item["requests"], str(item["model"]))),
+        })
+    # A model row whose tool row is missing (the row limit) still shows, under a tool with no totals of its own.
+    for tool, rest in models.items():
+        tools.append({"tool": tool, "requests": sum(item["requests"] for item in rest), "models": rest})
+    tools.sort(key=lambda item: (-_n(item.get("requests")), str(item["tool"])))
+    not_reported = {
+        "cost": [tool["tool"] for tool in tools if "priced" in tool and not tool["priced"]],
+        "token_split": [tool["tool"] for tool in tools if "cache_reported" in tool and not tool["cache_reported"]],
+        "cache_write": [tool["tool"] for tool in tools
+                        if tool.get("cache_reported") and "cache_write_reported" in tool and not tool["cache_write_reported"]],
+        "thinking": [tool["tool"] for tool in tools if "thinking_reported" in tool and not tool["thinking_reported"]],
+        "reasoning": [tool["tool"] for tool in tools if "reasoning_reported" in tool and not tool["reasoning_reported"]],
+        "effort": [tool["tool"] for tool in tools if "effort_reported" in tool and not tool["effort_reported"]],
+        "model": [tool["tool"] for tool in tools if tool.get("requests") and tool.get("no_model") == tool["requests"]],
+        "calls": [tool["tool"] for tool in tools if "calls" in tool and tool["calls"] is None],
+    }
+    sessions = []
+    for row in _sessions(rows, ("model", "models", "requests", "priced", "cost_usd", "calls", "failures", "refused")):
+        priced = _int(row.pop("priced"))
+        sessions.append({**row, "model": row["model"] or None, "models": _int(row["models"]), "requests": _int(row["requests"]),
+                         "calls": _int(row["calls"]), "failures": _int(row["failures"]), "refused": _int(row["refused"]),
+                         "cost_usd": _cost(row["cost_usd"]) if priced else None})
+    sessions.sort(key=lambda row: (str(row["tool"]), -row["failures"], -row["calls"]))
+    return {"tools": tools, "summary": {"lead": _model_lead(tools), "not_reported": not_reported}, "sessions": sessions}
+
+
+def _model_lead(tools: list[dict]) -> dict | None:
+    """The busiest tool with a model of PER_REQUEST priced requests: its dearest and cheapest such models by cost per
+    priced request, or the one; with none priced anywhere, the busiest tool's requests. A helper model (a title or
+    summary model: few requests per session, no tool call) is not compared."""
+    for tool in tools:
+        priced = sorted((model for model in tool["models"] if model["cost_per_request"] is not None and not model["helper"]),
+                        key=lambda model: -model["cost_per_request"])
+        if priced:
+            high, low = priced[0], priced[-1]
+            return {"kind": "ratio" if len(priced) > 1 else "cost", "tool": tool["tool"], "high": high, "low": low,
+                    "ratio": high["cost_per_request"] / low["cost_per_request"] if len(priced) > 1 else None}
+    busiest = tools[0] if tools and tools[0].get("requests") else None
+    return {"kind": "requests", "tool": busiest["tool"], "requests": busiest["requests"]} if busiest else None
+
+
 SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "pause": pause_tax, "carry": context_carry, "subagents": subagents, "failures": after_failure, "rereads": rereads,
     "time": time_split, "context": context_weight, "orientation": orientation, "fixed": fixed_context,
     "problems": problem_sessions,
     "autonomy": work_per_instruction,
     "verified": verified_commits,
+    "models": model_report,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -728,6 +867,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "problems": lambda history, params: history.read("insights.problem_sessions", limit=ROW_LIMIT, **params),
     "autonomy": lambda history, params: history.read("insights.work_per_instruction", limit=ROW_LIMIT, **params),
     "verified": lambda history, params: history.read("insights.verified_commits", limit=ROW_LIMIT, **params),
+    "models": lambda history, params: history.read("insights.model_report", limit=ROW_LIMIT, **params),
 }
 
 

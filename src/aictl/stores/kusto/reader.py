@@ -331,6 +331,14 @@ _VIEWS = {
         "commands_with_text test_runs test_results remote_commits edits_no_file sessions_no_text sessions_edits_unrecorded "
         "untested last_commit first_ts last_ts computed_at",
     ),
+    "insights.model_report": (
+        _TIME,
+        "row_type tool model effort requests priced cost_usd cache_reported input_tokens cache_read_tokens "
+        "cache_creation_tokens unsplit_prompt_tokens output_tokens thinking_reported p50_thinking_ms reasoning_reported "
+        "reasoning_tokens sessions recorded_sessions calls failures refused exit_unknown call_sessions first_ts last_ts "
+        "no_model effort_reported unattributed call_only_sessions store_calls store_sessions unsplit_calls "
+        "unsplit_sessions recorded_calls tool_name node_id session_id models computed_at",
+    ),
     "tools.mcp": (
         f"{_TIME} restrict_sessions session_keys restrict_tools requested_tools",
         "row_type tool_name calls failures sessions session_set builtin_sessions timed total_ms output_bytes output_count "
@@ -427,6 +435,7 @@ _CACHE_TTL_S = {
     "insights.problem_sessions": _INSIGHT_TTL_S,
     "insights.work_per_instruction": _INSIGHT_TTL_S,
     "insights.verified_commits": _INSIGHT_TTL_S,
+    "insights.model_report": _INSIGHT_TTL_S,
 }
 _NODE_STALE_MAX_S = 300.0
 _FAILURE_COOLDOWN_S = 5.0

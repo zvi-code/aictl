@@ -1,0 +1,236 @@
+declare query_parameters(all_nodes:bool = true, requested_node:string = '', since:real, until:real, row_limit:long);
+// The work each model did, per tool: requests, sessions, list-price cost, tokens per request, thinking, effort,
+// and the failure share of the tool calls its requests asked for. It describes real work, not a controlled
+// comparison: each model got its own tasks, tools, tool versions and period. A request counts in the period its
+// ts falls in; a tool call counts in the period its own ts falls in, attributed with its session's requests from
+// any time. A value a tool does not record is null, never 0.
+// Model: the stored name in lower case, without a provider prefix ('copilot/'); a Claude name with dots in its
+// version gets dashes (Copilot writes claude-opus-4.8, Claude Code claude-opus-4-8; canonical_model_id); then
+// without a date suffix or a context variant ('-1m', '-internal'). In copilot-vscode a Claude name ending in a
+// picker suffix ('-high', '-xhigh', ...) is that model at that effort; other names are kept whole. An empty name,
+// or the Copilot store's 'unknown' (a subagent name stood where the model belongs), is a request with no model.
+// Cost: cost_usd is the list price at ingest. A null (VS Code without the cached-prompt split) or a 0 (no list
+// price when stored) is an unpriced request, never a free one. Token classes count only requests that report
+// the cache split: VS Code reports it exactly when it stored a cost; every other tool always does. VS Code never
+// reports cache writes (it stores 0), so its cache write is not reported: write_split leaves it out.
+// Thinking time is thinking_ms, which only Claude Code records; a value over 24 hours is a recording error and is
+// left out. Reasoning tokens are thinking_tokens, which only Copilot records. Effort is the request's effort.
+// Tool calls: a call the person or a rule refused (confirm 'denied' or 'blocked') never ran: it is counted apart,
+// not as a call. Calls read from the Copilot session store (sessions with no events file) are shell commands
+// only, with no agent and often no result: they are counted per tool and never attributed. A session whose
+// requests have a subagent lane but whose calls have none is not separable: its calls are counted per tool and
+// not attributed. A call failed when is_error is 1 or a command exited with a code other than 0. A Copilot shell
+// command with no exit code (Copilot CLI and the app before November 2026, VS Code's run_in_terminal unless its
+// result text names the code) counts as failed only when the tool marked it failed: exit_unknown counts them.
+// Attribution: a call belongs to the latest request at or before it of the same node, session and agent; a
+// request sorts before a call at the same ts, since it comes before the calls it asks for, and requests at one ts
+// sort by a hash of their key so the result is stable. The order is taken over all rows of those sessions before
+// any filter. A call with no request before it, or whose request has no model, is not attributed.
+let Day = 86400000.0;
+// Sessions first: only the rows of sessions with a request or call version in the period are reduced, plus every
+// tombstone (an old tombstone can carry an empty session_id). The period applies again after the reduction.
+// When the period starts at or before the first row, every session counts and the filter is skipped.
+let active = toscalar(union
+        (requests | where (all_nodes or node_id == requested_node) and ts >= since and ts < until | distinct session_id),
+        (tool_invocations | where (all_nodes or node_id == requested_node) and ts >= since and ts < until | distinct session_id)
+    | summarize make_set(session_id));
+let everything = since <= toscalar(union (requests | project ts), (tool_invocations | project ts) | summarize min(ts));
+let all_calls = materialize(tool_invocations
+    | where (all_nodes or node_id == requested_node)
+        and (everything or session_id in (active) or coalesce(column_ifexists('_deleted', false), false))
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, tool_name, is_error, exit_code,
+              source, confirm
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false)) and ts >= since and ts < until and not(tool_name startswith_cs 'permission:')
+    | extend failed=coalesce(is_error, 0) == 1 or coalesce(exit_code, 0) != 0
+    | project node_id, session_id, agent=iff(isempty(agent_id) or agent_id == session_id, '', agent_id), ts, tool,
+              store=source == 'copilot-session-store', refused=confirm in ('denied', 'blocked'), failed,
+              exit_unknown=not(failed) and isnull(exit_code)
+                  and ((tool in ('copilot-cli', 'copilot-desktop') and tool_name in ('bash', 'powershell'))
+                       or (tool == 'copilot-vscode' and tool_name == 'run_in_terminal')),
+              tool_name);
+let event_calls = all_calls | where not(store);
+let event_called = toscalar(event_calls | summarize make_set(session_id));
+// The requests in the period, and every request of a session with a tool call in the period.
+let reqs = materialize(requests
+    | where (all_nodes or node_id == requested_node)
+        and (everything or session_id in (active) or coalesce(column_ifexists('_deleted', false), false))
+    | extend fact_key=iff(isempty(dedup_key), tostring(id), dedup_key), deleted=column_ifexists('_deleted', false)
+    | project ['project'], node_id, fact_key, _v, deleted, ts, session_id, agent_id, tool, model, effort, input_tokens,
+              output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd, thinking_ms, thinking_tokens
+    | summarize arg_max(_v, *) by ['project'], node_id, fact_key
+    | where not(coalesce(deleted, false))
+    | extend inside=ts >= since and ts < until
+    | where inside or session_id in (event_called)
+    | project node_id, session_id, agent=iff(isempty(agent_id) or agent_id == session_id, '', agent_id), ts, inside, tool,
+              model, effort=tolower(effort), input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
+              split=tool != 'copilot-vscode' or isnotnull(cost_usd), write_split=tool != 'copilot-vscode',
+              thinking_ms=iff(thinking_ms <= Day, thinking_ms, real(null)), thinking_tokens, tiebreak=hash(fact_key));
+// Sessions whose requests in the period have a subagent lane while their calls have none: lanes not separable.
+let unsplit = materialize(reqs
+    | where inside and isnotempty(agent) and session_id in (event_called)
+    | distinct node_id, session_id
+    | join kind=leftanti (event_calls | where isnotempty(agent) | distinct node_id, session_id) on node_id, session_id);
+let calls = materialize(event_calls | join kind=leftanti unsplit on node_id, session_id);
+let called = toscalar(calls | summarize make_set(session_id));
+// One group per request with the calls after it; nothing is filtered between the sort and prev().
+let ordered = materialize(union
+        (reqs | where session_id in (called) | project node_id, session_id, agent, ts, ord=0, tiebreak, model, effort),
+        (calls | project node_id, session_id, agent, ts, ord=1, tiebreak=0, tool, failed, refused, exit_unknown, tool_name)
+    | partition hint.strategy=shuffle by session_id (
+        sort by node_id asc, session_id asc, agent asc, ts asc, ord asc, tiebreak asc
+        | extend g0=row_cumsum(toint(ord == 0 or prev(node_id) != node_id or prev(session_id) != session_id
+                                     or prev(agent) != agent)))
+    | extend g=strcat(session_id, '|', g0)
+    | project-away g0, tiebreak);
+let attributed = materialize(ordered
+    | summarize model=take_anyif(model, ord == 0), effort=take_anyif(effort, ord == 0), asked=countif(ord == 0),
+                calls=countif(ord == 1 and not(refused)), failures=countif(ord == 1 and failed and not(refused)),
+                refused=countif(ord == 1 and refused), exit_unknown=countif(ord == 1 and exit_unknown and not(refused)),
+                tool=take_anyif(tool, ord == 1), node_id=take_any(node_id), session_id=take_any(session_id) by g
+    | where calls + refused > 0
+    | extend model=coalesce(model, ''), effort=coalesce(effort, ''));
+// Figures per stored name and effort. Names are cleaned on these few rows; sessions and medians merge after.
+let cells = materialize(union
+        (reqs | where inside
+            | summarize requests=count(), priced=countif(cost_usd > 0), cost_usd=sumif(cost_usd, cost_usd > 0),
+                        cache_reported=countif(split), input_tokens=sumif(input_tokens, split),
+                        cache_read_tokens=sumif(cache_read_tokens, split),
+                        cache_write_reported=countif(write_split),
+                        cache_creation_tokens=sumif(cache_creation_tokens, write_split),
+                        unsplit_prompt_tokens=sumif(coalesce(input_tokens, 0) + coalesce(cache_read_tokens, 0), not(split)),
+                        output_tokens=sum(output_tokens),
+                        thinking_reported=countif(isnotnull(thinking_ms)), thinking=tdigest(thinking_ms),
+                        reasoning_reported=countif(isnotnull(thinking_tokens)), reasoning_tokens=sum(thinking_tokens),
+                        request_sessions=hll_if(session_id, isnotempty(session_id)),
+                        recorded_sessions=hll_if(session_id, session_id in (called)), first_ts=min(ts), last_ts=max(ts)
+                  by tool, model, effort),
+        (attributed | where asked > 0
+            | summarize calls=sum(calls), failures=sum(failures), refused=sum(refused), exit_unknown=sum(exit_unknown),
+                        call_sessions=hll_if(session_id, calls > 0) by tool, model, effort));
+let names = cells
+    | distinct tool, model
+    | extend raw_model=replace_regex(tolower(trim(@'\s+', model)), @'^[a-z0-9_.-]+/', '')
+    | extend raw_model=iff(raw_model startswith 'claude-', replace_string(raw_model, '.', '-'), raw_model)
+    | extend picker_effort=iff(tool == 'copilot-vscode' and raw_model startswith 'claude-',
+                               extract(@'-(low|medium|high|xhigh|max)$', 1, raw_model), '')
+    | extend clean=replace_regex(replace_regex(iff(isempty(picker_effort), raw_model,
+                      substring(raw_model, 0, strlen(raw_model) - strlen(picker_effort) - 1)),
+                  @'-(\d{8}|\d{4}-\d{2}-\d{2})$', ''), @'(-1m)?(-internal)?$', '')
+    | project tool, model, clean=iff(clean == 'unknown', '', clean), picker_effort;
+let named = materialize(cells
+    | lookup kind=inner names on tool, model
+    | project tool, model=clean, effort=iff(isempty(effort), picker_effort, effort), requests, priced, cost_usd,
+              cache_reported, cache_write_reported, input_tokens, cache_read_tokens, cache_creation_tokens,
+              unsplit_prompt_tokens, output_tokens,
+              thinking_reported, thinking, reasoning_reported, reasoning_tokens, request_sessions, recorded_sessions,
+              calls, failures, refused, exit_unknown, call_sessions, first_ts, last_ts);
+// Sums over rows that carry no value give 0 in KQL: each figure whose source reports nothing becomes null here.
+let merged = (by_effort:bool) {
+    named
+    | summarize requests=sum(requests), priced=sum(priced), cost_usd=sum(cost_usd), cache_reported=sum(cache_reported),
+                cache_write_reported=sum(cache_write_reported), input_tokens=sum(input_tokens),
+                cache_read_tokens=sum(cache_read_tokens),
+                cache_creation_tokens=sum(cache_creation_tokens), unsplit_prompt_tokens=sum(unsplit_prompt_tokens),
+                output_tokens=sum(output_tokens), thinking_reported=sum(thinking_reported), thinking=tdigest_merge(thinking),
+                reasoning_reported=sum(reasoning_reported), reasoning_tokens=sum(reasoning_tokens),
+                request_sessions=hll_merge(request_sessions), recorded_sessions=hll_merge(recorded_sessions),
+                calls=sum(calls), failures=sum(failures), refused=sum(refused), exit_unknown=sum(exit_unknown),
+                call_sessions=hll_merge(call_sessions), first_ts=min(first_ts), last_ts=max(last_ts)
+          by tool, model, effort=iff(by_effort, effort, '')
+    | where isnotempty(model) and (isnotempty(effort) or not(by_effort))
+    | extend p50_thinking_ms=iff(thinking_reported > 0, percentile_tdigest(thinking, 50), real(null)),
+             sessions=dcount_hll(request_sessions), recorded_sessions=dcount_hll(recorded_sessions),
+             call_sessions=dcount_hll(call_sessions)
+    | extend has_calls=recorded_sessions > 0 or calls > 0 or refused > 0
+    | extend cost_usd=iff(priced > 0, cost_usd, real(null)),
+             input_tokens=iff(cache_reported > 0, input_tokens, long(null)),
+             cache_read_tokens=iff(cache_reported > 0, cache_read_tokens, long(null)),
+             cache_creation_tokens=iff(cache_write_reported > 0, cache_creation_tokens, long(null)),
+             unsplit_prompt_tokens=iff(requests > cache_reported, unsplit_prompt_tokens, long(null)),
+             reasoning_tokens=iff(reasoning_reported > 0, reasoning_tokens, long(null)),
+             calls=iff(has_calls, calls, long(null)), failures=iff(has_calls, failures, long(null)),
+             refused=iff(has_calls, refused, long(null)), exit_unknown=iff(has_calls, exit_unknown, long(null)),
+             call_sessions=iff(has_calls, call_sessions, long(null))
+    | project-away thinking, request_sessions, has_calls
+};
+// The sessions with the most failed calls, three per tool; a session's main model is the one most of its requests used.
+let worst = materialize(attributed
+    | summarize calls=sum(calls), failures=sum(failures), refused=sum(refused) by node_id, session_id, tool
+    | where failures > 0
+    | sort by tool asc, failures desc, calls desc, session_id asc
+    | extend place=row_number(1, prev(tool) != tool)
+    | where place <= 3
+    | project-away place);
+let worst_reqs = materialize(reqs
+    | where inside
+    | join kind=leftsemi worst on node_id, session_id
+    | lookup kind=leftouter names on tool, model
+    | project node_id, session_id, model=coalesce(clean, ''), cost_usd);
+union
+    (merged(false) | project-away effort | extend row_type='model'),
+    (merged(true) | extend row_type='effort'),
+    (union
+        (named
+            | summarize requests=sum(requests), no_model=sumif(requests, isempty(model)), priced=sum(priced),
+                        cache_reported=sum(cache_reported), cache_write_reported=sum(cache_write_reported),
+                        effort_reported=sumif(requests, isnotempty(effort)),
+                        thinking_reported=sum(thinking_reported), reasoning_reported=sum(reasoning_reported),
+                        sessions=dcount_hll(hll_merge(request_sessions)),
+                        recorded_sessions=dcount_hll(hll_merge(recorded_sessions)),
+                        no_model_calls=sumif(calls, isempty(model)) by tool),
+        (attributed
+            | summarize calls=sum(calls), failures=sum(failures), refused=sum(refused), exit_unknown=sum(exit_unknown),
+                        no_request_calls=sumif(calls, asked == 0), call_sessions=dcountif(session_id, calls > 0) by tool),
+        // Copilot reads requests and tool calls from different files: sessions whose calls have no request at all.
+        (attributed | summarize asked=sum(asked) by tool, node_id, session_id
+            | summarize call_only_sessions=countif(asked == 0) by tool),
+        (all_calls | where store | summarize store_calls=count(), store_sessions=dcount(session_id) by tool),
+        (event_calls | join kind=leftsemi unsplit on node_id, session_id
+            | summarize unsplit_calls=count(), unsplit_sessions=dcount(session_id) by tool),
+        (calls | summarize recorded_calls=count() by tool)
+    | summarize requests=sum(requests), no_model=sum(no_model), priced=sum(priced), cache_reported=sum(cache_reported),
+                cache_write_reported=sum(cache_write_reported), effort_reported=sum(effort_reported),
+                thinking_reported=sum(thinking_reported),
+                reasoning_reported=sum(reasoning_reported), sessions=sum(sessions), recorded_sessions=sum(recorded_sessions),
+                recorded_calls=sum(recorded_calls), calls=sum(calls), failures=sum(failures), refused=sum(refused),
+                exit_unknown=sum(exit_unknown), call_sessions=sum(call_sessions), call_only_sessions=sum(call_only_sessions),
+                unattributed=sum(no_request_calls) + sum(no_model_calls), store_calls=sum(store_calls),
+                store_sessions=sum(store_sessions), unsplit_calls=sum(unsplit_calls), unsplit_sessions=sum(unsplit_sessions)
+          by tool
+    | extend has_calls=recorded_calls > 0 or refused > 0
+    | extend calls=iff(has_calls, calls, long(null)), failures=iff(has_calls, failures, long(null)),
+             refused=iff(has_calls, refused, long(null)), exit_unknown=iff(has_calls, exit_unknown, long(null)),
+             unattributed=iff(has_calls, unattributed, long(null))
+    | project-away has_calls
+    | extend row_type='tool'),
+    // The three tool names with the most failed calls per model: one failing server or command can carry a share.
+    (ordered
+        | where ord == 1 and failed and not(refused)
+        | project g, tool, tool_name
+        | lookup kind=inner (attributed | where asked > 0 | project g, model) on g
+        | lookup kind=inner names on tool, model
+        | summarize failures=count() by tool, model=clean, tool_name
+        | where isnotempty(model)
+        | sort by tool asc, model asc, failures desc, tool_name asc
+        | extend place=row_number(1, prev(tool) != tool or prev(model) != model)
+        | where place <= 3
+        | project-away place
+        | extend row_type='failing'),
+    (worst
+        | join kind=leftouter (worst_reqs
+            | summarize requests=count(), priced=countif(cost_usd > 0), cost_usd=sumif(cost_usd, cost_usd > 0)
+                by node_id, session_id) on node_id, session_id
+        | join kind=leftouter (worst_reqs
+            | summarize n=count() by node_id, session_id, model
+            | summarize arg_max(n, model), models=dcountif(model, isnotempty(model)) by node_id, session_id)
+            on node_id, session_id
+        | project-away node_id1, session_id1, node_id2, session_id2, n
+        | extend requests=coalesce(requests, 0), priced=coalesce(priced, 0), cost_usd=iff(priced > 0, cost_usd, real(null))
+        | extend row_type='session'),
+    (union (reqs | where inside | project ts), (all_calls | project ts)
+        | summarize first_ts=min(ts), last_ts=max(ts)
+        | extend row_type='meta', computed_at=todouble(datetime_diff('millisecond', now(), datetime(1970-01-01))) / 1000)
+| order by row_type asc, tool asc, requests desc
+| take row_limit

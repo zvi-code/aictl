@@ -9,6 +9,7 @@ import styles from '../panels/insights/Insights.module.css'
 const cards = [
   lazy(() => import('../panels/insights/WorkPerInstruction')),
   lazy(() => import('../panels/insights/VerifiedCommits')),
+  lazy(() => import('../panels/insights/ModelReport')),
   lazy(() => import('../panels/insights/PauseTax')),
   lazy(() => import('../panels/insights/ContextCarry')),
   lazy(() => import('../panels/insights/Subagents')),
