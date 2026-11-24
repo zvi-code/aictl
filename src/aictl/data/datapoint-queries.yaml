@@ -687,3 +687,15 @@ self.threads:
 self.uptime:
   calc: Direct from /api/self-status → time.time() - process.create_time().
   query: SELECT uptime_s FROM (SELECT value as uptime_s FROM json_each(?) WHERE key = 'uptime_s')
+board.usage_by.requests:
+  calc: One value per model, vendor or project row of the usage table.
+  query: GET /api/board -> usage_by.<model|vendor|project>[].requests
+board.usage_by.cost_share:
+  calc: One value per model, vendor or project row of the usage table.
+  query: GET /api/board -> usage_by.<model|vendor|project>[].cost_share
+board.usage_by.cost_per_request:
+  calc: One value per model, vendor or project row of the usage table.
+  query: GET /api/board -> usage_by.<model|vendor|project>[].cost_per_request
+board.usage_by.error_share:
+  calc: One value per model, vendor or project row of the usage table.
+  query: GET /api/board -> usage_by.<model|vendor|project>[].error_share

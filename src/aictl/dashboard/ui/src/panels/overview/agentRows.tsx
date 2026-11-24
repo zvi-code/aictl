@@ -3,11 +3,12 @@ import type { BoardAgentRow, DetailNodes } from '../../data/contract.gen'
 import { overlayAgents, statusText, unlinkedProcesses } from '../../data/runtimeAgents'
 import { at, detailPath, object } from '../data'
 import { keyedRows } from '../kinds/model'
-import type { KeyedRow, PanelProps, Read } from '../types'
+import type { KeyedRow, PanelProps, Read, Row } from '../types'
 import { Choice } from './aControls'
 import { noActivity } from './agentTree'
 import { missing } from './aFields'
 import { knownSum, modelAllocation } from './overviewMath'
+import { splitLabel, usageSplits } from './usageSplit'
 import css from './overviewA.module.css'
 
 const folder = (path: unknown) => typeof path === 'string' ? path.split(/[\\/]/).filter(Boolean).at(-1) : undefined
@@ -131,29 +132,55 @@ export function agentRows({ ctx, def }: PanelProps) {
   }
 }
 
+const tableSplits = usageSplits.filter(([id]) => id !== 'tool')
+type TableSplit = typeof tableSplits[number][0]
+
+/** One row of the usage table: its name, and the field the page's filter reads (model or project). A value
+ * the source did not report and the folded "Other (n)" row are labels, never values to filter by. */
+export function usageRow(by: TableSplit, group: Row, speed?: Row): Row {
+  const key = typeof group.key === 'string' ? group.key : undefined
+  const name = key === undefined ? `Other (${group.other ?? 0})`
+    : splitLabel(by, { key, models: Array.isArray(group.models) ? group.models as string[] : undefined, values: [] })
+  return { ...group, name, [by]: key ?? name, ...(key ? {} : { [`${by}_reported`]: false }),
+    p95_ms: speed?.p95_ms ?? null, agent_ids: speed?.agent_ids,
+    models_text: by === 'vendor' && Array.isArray(group.models) ? (group.models as string[]).join(', ') : undefined }
+}
+
+/** The usage table by model, vendor or project (board usage_by), the costliest first. A model row folds the
+ * agents that used it (by_model) and carries its reply time; a model or project row sets the page's filter. */
 export function modelRows({ ctx, def }: PanelProps) {
-  const result = createMemo(() => ctx.read(def.sources[0]))
-  const models = createMemo(() => keyedRows(result(), ['model']))
+  const [split, setSplit] = createSignal<TableSplit>('model')
+  const usage = createMemo(() => ctx.read(def.sources[2]))
+  const result = createMemo((): Read => {
+    const base = usage()
+    if (base.state !== 'ready' && base.state !== 'stale') return base
+    const rows = at(base.value, split())
+    return Array.isArray(rows) ? { ...base, value: rows, rowKeys: undefined } : { state: 'unavailable' }
+  })
+  const speed = createMemo(() => keyedRows(ctx.read(def.sources[0]), ['model']))
   const agents = createMemo(() => new Map((ctx.board('agents') ?? []).map(agent => [agent.id, agent])))
-  const rows = createMemo(() => models().flatMap(entry => {
-    const children: KeyedRow[] = (Array.isArray(entry.row.agent_ids) ? entry.row.agent_ids as string[] : [])
-      .flatMap(id => {
-        const agent = agents().get(id)
+  const rows = createMemo(() => {
+    const by = split()
+    const models = new Map(speed().map(entry => [entry.row.model, entry.row]))
+    return (Array.isArray(result().value) ? result().value as Row[] : []).flatMap(group => {
+      const id = JSON.stringify([by, group.key ?? null])
+      const row = usageRow(by, group, by === 'model' && typeof group.key === 'string' ? models.get(group.key) : undefined)
+      const children: KeyedRow[] = (Array.isArray(row.agent_ids) ? row.agent_ids as string[] : []).flatMap(agentId => {
+        const agent = agents().get(agentId)
         if (!agent) return []
-        return [{ id: JSON.stringify([entry.id, id]), parent: entry.id, row: {
-          title: agent.title, model: agent.parent_id ? `${agent.role || agent.title} (subagent)` : agent.title,
-          agent_id: id, node_id: agent.node_id, agents: 1, ...modelAllocation(agent, entry.row.model),
+        const shared = modelAllocation(agent, group.key)
+        return [{ id: JSON.stringify([id, agentId]), parent: id, row: {
+          name: agent.parent_id ? `${agent.role || agent.title} (subagent)` : agent.title,
+          agent_id: agentId, node_id: agent.node_id, agents: 1, ...shared, requests: shared.msgs,
         } }]
       })
-    // An agent whose calls name no model is listed as such, never as a row with an empty name.
-    const row = typeof entry.row.model === 'string' && entry.row.model ? entry.row
-      : { ...entry.row, model: MODEL_NOT_REPORTED, model_reported: false }
-    return [{ ...entry, row, folded: children.length ? true : undefined }, ...children]
-  }))
-  const coverage = createMemo(() => modelCoverage(ctx.board('agents') ?? [], models().map(entry => entry.row)))
-  return { result, rows, flowColumns: ['model', 'agents', 'tokens', 'cost_usd'], description: <p class={css.note}>
-    {coverage().text}
-  </p> }
+      return [{ id, row, folded: children.length ? true : undefined }, ...children]
+    })
+  })
+  const coverage = createMemo(() => modelCoverage(ctx.board('agents') ?? [], speed().map(entry => entry.row)))
+  return { result, rows, flowColumns: ['name', 'requests', 'cost_usd', 'cost_share', 'cached_share', 'tokens'],
+    controls: <Choice label="Rows by" items={tableSplits} value={split} change={setSplit} />,
+    description: <Show when={split() === 'model'}><p class={css.note}>{coverage().text}</p></Show> }
 }
 
 export const MODEL_NOT_REPORTED = 'Model not reported'

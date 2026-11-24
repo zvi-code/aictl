@@ -3168,3 +3168,51 @@ procs.tool.config.launch_at_startup:
   tab: Settings
   section: Updates and startup
   dynamic_source: false
+
+board.usage_by.requests:
+  explanation: >
+    Model requests of the model, vendor or project in the time range.
+  source: >
+    compute_board usage_by[].requests: SUM(calls) of the request cells of the group.
+  source_type: aggregated
+  unit: count
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Usage by model
+  dynamic_source: false
+
+board.usage_by.cost_share:
+  explanation: >
+    The group's part of the list-price cost of the board.
+  source: >
+    compute_board usage_by[].cost_share: the group's cost / kpis.cost_usd.
+  source_type: aggregated
+  unit: ratio
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Usage by model
+  dynamic_source: false
+
+board.usage_by.cost_per_request:
+  explanation: >
+    List-price cost per model request of the group.
+  source: >
+    compute_board usage_by[].cost_per_request: cost_usd / requests.
+  source_type: aggregated
+  unit: usd
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Usage by model
+  dynamic_source: false
+
+board.usage_by.error_share:
+  explanation: >
+    Failed model requests as a share of the group's requests.
+  source: >
+    compute_board usage_by[].error_share: errors / requests.
+  source_type: aggregated
+  unit: ratio
+  update_freq: on-collect
+  tab: Usage and cost
+  section: Usage by model
+  dynamic_source: false
