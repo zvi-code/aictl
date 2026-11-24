@@ -1,0 +1,1 @@
+import{F as e}from"./index-CdibOBA5.js";import{t}from"./OtelSections-Dg4E9m6W.js";import{n}from"./DrawerView-DHppmwCv.js";function r(r){return e(n,{get read(){return r.detail},children:n=>e(t,{data:n})})}export{r as default};
