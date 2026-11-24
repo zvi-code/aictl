@@ -34,3 +34,16 @@ export function nodeTags(ids: readonly string[]): string {
   const list = order()
   return [...ids].sort((a, b) => list.indexOf(clean(a)) - list.indexOf(clean(b)) || a.localeCompare(b)).map(nodeTag).join(', ')
 }
+
+/** A node in a sentence or a button name: `node [1]`. */
+export const nodeNoun = (id: string | null | undefined) => `node ${nodeTag(id)}`
+
+/** A table column of nodes: the cell reads the number, so the column also sorts in number order, and its hover gives
+    the number with the host name. A row without a node reads nothing. */
+export function nodeCell<T>(id: (row: T) => unknown) {
+  const text = (row: T) => { const value = id(row); return typeof value === 'string' && value ? value : undefined }
+  return {
+    read: (row: T) => { const value = text(row); return value && nodeTag(value) },
+    hint: (row: T) => { const value = text(row); return value && nodeTitle(value) },
+  }
+}

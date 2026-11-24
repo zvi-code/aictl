@@ -10,6 +10,7 @@ import { breakdown, field, metric, stamp } from '../b'
 import { Bars, FieldStats, fileName, measured, StatStrip, topRows, usable } from '../Summary'
 import { displayField, entries, type Entry, identity, Metrics, number, rowsFrom, styles, text, View } from './View'
 import { fmtN } from '../../../design/format'
+import { nodeCell } from '../../../data/nodeNames'
 
 export const OUTSIDE_PROJECTS = 'Outside any project'
 export const OUTSIDE_HINT = 'not under a known project folder, so in no row of Projects'
@@ -32,7 +33,8 @@ export function LinkTable(props: {
     return { id: column.path, label, read: ({ row }: Entry) => scalar(at(row, column.path)), format,
       hint: props.hints?.[column.path] ?? (column.hint
         ? ({ row }: Entry) => { const value = at(row, column.hint!); return typeof value === 'string' && value ? value : undefined }
-        : undefined), action }
+        : undefined), action,
+      ...column.path === 'node_id' ? nodeCell<Entry>(({ row }) => at(row, column.path)) : {} }
   }), props.rows))
   return <Table label={props.label} fields={fields()} rows={props.rows} rowId={entry => entry.id}
     legacyKeys={{ hidden: `aictl-panel-columns-${props.label}` }} />

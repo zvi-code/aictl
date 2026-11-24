@@ -2,6 +2,7 @@ import { createMemo } from 'solid-js'
 import type { DetailContext } from '../../data/contract.gen'
 import { at, detailPath, detailRead, scopeConfirmed } from '../data'
 import { fmtNum } from '../../design/format'
+import { nodeNoun } from '../../data/nodeNames'
 import type { PanelContext, Read, Row } from '../types'
 
 type Split = { always: number; on_demand: number; conditional: number }
@@ -31,7 +32,7 @@ export function truncationNote(sets: readonly { tool: string; count: number; fil
   if (!cut.length) return
   const limit = Math.max(...cut.map(set => set.files.length))
   return `Each tool lists its ${fmtNum(limit)} largest context files; ${cut.map(set =>
-    `${name(set.tool)}${set.node_id ? ` (${set.node_id})` : ''} has ${fmtNum(set.count)}`).join(', ')}.`
+    `${name(set.tool)}${set.node_id ? ` (${nodeNoun(set.node_id)})` : ''} has ${fmtNum(set.count)}`).join(', ')}.`
 }
 
 /** A memory group row's figures from its files: lines summed (unknown if any file's is), the latest

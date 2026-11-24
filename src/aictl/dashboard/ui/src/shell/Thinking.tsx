@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { DetailThinking, DetailThinkingSearch } from '../data/contract.gen'
 import { fmtNum, stamp, toolDisplayName } from '../design/format'
+import { nodeCell } from '../data/nodeNames'
 import { blockNote } from '../drawer/thinkingModel'
 import { detailPath, detailRead } from '../panels/data'
 import { insightWindow } from '../panels/insights/insightsModel'
@@ -52,7 +53,7 @@ export default function Thinking(props: { ctx: PanelContext; search: string }) {
   }
   const fields: Field<SearchBlock>[] = [
     { id: 'ts', label: 'Time', read: block => block.ts, format: value => stamp(Number(value), true), numeric: true },
-    { id: 'node_id', label: 'Node', read: block => block.node_id, sortable: false },
+    { id: 'node_id', label: 'Node', ...nodeCell<SearchBlock>(block => block.node_id), sortable: false },
     { id: 'tool', label: 'Tool', read: block => toolDisplayName(block.tool), sortable: false },
     { id: 'model', label: 'Model', read: block => block.model, sortable: false },
     { id: 'title', label: 'Session', read: block => block.title || block.session_id, sortable: false,

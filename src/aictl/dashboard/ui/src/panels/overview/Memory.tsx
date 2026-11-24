@@ -1,5 +1,6 @@
 import { createMemo, untrack } from 'solid-js'
 import type { ContextLocal } from '../../data/contract.gen'
+import { nodeNoun } from '../../data/nodeNames'
 import { keyedRows } from '../kinds/model'
 import { RowTable } from '../kinds/Rows'
 import { SeriesView } from '../kinds/Series'
@@ -36,7 +37,7 @@ export default function Memory(props: PanelProps) {
   const series = createMemo(() => {
     const samples = new Map<string, Map<number, number>>()
     for (const point of growth().value ?? []) {
-      const label = point.node_id ?? 'Memory tokens'
+      const label = point.node_id ? nodeNoun(point.node_id) : 'Memory tokens'
       if (!samples.has(label)) samples.set(label, new Map())
       samples.get(label)!.set(point.ts, point.mem_tokens)
     }

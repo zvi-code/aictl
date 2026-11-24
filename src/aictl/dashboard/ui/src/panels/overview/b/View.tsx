@@ -1,5 +1,6 @@
 import { createEffect, createMemo, createSignal, type ParentProps } from 'solid-js'
 import { createResourceCache } from '../../../data/resource'
+import { nodeCell } from '../../../data/nodeNames'
 import { at } from '../../data'
 import { keyedRows, nodeColumn, presentation, presentFields, scalar } from '../../kinds/model'
 import { States } from '../../kinds/States'
@@ -81,7 +82,8 @@ export function DataTable(props: {
     ...props.columns,
   ].map<Field<Entry>>(column => {
     const { label, format } = displayField(props.ctx, column)
-    return { id: column.path, label, read: ({ row }: Entry) => scalar(at(row, column.path)), format }
+    return { id: column.path, label, read: ({ row }: Entry) => scalar(at(row, column.path)), format,
+      ...column.path === 'node_id' ? nodeCell<Entry>(({ row }) => at(row, column.path)) : {} }
   }).concat(props.fields ?? []), props.rows))
   // Hidden columns from the earlier per-panel menu carry over once.
   return <Table label={props.label} fields={fields()} rows={props.rows} rowId={entry => entry.id} action={props.action}

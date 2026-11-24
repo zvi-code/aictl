@@ -1,6 +1,7 @@
 import type { DetailNodes } from '../../data/contract.gen'
 import { fmtBps, fmtCpu, fmtMs } from '../../design/format'
 import type { ChartPoint } from '../../ui/chartData'
+import { nodeTag } from '../../data/nodeNames'
 
 export type SeriesView = Extract<DetailNodes, { view: 'series' }>
 export type SeriesRow = SeriesView['rows'][number]
@@ -158,7 +159,7 @@ export function metricPlot(metric: Metric, rows: readonly SeriesRow[], times: re
       .map(row => row[field]).filter((value): value is number => value != null && Number.isFinite(value)))
     const shown = [...nodes].sort((a, b) => peak(b) - peak(a) || a.localeCompare(b)).slice(0, MAX_LINES)
     return {
-      series: shown.map((node, i) => ({ label: node, color: i as 0 | 1 | 2 | 3 })),
+      series: shown.map((node, i) => ({ label: nodeTag(node), color: i as 0 | 1 | 2 | 3 })),
       points: times.map(t => ({ x: t, values: shown.map(node => at(byTime.get(t)?.find(row => row.node_id === node)?.[field])) })),
       note: nodes.length > shown.length ? `${shown.length} of ${nodes.length} nodes with the highest peak` : undefined,
     }

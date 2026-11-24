@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { BoardSeries, DetailMachine, DetailNodes, MachineLocal, MachinePipeline, TopicRuntimeAgent, TopicRuntimeProcess } from '../../../data/contract.gen'
 import { fmtBytes } from '../../../design/format'
+import { nodeTag } from '../../../data/nodeNames'
 import { Segmented } from '../../../ui/Segmented'
 import { isStoredToolSelected } from '../../../data/toolScope'
 import { SeriesView } from '../../kinds/Series'
@@ -174,7 +175,7 @@ function FleetProcesses(props: PanelProps) {
     pid_list: row.pid_list ?? (recorded.data() ? 'None recorded' : undefined) })), row => row.open_id))
   const result = () => withRows(detailRead(response(), view()?.rows, ctx.paused()), rows())
   const cpuField = sessionColumns[4], ramField = sessionColumns[5]
-  const label = ({ row }: Entry) => `${row.title === UNLISTED_SESSION ? toolName(ctx, String(row.tool)) : row.title} · ${row.node_id}`
+  const label = ({ row }: Entry) => `${row.title === UNLISTED_SESSION ? toolName(ctx, String(row.tool)) : row.title} · ${nodeTag(String(row.node_id ?? ''))}`
   const cpu = createMemo(() => topRows(rows(), 'cpu_percent', label))
   const memory = createMemo(() => topRows(rows(), 'mem_mb', label))
   const held = (path: string, column: typeof cpuField) => {

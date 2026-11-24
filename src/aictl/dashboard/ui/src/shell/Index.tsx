@@ -1,5 +1,6 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import { fmtNum } from '../design/format'
+import { nodeTag, nodeTitle } from '../data/nodeNames'
 import { detailPath, detailRead } from '../panels/data'
 import { toolLabel } from '../panels/insights/insightsModel'
 import {
@@ -185,7 +186,7 @@ function SettingsList(props: { settings: Settings }) {
   return <section class={styles.section} aria-labelledby="index-settings">
     <h3 id="index-settings">Daemon settings that decide the above</h3>
     <dl class={styles.settings}>
-      <dt>Node</dt><dd>{s().node_id}</dd>
+      <dt>Node</dt><dd title={nodeTitle(s().node_id)}>{nodeTag(s().node_id)}</dd>
       <dt>Roots</dt><dd>{s().roots?.join(', ') || 'none'}</dd>
       <dt>ignored_dirs</dt><dd>{s().ignored_dirs?.join(', ')}</dd>
       <dt>history_days</dt><dd>{historyDays(s().history_days)}</dd>
@@ -207,7 +208,7 @@ function NodeView(props: { node: IndexNode; label: Label; copy: (text: string) =
   const id = (part: string) => `index-${part}-${node().node_id}`
   return <article class={styles.node} data-node={node().node_id}>
     <header>
-      <h2>{node().node_id}</h2>
+      <h2 title={nodeTitle(node().node_id)}>Node {nodeTag(node().node_id)}</h2>
       <p class={styles.origin} data-origin={node().origin}>{originText(node())}</p>
       <Show when={node().note}><p class={styles.note}>{node().note}</p></Show>
       <Show when={node().truncated}><p class={styles.note}>The published snapshot was cut to fit the store: some lists are shortened.</p></Show>

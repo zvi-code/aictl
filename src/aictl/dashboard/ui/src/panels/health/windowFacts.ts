@@ -1,4 +1,5 @@
 import { stamp } from '../../design/format'
+import { nodeTag } from '../../data/nodeNames'
 import { flowTotals, type BackendView, type FlowsView } from './flowTrends'
 import { windowTotals, type SeriesRow, type SeriesView } from './trendModel'
 
@@ -63,7 +64,7 @@ export const restartCount = (window?: Pick<HealthWindow, 'series'>) =>
 
 export function restartText(restart: Restart, withNode: boolean) {
   const when = `${stamp(restart.at, true)} – ${stamp(restart.at + restart.step)}`
-  return `${withNode ? `${restart.node_id}: ` : ''}${when} (reason not recorded)`
+  return `${withNode ? `Node ${nodeTag(restart.node_id)}: ` : ''}${when} (reason not recorded)`
 }
 
 /** The logical table of a stored name: `T__<node key>` and `legacy__T` are physical tables of `T`. */

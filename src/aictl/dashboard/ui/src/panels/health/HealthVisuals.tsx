@@ -29,7 +29,7 @@ export function StatTiles(props: { items: readonly Metric[] }) {
   }}</For></div>
 }
 
-type ComparisonItem = { id: string; label: string; value?: number | null }
+type ComparisonItem = { id: string; label: string; value?: number | null; title?: string }
 const MAX_BARS = 8
 
 export function HealthComparison(props: { id: string; label: string; unit: string; window?: string; items?: readonly ComparisonItem[] }) {
@@ -46,7 +46,7 @@ export function HealthComparison(props: { id: string; label: string; unit: strin
             points={points()} xAxis="number" categories={rows().map(row => row.label)} />
         </div>
         <ol class={styles.chartKey}><For each={rows()} keyed={row => row.id}>{row =>
-          <li><span>{row().label}</span> <strong>{format.format(row().value!)} {props.unit}</strong></li>
+          <li><span title={row().title}>{row().label}</span> <strong>{format.format(row().value!)} {props.unit}</strong></li>
         }</For></ol>
       </Show>
     </section>

@@ -11,6 +11,7 @@ import {
   type HistoryRead, type StatusRecord, type StatusRow,
 } from './nodeStatus'
 import styles from './Health.module.css'
+import { nodeNoun, nodeTag, nodeTitle } from '../../data/nodeNames'
 
 type Reader = NonNullable<StatusRecord['readers']>[number]
 type Task = NonNullable<StatusRecord['tasks']>[number]
@@ -21,7 +22,8 @@ const when = (ts: number | null | undefined) => ts == null ? NA : stamp(ts, true
 
 function nodeFields(now: () => number): Field<StatusRow>[] {
   return [
-    { id: 'node_id', label: 'Node', read: row => row.node_id },
+    // The one table that introduces the node numbers: each with its host name.
+    { id: 'node_id', label: 'Node', read: row => nodeTitle(row.node_id) },
     { id: 'status', label: 'Status', read: row => nodeState(row, now()).label,
       hint: row => row.status === 'none' ? 'This node publishes no status record: its daemon runs an older aictl, or has not started.' : undefined },
     { id: 'version', label: 'Version and layout', read: row => row.record
@@ -91,17 +93,17 @@ export function NodeStatusTable(props: { ctx: PanelContext; rows: readonly Statu
     <div class={styles.grid} data-columns="wide">
       <Table label="Node status" fields={fields()} rows={props.rows} rowId={row => row.node_id}
         action={props.ctx.scope() === 'fleet' ? {
-          label: row => row.node_id === 'legacy' ? '' : `View ${row.node_id}`,
+          label: row => row.node_id === 'legacy' ? '' : `View ${nodeNoun(row.node_id)}`,
           run: row => props.ctx.navigate({ scope: 'node', node_id: row.node_id }),
         } : undefined} />
     </div>
     <For each={props.rows.filter(row => row.record)} keyed={row => row.node_id}>{row => {
       const record = () => row().record!
-      return <Detail label={`${row().node_id}: readers, history per tool, writer and tasks`}>
-        <Table label={`Readers of ${row().node_id}`} tableId="node-status-readers" fields={readerFields}
+      return <Detail label={`Node ${nodeTag(row().node_id)}: readers, history per tool, writer and tasks`} hint={nodeTitle(row().node_id)}>
+        <Table label={`Readers of ${nodeNoun(row().node_id)}`} tableId="node-status-readers" fields={readerFields}
           rows={record().readers ?? []} rowId={r => r.name} />
         <Show when={record().history?.by_tool?.length}>
-          <Table label={`History per tool of ${row().node_id}`} tableId="node-status-tools" fields={toolFields}
+          <Table label={`History per tool of ${nodeNoun(row().node_id)}`} tableId="node-status-tools" fields={toolFields}
             rows={record().history!.by_tool!} rowId={t => t.tool} />
         </Show>
         <Show when={record().writer}>{writer =>
@@ -111,7 +113,7 @@ export function NodeStatusTable(props: { ctx: PanelContext; rows: readonly Statu
             {writer().tables_failing?.length ? `; failing: ${writer().tables_failing!.join(', ')}` : ''}.</p>}
         </Show>
         <Show when={record().tasks?.length} fallback={<p class={styles.note}>No background task ran since the daemon started.</p>}>
-          <Table label={`Background tasks of ${row().node_id}`} tableId="node-status-tasks" fields={taskFields}
+          <Table label={`Background tasks of ${nodeNoun(row().node_id)}`} tableId="node-status-tasks" fields={taskFields}
             rows={record().tasks!} rowId={t => t.name} />
         </Show>
         <p class={styles.note}>Daemon started {when(record().daemon_started_at)}; report at {when(record().reported_at)}

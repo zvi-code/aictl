@@ -1,5 +1,6 @@
 import type { DetailNodes } from '../../data/contract.gen'
 import { MAX_LINES, type Plot, type SeriesRow } from './trendModel'
+import { nodeTag } from '../../data/nodeNames'
 
 export type FlowsView = Extract<DetailNodes, { view: 'flows' }>
 export type BackendView = Extract<DetailNodes, { view: 'backend' }>
@@ -82,7 +83,7 @@ export const otelPlot = (view: FlowsView, times: readonly number[], present?: Pr
 /** Rows each node submitted per second, from the node snapshots in the series view. */
 export const nodeRowsPlot = (rows: readonly SeriesRow[], times: readonly number[]) => groupPlot(rows.map(row => {
   const parts = [row.streaming_rows_per_s, row.queued_rows_per_s, row.inline_rows_per_s].filter(finite)
-  return { group: row.node_id, t: row.t, value: parts.length ? parts.reduce((a, b) => a + b, 0) : null }
+  return { group: nodeTag(row.node_id), t: row.t, value: parts.length ? parts.reduce((a, b) => a + b, 0) : null }
 }), times, { noun: 'nodes' })
 
 export function flowLossPlot(view: FlowsView, times: readonly number[], present?: Present): Plot {

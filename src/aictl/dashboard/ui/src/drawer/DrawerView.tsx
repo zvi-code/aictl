@@ -2,6 +2,7 @@ import { createEffect, createMemo, createSignal, For, lazy, Loading, Show, untra
 import type { BoardAgentRow, DetailAgent, TopicConfigurationLoaded, TopicRuntimeAgent } from '../data/contract.gen'
 import { isLive, projectName, stamp } from '../design/format'
 import { statusText } from '../data/runtimeAgents'
+import { nodeTag, nodeTitle } from '../data/nodeNames'
 import type { DrawerEntry, DrawerProps } from '../shell/drawerTypes'
 import { Drawer } from '../ui/Drawer'
 import { Icon, type Glyph } from '../ui/Icon'
@@ -136,7 +137,7 @@ function AgentDrawer(props: { shell: DrawerProps; entry: AgentEntry }) {
       <Show when={agent()?.tool || runtime()?.tool}>{tool => <span>{ctx.board('tool_labels')?.[tool()] ?? tool()}</span>}</Show>
       <Show when={agent()?.project || runtime()?.project}>{project => <span title={project()}>{projectName(project())}</span>}</Show>
       <Show when={agent()?.models?.length}><span>{agent()?.models.join(', ')}</span></Show>
-      <Show when={agent()?.node_id}><span>Node: {agent()?.node_id}</span></Show>
+      <Show when={agent()?.node_id}>{node => <span title={nodeTitle(node())}>Node: {nodeTag(node())}</span>}</Show>
     </div>}>
     <Show when={loaded()}>{evidence =>
       <details class={styles.section}>

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { flush } from 'solid-js'
+import { setNodes } from '../../../src/data/nodeNames'
 import { excludedSummary, groupFigures, loadLabel, loadSplit, openFile, truncationNote } from '../../../src/panels/overview/contextData'
 import { budgetNote, budgetSays } from '../../../src/panels/overview/contextOptions'
 import { overviewA } from '../../../src/panels/overview/a'
@@ -52,8 +54,10 @@ describe('Files each tool reads lists context and folds the rest into one line',
     const set = (tool: string, count: number, truncated: boolean, node_id?: string) =>
       ({ tool, count, truncated, node_id, files: Array.from({ length: truncated ? 400 : count }) })
     const name = (tool: string) => ({ 'copilot-cli': 'Copilot CLI' })[tool] ?? tool
+    setNodes('desk', ['win-a', 'win-b']); flush()
     expect(truncationNote([set('copilot-cli', 1200, true, 'win-a'), set('copilot-cli', 900, true, 'win-b'), set('codex', 5, false)], name))
-      .toBe('Each tool lists its 400 largest context files; Copilot CLI (win-a) has 1,200, Copilot CLI (win-b) has 900.')
+      .toBe('Each tool lists its 400 largest context files; Copilot CLI (node [1]) has 1,200, Copilot CLI (node [2]) has 900.')
+    setNodes(null, []); flush()
     expect(truncationNote([set('codex', 5, false)], name)).toBeUndefined()
   })
 })

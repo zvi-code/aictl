@@ -11,10 +11,11 @@ import { fmtBps, fmtBytes, fmtMs } from '../../design/format'
 import { NA, NA_REASON, NONE, type HealthView, type StatusReason } from './healthModel'
 import { useHealth } from './healthData'
 import { Box } from '../../ui/Box'
+import { nodeCell } from '../../data/nodeNames'
 import styles from './Health.module.css'
 
 type MetricField = FieldRef & { unit?: string }
-type Fact = { field: MetricField; value: unknown }
+type Fact = { field: MetricField; value: unknown; title?: string }
 export const field = (path: string, label?: string, unit?: string, datapoint?: string): MetricField => ({ path, label, unit, datapoint })
 export const time = (path: string, label: string): MetricField => ({ path, label, format: 'timestamp' })
 export const fact = (label: string, value: unknown, unit?: string, datapoint?: string): Fact => ({ field: field(label, label, unit, datapoint), value })
@@ -39,7 +40,7 @@ export function Facts(props: { ctx: PanelContext; items: readonly Fact[]; stats?
     <dl class={styles.facts}><For each={props.items} keyed={item => item.field.path}>{item => {
       const meta = () => metric(props.ctx, item().field)
       const value = () => scalar(item().value)
-      return <div><dt>{meta().label}</dt><dd title={value() === undefined ? `${meta().label}: ${NA_REASON}` : undefined}>
+      return <div><dt title={item().title}>{meta().label}</dt><dd title={value() === undefined ? `${meta().label}: ${NA_REASON}` : undefined}>
         {value() === undefined ? NA : value() === '' ? NONE : meta().format(value()!)}</dd></div>
     }}</For></dl>
   }>
@@ -63,8 +64,9 @@ export function HealthTable<T extends object>(props: {
   const fields = createMemo(() => reported().map(ref => {
     const meta = metric(props.ctx, ref)
     const raw = (row: T) => scalar(at(row, ref.path))
-    return { id: ref.path, label: meta.label, format: meta.format, read: (row: T) => cellText(raw(row)),
-      hint: (row: T) => raw(row) === undefined ? `${meta.label}: ${NA_REASON}` : undefined }
+    const node = ref.path === 'node_id' ? nodeCell<T>(row => at(row, ref.path)) : undefined
+    return { id: ref.path, label: meta.label, format: meta.format, read: (row: T) => cellText(node && raw(row) ? node.read(row) : raw(row)),
+      hint: (row: T) => raw(row) === undefined ? `${meta.label}: ${NA_REASON}` : node?.hint(row) }
   }))
   return <Show when={props.rows?.length}
     fallback={<PanelState state={props.rows == null ? 'unavailable' : 'empty'} inline message={props.rows != null ? props.empty : undefined} />}>

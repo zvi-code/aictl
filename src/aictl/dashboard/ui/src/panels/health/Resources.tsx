@@ -6,6 +6,7 @@ import { useHealth } from './healthData'
 import { finite } from './healthModel'
 import { HealthMeter, HealthComparison, StatTiles, percentOf, totalOf } from './HealthVisuals'
 import styles from './Health.module.css'
+import { nodeNoun, nodeTag, nodeTitle } from '../../data/nodeNames'
 
 const resourceFields = [
   field('node_id', 'Reporting node'), field('status', 'Host status'), time('captured_at', 'Last report'),
@@ -68,7 +69,7 @@ export default function Resources(props: PanelProps) {
         </div>
       }>
         <HealthComparison id="host-cpu" label="CPU by reporting host" unit="%"
-          items={active()?.map(row => ({ id: row.node_id, label: row.node_id, value: number(row.cpu_percent) }))} />
+          items={active()?.map(row => ({ id: row.node_id, label: nodeTag(row.node_id), title: nodeTitle(row.node_id), value: number(row.cpu_percent) }))} />
       </Show>
       <Show when={cluster()}>
         <div class={styles.meters}>
@@ -83,7 +84,7 @@ export default function Resources(props: PanelProps) {
       <HealthTable ctx={ctx} label="Reported node runtime" fields={resourceFields} rows={rows()} rowId={row => row.node_id}
         empty="No nodes reported host measurements."
         action={ctx.scope() === 'fleet' ? {
-          label: row => row.node_id === 'legacy' ? '' : `View ${row.node_id}`,
+          label: row => row.node_id === 'legacy' ? '' : `View ${nodeNoun(row.node_id)}`,
           run: row => ctx.navigate({ scope: 'node', node_id: row.node_id }),
         } : undefined} />
       <HealthTable ctx={ctx} label="Network traffic by node" fields={networkFields} rows={rows()} rowId={row => row.node_id}

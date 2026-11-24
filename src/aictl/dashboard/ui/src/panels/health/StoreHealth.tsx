@@ -8,6 +8,7 @@ import { HealthMeter, HealthComparison, StatTiles, percentOf, perMinute, totalOf
 import { Membership, mode } from './Traffic'
 import { StoreLinks } from './Highlights'
 import styles from './Health.module.css'
+import { nodeTag, nodeTitle } from '../../data/nodeNames'
 
 const requestFields = [
   field('operation', 'Client operation'), field('total', 'Requests'), field('rate_per_s', 'Requests/s', 'per_s'),
@@ -51,7 +52,8 @@ export default function StoreHealth(props: PanelProps) {
     const failedShare = () => percentOf(queryCpu()?.failed, queryCpu()?.queries)
     const writerBars = (key: 'queue_depth' | 'rows_dropped') => tables()?.map(row => {
       const value = record(row)?.[key]
-      return { id: rowId(row, 'node_id', 'name'), label: row.node_id ? `${row.node_id} · ${row.name}` : row.name,
+      return { id: rowId(row, 'node_id', 'name'), label: row.node_id ? `${nodeTag(row.node_id)} · ${row.name}` : row.name,
+        title: row.node_id ? nodeTitle(row.node_id) : undefined,
         value: finite(value) ? value : undefined }
     })
     return <>
@@ -75,7 +77,7 @@ export default function StoreHealth(props: PanelProps) {
       </div>
       <Show when={ctx.scope() === 'fleet'}>
         <HealthComparison id="query-cpu" label="Kusto query CPU per daemon" unit="s" window="Since each client started"
-          items={queryRows()?.map(row => ({ id: row.node_id, label: row.node_id, value: row.total_cpu_s }))} />
+          items={queryRows()?.map(row => ({ id: row.node_id, label: nodeTag(row.node_id), title: nodeTitle(row.node_id), value: row.total_cpu_s }))} />
       </Show>
       <div class={styles.chartGroup}>
         <HealthComparison id="writer-queue" label="Writer queue depth by table" unit="rows" items={writerBars('queue_depth')} />
@@ -148,7 +150,8 @@ export default function StoreHealth(props: PanelProps) {
           rowId={row => row.table} empty="No table overrides." />
         <h4 title="Rows sent are not confirmed queryable. Queue and drop counters are per reporting writer.">Writer counters by table</h4>
         <For each={writers()} keyed={writer => writer.node_id ?? ''}>{writer => <Facts ctx={ctx} items={[
-          fact(writer().node_id ? `${writer().node_id} writer status` : 'Writer status', writer().status),
+          { ...fact(writer().node_id ? `Node ${nodeTag(writer().node_id)} writer status` : 'Writer status', writer().status),
+            title: writer().node_id ? nodeTitle(writer().node_id) : undefined },
           fact('Writer warning', writer().warning),
         ]} />}</For>
         <HealthTable ctx={ctx} label="Writer counters by table" fields={ctx.scope() === 'local' ? writerFields : [field('node_id', 'Node'), ...writerFields]}

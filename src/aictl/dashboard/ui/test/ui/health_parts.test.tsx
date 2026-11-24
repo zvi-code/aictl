@@ -7,6 +7,7 @@ import { HealthContext } from '../../src/panels/health/healthData'
 import { Facts, fact, field, HealthBox, HealthTable, Reasons } from '../../src/panels/health/HealthParts'
 import { HealthMeter, StatTiles } from '../../src/panels/health/HealthVisuals'
 import { bodyRows, headerTexts, installDom, layoutHeaders, mount } from './dom'
+import { setNodes } from '../../src/data/nodeNames'
 
 const ctx = { metadata: () => undefined } as unknown as PanelContext
 type Row = { id: string; name: string; size?: number; note?: string; hidden?: string }
@@ -27,6 +28,18 @@ describe('Health tables and values', () => {
     expect(cell(host, 0, 'note').textContent).toContain('none')
     expect(host.textContent).not.toContain('Not available from this source')
     dispose()
+  })
+
+  it('writes a node column as the node number, with the host name on hover', () => {
+    setNodes('desk-7', ['box-b', 'box-a']); flush()
+    const nodes = [{ node_id: 'box-b', rows: 3 }, { node_id: 'desk-7', rows: 1 }, { node_id: 'unlisted', rows: 2 }]
+    const { host, dispose } = mount(() => <HealthTable ctx={ctx} label="Sending nodes" rows={nodes} rowId={row => row.node_id}
+      fields={[field('node_id', 'Node'), field('rows', 'Rows')]} />)
+    expect([0, 1, 2].map(i => cell(host, i, 'node_id').textContent)).toEqual(['[2]', '[0]', 'unlisted'])
+    expect([0, 1, 2].map(i => cell(host, i, 'node_id').title)).toEqual(['[2] box-b', '[0] desk-7', 'unlisted'])
+    expect(host.textContent).not.toContain('box-b')
+    dispose()
+    setNodes(null, []); flush()
   })
 
   it('shows n/a with its reason in a fact and in a tile instead of a long sentence', () => {

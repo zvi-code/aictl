@@ -1,5 +1,6 @@
 // The Index screen's body (/api/board/index, built by src/aictl/index_breakdown.py) and its wording.
 import { ago, fmtBytes, fmtNum, NA, stamp } from '../../design/format'
+import { nodeNoun } from '../../data/nodeNames'
 
 export type FileStates = Record<'complete' | 'reading' | 'changed' | 'waiting' | 'reread' | 'outside_window' | 'unreadable', number>
 export type Home = {
@@ -80,7 +81,7 @@ export function originText(node: IndexNode, now = Date.now() / 1000) {
   }
   if (node.origin === 'published') {
     const at = node.published_at ?? node.computed_at
-    return `Published snapshot: computed by ${node.node_id}'s daemon at ${stamp(at, true)} (${ago(at, now)}), read from the store.`
+    return `Published snapshot: computed by ${nodeNoun(node.node_id)}'s daemon at ${stamp(at, true)} (${ago(at, now)}), read from the store.`
   }
   return 'From the store only: this node publishes no breakdown.'
 }

@@ -5,6 +5,7 @@ import type { PanelContext } from '../../src/panels/types'
 import { NodeStatusTable } from '../../src/panels/health/Nodes'
 import { noticeText, readingSummary, scopeBadge, statusPath, type StatusRow } from '../../src/panels/health/nodeStatus'
 import { ScopeStatus } from '../../src/shell/ScopeStatus'
+import { setNodes } from '../../src/data/nodeNames'
 import { bodyRows, installDom, layoutHeaders, mount } from './dom'
 
 const NOW = 1_800_000_000
@@ -66,6 +67,7 @@ describe('node status', () => {
 
   it('shows one row per node with concrete figures, flags a silent node and an older one', () => {
     const { ctx } = context(undefined)
+    setNodes('mac', fleet.map(r => r.node_id)); flush()
     const { host, dispose } = mount(() => <NodeStatusTable ctx={ctx} rows={fleet} now={() => NOW} />)
     const rows = bodyRows(host)
     const text = (i: number, col: string) => rows[i].querySelector(`td[data-col="${col}"]`)?.textContent ?? ''
@@ -78,10 +80,15 @@ describe('node status', () => {
     expect(text(0, 'version')).toContain('2.4.0 · layout 7')
     expect(text(3, 'status')).toContain('No status reported')
     expect(text(4, 'status')).toContain('Not reporting for 15 min')
+    // This table introduces the node numbers: each with its host name; elsewhere a node is its number.
+    expect([text(0, 'node_id'), text(1, 'node_id'), text(4, 'node_id')]).toEqual(['[0] mac', '[4] win', '[1] gone'])
+    expect(rows[1].querySelector('button')?.getAttribute('aria-label') ?? rows[1].textContent).toContain('View node [4]')
     // Each node with a record expands to its readers, tools, writer and tasks.
-    expect(Array.from(host.querySelectorAll('summary')).map(s => s.textContent)).toEqual([
-      'mac: readers, history per tool, writer and tasks', 'win: readers, history per tool, writer and tasks',
-      'linux: readers, history per tool, writer and tasks', 'gone: readers, history per tool, writer and tasks'])
+    const summaries = Array.from(host.querySelectorAll('summary'))
+    expect(summaries.map(s => s.textContent)).toEqual([
+      'Node [0]: readers, history per tool, writer and tasks', 'Node [4]: readers, history per tool, writer and tasks',
+      'Node [2]: readers, history per tool, writer and tasks', 'Node [1]: readers, history per tool, writer and tasks'])
+    expect(summaries[1].getAttribute('title')).toBe('[4] win')
     const details = host.querySelector('details')!
     details.open = true
     details.dispatchEvent(new Event('toggle'))
@@ -90,6 +97,7 @@ describe('node status', () => {
     expect(details.textContent).toContain('1,234 rows queued')
     expect(details.textContent).toContain('layout 7, data epoch e1')
     dispose()
+    setNodes(null, []); flush()
   })
 
   it('says in the top row badge how many nodes report, that history is still read, and the live link', () => {

@@ -1,4 +1,5 @@
 import { ago, fmtAge, stamp } from '../../design/format'
+import { nodeTags } from '../../data/nodeNames'
 import type { HealthLocal, HealthStore, MachineMonitor, MachinePipeline, QueryCpu } from '../../data/contract.gen'
 import type { NodeReport, WriterReport } from './scopedHealth'
 import { droppedRows, failedCommands, failedIngestion, failedRequests, type HealthWindow } from './windowFacts'
@@ -169,7 +170,7 @@ export function healthStatus(data?: HealthView | null, error?: unknown, nowS = D
   if (error) add('Could not update health; showing the last response.', true)
   if (report) {
     const stale = report.rows.filter(row => row.status === 'stale')
-    if (stale.length) add(`Stale host reports: ${stale.map(row => row.node_id).join(', ')}.`)
+    if (stale.length) add(`Stale host reports from ${stale.length === 1 ? 'node' : 'nodes'} ${nodeTags(stale.map(row => row.node_id))}.`)
     if (!report.rows.length || report.rows.some(row => row.status === 'unknown')) pending.push('Some selected hosts have not reported measurements.')
     if (report.supplementError) limitations.push(report.supplementError)
     if (report.contributors.length < report.rows.length) limitations.push('Not every selected node reports SDK counters.')

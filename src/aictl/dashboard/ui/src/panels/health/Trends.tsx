@@ -22,6 +22,7 @@ import {
   droppedEvents, droppedRows, failedCommands, failedIngestion, failedRequests, receivingTables, restartCount, restartList, restartText,
 } from './windowFacts'
 import styles from './Health.module.css'
+import { nodeNoun, nodeTag, nodeTitle } from '../../data/nodeNames'
 
 const REFRESH_MS = 30_000
 const NO_STORE = 'Health history needs a Kusto store.'
@@ -85,7 +86,7 @@ const card = (item: Metric, plot: Plot): Card =>
 function seriesCard(item: Metric, rows: readonly SeriesRow[], times: readonly number[]): Card {
   // Query CPU adds up across nodes, so many nodes are stacked with an Other band instead of showing only the busiest few.
   if (item.id === 'query-cpu' && nodeIds(rows).length > 1) {
-    return { ...card(item, groupPlot(rows.map(row => ({ group: row.node_id, t: row.t, value: row.query_cpu })), times, { noun: 'nodes' })),
+    return { ...card(item, groupPlot(rows.map(row => ({ group: nodeTag(row.node_id), t: row.t, value: row.query_cpu })), times, { noun: 'nodes' })),
       stack: true }
   }
   return card(item, metricPlot(item, rows, times))
@@ -249,7 +250,7 @@ export default function Trends(props: PanelProps) {
     .map(row => ({ ...row, host_mem_bytes: fromMiB(row.host_mem_mb), daemon_rss_bytes: fromMiB(row.daemon_rss_mb) })))
   const fleet = () => ctx.scope() === 'fleet'
   const viewNodeAction = {
-    label: (row: { node_id: string }) => row.node_id === 'legacy' ? '' : `View ${row.node_id}`,
+    label: (row: { node_id: string }) => row.node_id === 'legacy' ? '' : `View ${nodeNoun(row.node_id)}`,
     run: (row: { node_id: string }) => ctx.navigate({ scope: 'node', node_id: row.node_id }),
   }
   const viewNode = () => fleet() ? viewNodeAction : undefined
@@ -352,7 +353,7 @@ export default function Trends(props: PanelProps) {
         <Show when={restarts()?.length}>
           <Detail label={`Daemon restarts (${restarts()!.length} buckets)`}>
             <ul><For each={restarts()} keyed={item => `${item.node_id}:${item.at}`}>{item =>
-              <li>{restartText(item(), fleet() || summaries().length > 1)}</li>}</For></ul>
+              <li title={nodeTitle(item().node_id)}>{restartText(item(), fleet() || summaries().length > 1)}</li>}</For></ul>
           </Detail>
         </Show>
         <Show when={view() === 'chart'} fallback={

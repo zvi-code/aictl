@@ -5,6 +5,7 @@ import { readScreen } from '../../src/data/filters'
 import { gapFinding, indexText, originText, type Compare, type IndexBody, type IndexNode } from '../../src/panels/index/indexModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import Index from '../../src/shell/Index'
+import { setNodes } from '../../src/data/nodeNames'
 import { installDom, layoutHeaders, mount } from './dom'
 
 const label = (tool: string) => ({ 'copilot-cli': 'Copilot CLI', 'copilot-vscode': 'VS Code Copilot' }[tool] ?? tool)
@@ -71,7 +72,9 @@ describe('Index screen', () => {
       'No tool could be compared: aictl counts no session files of this tool on disk; stored sessions only.')
     expect(originText(live)).toMatch(/^Live: computed on this node at .+, took 812 ms; read state from the running daemon\.$/)
     const published = { ...live, origin: 'published' as const, published_at: 1_700_000_000 - 600 }
-    expect(originText(published, 1_700_000_000)).toMatch(/^Published snapshot: computed by win-box's daemon at .+ \(10 min ago\), read from the store\.$/)
+    setNodes('desk', ['win-box']); flush()
+    expect(originText(published, 1_700_000_000)).toMatch(/^Published snapshot: computed by node \[1\]'s daemon at .+ \(10 min ago\), read from the store\.$/)
+    setNodes(null, []); flush()
     expect(indexText({ as_of: null, since_daemon_start: null, locations: [], compare: [] })).toContain('the daemon start is not known')
   })
 
@@ -82,6 +85,13 @@ describe('Index screen', () => {
     expect(asked.at(-1)).toBe('/api/board/index?project=C%3A%5CWork%5CRepoA')
     const node = host.querySelector('[data-node="win-box"]')!
     expect(node.querySelector('[data-origin="live"]')!.textContent).toContain('read state from the running daemon')
+    // The node is written by its number, its host name one hover away; the data attribute keeps the id.
+    setNodes('desk', ['win-box']); flush()
+    expect(node.querySelector('h2')!.textContent).toBe('Node [1]')
+    expect(node.querySelector('h2')!.getAttribute('title')).toBe('[1] win-box')
+    const setting = [...host.querySelectorAll('dt')].find(dt => dt.textContent === 'Node')!.nextElementSibling!
+    expect([setting.textContent, setting.getAttribute('title')]).toEqual(['[1]', '[1] win-box'])
+    setNodes(null, []); flush()
     const text = node.textContent!
     for (const value of ['Copilot CLI: 280 of 400 on disk not stored yet or unreadable', 'D:\\Copilot\\session-state', 'process environment, known-homes file',
       'D:\\Copilot\\session-store.db', 'C:\\Work\\RepoA', 'node_modules', '0 (every session file still on disk)', 'pid 42',

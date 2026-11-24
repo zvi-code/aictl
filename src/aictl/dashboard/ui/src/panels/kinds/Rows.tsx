@@ -5,6 +5,7 @@ import { at } from '../data'
 import type { FieldRef, KeyedRow, PanelProps, Read, RowOptions } from '../types'
 import { keyedRows, nodeColumn, presentation, presentFields, rowAction, scalar } from './model'
 import { States } from './States'
+import { nodeCell } from '../../data/nodeNames'
 import type { TableProps } from '../../ui/Table'
 
 type PanelRow = ReturnType<typeof keyedRows>[number]
@@ -73,7 +74,8 @@ export function RowTable(props: {
       ? [{ path: 'node_id', label: 'Node' }] : []),
   ].map((field, index) => {
     const { label, format, unit } = presentation(ctx, field)
-    const read = ({ row }: KeyedRow) => scalar(at(row, field.path))
+    const node = field.path === 'node_id' ? nodeCell<KeyedRow>(({ row }) => at(row, field.path)) : undefined
+    const read = node?.read ?? (({ row }: KeyedRow) => scalar(at(row, field.path)))
     let numeric: boolean | undefined
     if (props.pageSize && unit !== undefined && numericUnits.has(unit)) {
       const sample = props.rows.find(entry => read(entry) != null)
@@ -83,7 +85,7 @@ export function RowTable(props: {
     return {
       id: field.path, label, read, numeric, format,
       sortable: props.sorted ? props.sorted.columns.has(field.path) : undefined,
-      hint: hint ? ({ row }: KeyedRow) => { const text = at(row, hint); return typeof text === 'string' && text ? text : undefined } : undefined,
+      hint: node?.hint ?? (hint ? ({ row }: KeyedRow) => { const text = at(row, hint); return typeof text === 'string' && text ? text : undefined } : undefined),
       compact: unit === 'count' || unit === 'tokens' || unit === 'usd' ? (value: number) => {
         if (Math.abs(value) >= 1000) return unit === 'usd' ? fmtUsd(value) : fmtN(value)
       } : undefined,

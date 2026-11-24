@@ -1,6 +1,7 @@
 import { createMemo, createSignal, For, Show, untrack } from 'solid-js'
 import type { ContextLocal } from '../../data/contract.gen'
 import { fmtNum } from '../../design/format'
+import { nodeNoun, nodeTitle } from '../../data/nodeNames'
 import { keyedRows, presentation } from '../kinds/model'
 import { RowTable } from '../kinds/Rows'
 import { States } from '../kinds/States'
@@ -36,7 +37,7 @@ export default function TokenSplit(props: PanelProps) {
       const categories = () => Array.isArray(value().kinds) ? value().kinds : []
       const selected = (category: string) => picked()?.group === idOf(value()) && picked()?.category === category
       return <div class={css.group}>
-        <strong>{value().label || value().tool}{value().node_id ? ` · ${value().node_id}` : ''}</strong>
+        <strong title={value().node_id ? nodeTitle(value().node_id) : undefined}>{value().label || value().tool}{value().node_id ? ` · ${nodeNoun(value().node_id)}` : ''}</strong>
         <p class={css.note}>{format(value().tokens)} tokens in {fmtNum(value().files)} files · {loadSplit(value(), format)}</p>
         <div class={css.bar}>
           <For each={categories().filter(category => category.tokens > 0)} keyed={entry => entry.kind}>
