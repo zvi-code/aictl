@@ -7,6 +7,8 @@ import type { JSX } from '@solidjs/web'
 import { beforeEach, describe, expect, it } from 'vitest'
 import AfterFailure from '../../src/panels/insights/AfterFailure'
 import Rereads from '../../src/panels/insights/Rereads'
+import Mcp from '../../src/panels/insights/Mcp'
+import type { McpBody } from '../../src/panels/insights/mcpModel'
 import Skills from '../../src/panels/insights/Skills'
 import type { SkillsBody } from '../../src/panels/insights/skillsModel'
 import { readColourBy } from '../../src/panels/insights/charts/ColourBy'
@@ -339,6 +341,80 @@ describe('INS-V-C · Skills', () => {
     expect(parts(svgRow(box, 'uses', 'review'))).toEqual(['c1'])
     expect(parts(svgRow(box, 'after_edit', 'review'))).toEqual(['c1'])
     expect(values(box, 'after_edit')).toEqual(['60%', '60%'])
+    dispose()
+  })
+})
+
+// ─── MCP servers ─────────────────────────────────────────────────────────────────────────────────────────────────────
+const mcpWhole = { calls: 650, failures: 30, sum_ms: 2_000_000, output_bytes: 60_000, carried_bytes: 20_000_000 }
+const mcpFig = { ...mcpWhole, sessions: 13, projects: 4, failure_share: 30 / 650, enough: true, p50_ms: 27, p95_ms: 4661 }
+const mcpRepos = [seg('/src/app', { calls: 500, failures: 10, sum_ms: 1_500_000, output_bytes: 40_000, carried_bytes: 15_000_000 }, mcpWhole),
+  seg('', { calls: 150, failures: 20, sum_ms: 500_000, output_bytes: 20_000, carried_bytes: 5_000_000 }, mcpWhole)]
+const mcpServer = { ...mcpFig, server: 'kusto', tools: ['claude-code'], server_tools: 1, repos: mcpRepos,
+  calls_by_tool: [{ ...mcpFig, tool_name: 'query', repos: mcpRepos.map(item => ({ ...item, share: {}, of_repo: {} })) }] }
+const mcp = {
+  ...base, card: 'mcp', repo_order: order, repo_others: others, sessions: [],
+  servers: [mcpServer, { ...mcpServer, server: 'docs', calls: 100, failures: 0, failure_share: 0, repos: [], calls_by_tool: [] }],
+  small_servers: [],
+  listed: [{ server: 'docs', tool: 'claude-code', sessions: 24, called_sessions: 4, list_tokens: 5000, unused_tokens: 4000, listed_tools: 16,
+    repos: [seg('/src/docs', { sessions: 24, called_sessions: 4, unused_tokens: 4000 }, { sessions: 24, called_sessions: 4, unused_tokens: 4000 })] }],
+  projects: [{ project: '/src/app', calls: 500, sessions: 10, servers: 1, failures: 10, sum_ms: 1_500_000, output_bytes: 40_000,
+    repos: [seg('/src/app', { calls: 500, failures: 10 }, { calls: 500, failures: 10 })] }],
+  summary: { calls: 750, all_calls: 10_000, call_share: 0.075, sum_ms: 2_500_000, time_share: 0.02, output_bytes: 70_000, carried_bytes: 20_000_000,
+    failures: 30, servers: 2, top: mcpServer, listing_tools: ['claude-code'], listed_servers: 1, never_called: 0, unused_tokens: 4000,
+    small_servers: 0, small_projects: [] },
+} as unknown as McpBody
+
+describe('INS-V-C · MCP servers', () => {
+  it('states what is measured, leads with the MCP calls of all tool calls, and draws the rankings side by side', () => {
+    const { box, dispose } = draw(Mcp, 'mcp', mcp)
+    expect(finding(box)).toBe('MCP tool calls in the period, per server, server tool and project: calls, failures, duration and result bytes; ' +
+      'MCP tools listed to the model.')
+    expect(box.querySelector('[data-hero]')!.textContent).toBe('750MCP calls to 2 servers, of 10,000 tool calls (8%)')
+    expect(charts(box)).toEqual(['calls', 'time', 'sum', 'returned', 'carried', 'server-tools', 'listed', 'projects'])
+    expect(rows(box, 'calls')).toEqual(['kusto', 'docs'])
+    expect(values(box, 'calls')).toEqual(['650 calls · 30 failed (5%)', '100 calls · 0 failed (0%)'])
+    const kusto = svgRow(box, 'calls', 'kusto')
+    expect(parts(kusto)).toEqual(['c1', 'bad'])
+    expect(svgTip(kusto, 'bad')).toBe('kusto: 30 of 650 calls failed (5%)')
+    expect(box.querySelector('[data-repo-legend]')).toBeNull()
+    expect(box.querySelector('[data-totals] p')!.textContent).toMatch(/^750 MCP calls to 2 servers \(8% of 10,000 tool calls\), 30 failed/)
+    dispose()
+  })
+
+  it('switches every split bar to repositories; the median time stays whole in a neutral tone', () => {
+    const { box, dispose, navigated } = draw(Mcp, 'mcp', mcp)
+    colourBy(box, 'Repository')
+    expect(navigated).toEqual([{ by: 'repo' }])
+    expect(texts(box.querySelectorAll('[data-repo-legend] li'), item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
+    const kusto = svgRow(box, 'calls', 'kusto')
+    expect([parts(kusto), repos(kusto)]).toEqual([['repo:/src/app', 'repo:'], ['0', OTHER_TEXT]])
+    expect(svgTip(kusto, 'repo:')).toBe('kusto — Other repositories (every repository outside the 8 with the highest cost, summed): ' +
+      '150 calls · 23% of this bar. 20 of them failed. kusto: 650 calls in 13 sessions of 4 projects; 30 failed (5%)')
+    // A server the answer does not split keeps its own parts.
+    expect(parts(svgRow(box, 'calls', 'docs'))).toEqual(['c1'])
+    expect(parts(svgRow(box, 'time', 'kusto'))).toEqual(['muted'])
+    expect(svgTip(svgRow(box, 'sum', 'kusto'), 'repo:/src/app')).toMatch(/^kusto, tool time — app \(\/src\/app\): 25 min · 75% of this bar\. 500 calls in this repository\. kusto: tool time 33 min/)
+    expect(repos(svgRow(box, 'returned', 'kusto'))).toEqual(['0', OTHER_TEXT])
+    expect(repos(svgRow(box, 'carried', 'kusto'))).toEqual(['0', OTHER_TEXT])
+    expect(repos(svgRow(box, 'server-tools', 'kusto:query'))).toEqual(['0', OTHER_TEXT])
+    expect(svgTip(svgRow(box, 'listed', 'claude-code:docs'), 'repo:/src/docs')).toMatch(/^docs, sessions that listed it — docs \(\/src\/docs\): 24 sessions · 100% of this bar\. Called in 4 of them; 4\.0 k listing tokens in those that did not\./)
+    expect(repos(svgRow(box, 'projects', '/src/app'))).toEqual(['0'])
+    expect(box.querySelector('[data-chart="calls"] [data-part="bad"]')).toBeNull()
+    colourBy(box, 'Succeeded / failed')
+    expect(parts(svgRow(box, 'calls', 'kusto'))).toEqual(['c1', 'bad'])
+    dispose()
+  })
+
+  it('draws succeeded and failed with no switch when the answer carries no split', () => {
+    history.replaceState(null, '', '/?screen=insights&range=all&by=repo')
+    const strip = <T extends object>(list: T[]) => list.map(row => ({ ...row, repos: undefined }))
+    const plain = { ...mcp, repo_order: [], repo_others: null, listed: strip(mcp.listed), projects: strip(mcp.projects),
+      servers: mcp.servers.map(item => ({ ...item, repos: undefined, calls_by_tool: strip(item.calls_by_tool) })) } as unknown as McpBody
+    const { box, dispose } = draw(Mcp, 'mcp', plain)
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(parts(svgRow(box, 'calls', 'kusto'))).toEqual(['c1', 'bad'])
+    expect(parts(svgRow(box, 'listed', 'claude-code:docs'))).toEqual(['c1', 'muted'])
     dispose()
   })
 })

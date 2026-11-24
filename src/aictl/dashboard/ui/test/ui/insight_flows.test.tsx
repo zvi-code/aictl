@@ -208,7 +208,7 @@ describe('INS-22 · MCP servers', () => {
       '(1% of all tool time). Results 3 MB; carried with later requests up to 430 MB (upper bound). Claude Code listed tools of ' +
       '1 server to the model; 1 of them not called in any session that listed them. Listings in sessions that did not call the ' +
       'server: an estimated 5.0 k tokens.')
-    expect(mcpHero(mcpBody)).toEqual({ value: '1.4 h', label: 'MCP tool time in 2,251 calls, 1% of all tool time' })
+    expect(mcpHero(mcpBody)).toEqual({ value: '2,251', label: 'MCP calls to 13 servers, of 75,731 tool calls (3%)' })
     expect(mcpCoverage(mcpBody, label)).toContain('Too small to compare (in the data table): 1 server with fewer than 20 calls or ' +
       '3 sessions; 1 project')
   })
@@ -228,7 +228,7 @@ describe('INS-22 · MCP servers', () => {
     expect(box.querySelector('[data-chart="calls"] [data-row="kusto"]')!.textContent).toContain('13 sessions · 48 projects')
     expect(box.querySelector('[data-chart="calls"] rect[data-part="bad"] title')!.textContent).toBe('kusto: 29 of 650 calls failed (4%)')
     expect(box.querySelector('[data-row="rare"]')).toBeNull()
-    expect(value('time')).toEqual(['median 27 ms · p95 4.7 s'])
+    expect(value('time')).toEqual(['27 ms · 4.7 s'])
     expect(box.querySelector('[data-chart="time"] [data-tick] title')!.textContent).toBe('kusto: 95th percentile 4.7 s')
     expect(value('sum')).toEqual(['35 min'])
     expect(value('returned')).toEqual(['67.6 KB'])
