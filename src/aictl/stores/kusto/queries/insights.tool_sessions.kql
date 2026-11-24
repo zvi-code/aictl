@@ -1,0 +1,14 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', requested_tools:dynamic, row_limit:long
+);
+// The sessions the page's coding tool filter chooses: every session of the given tools, by id. An Insights card
+// narrowed by the filter is read for these sessions only (session_scope.py). A session's tool is the one of its
+// current row; a deleted session is left out.
+sessions
+| where all_nodes or node_id == requested_node
+| extend _gone = column_ifexists('_deleted', false)
+| summarize arg_max(_v, _gone, tool) by ['project'], node_id, session_id
+| where not(coalesce(_gone, false)) and tool in (requested_tools)
+| distinct session_id
+| order by session_id asc
+| take row_limit

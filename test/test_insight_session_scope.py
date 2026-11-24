@@ -18,9 +18,10 @@ from aictl.dashboard import insights, insights_work
 from aictl.dashboard.board_filters import Filters
 from aictl.dashboard.panel_kql import filled_query
 from aictl.dashboard.projections.history import HistoryScope
+from aictl.stores.base import ReadResult
 from aictl.stores.kusto.project_scope import PARAMETER, restricted_query
-from aictl.stores.kusto.reader import _query
-from aictl.stores.kusto.session_scope import MODELS_PARAMETER, SESSION_SCOPED, TOOLS_PARAMETER
+from aictl.stores.kusto.reader import _CACHE_TTL_S, _VIEWS, _query
+from aictl.stores.kusto.session_scope import MODELS_PARAMETER, SESSION_SCOPED, SESSIONS_PARAMETER, TOOLS_PARAMETER
 from aictl.stores.kusto.tables import TABLES
 
 QUERIES = Path(__file__).resolve().parent.parent / "src" / "aictl" / "stores" / "kusto" / "queries"
@@ -170,6 +171,60 @@ def test_every_scoped_view_takes_the_scope_and_reads_the_chosen_sessions_before_
         restricted_query(_query("insights.session_names"), projects=False, models=True)
 
 
+class _Lists:
+    """A reader that answers the two session lists and records what it was asked."""
+
+    def __init__(self, tools=(), models=(), full=()):
+        self.answers = {"insights.tool_sessions": tools, "insights.model_sessions": models}
+        self.full, self.asked = full, []
+
+    def read(self, view, params):
+        self.asked.append((view, {key: value for key, value in params.items() if key != "limit"}))
+        return ReadResult([{"session_id": sid} for sid in self.answers[view]], truncated=view in self.full)
+
+
+def _chosen(reader, node=None, **filters):
+    scope = insights.session_scope(Filters(since=0.0, until=10.0, **filters))
+    return insights.chosen_sessions(HistoryScope(reader, node), {"since": 0.0, "until": 10.0}, scope)
+
+
+def test_a_card_is_read_for_the_ids_of_the_chosen_sessions():
+    """The ids come from queries of their own: computed inside the card's view they cost up to twice the cluster CPU."""
+    reader = _Lists(tools=("a", "b", "c"), models=("b", "c", "d"))
+    assert _chosen(reader) == {} and reader.asked == []
+    assert _chosen(reader, tools=("claude-code",)) == {SESSIONS_PARAMETER: ["a", "b", "c"]}
+    assert reader.asked == [("insights.tool_sessions", {"requested_tools": ["claude-code"]})]
+    # A model: the sessions that used it in the card's period, on the card's node.
+    reader.asked.clear()
+    assert _chosen(reader, node="n1", model="claude-opus-5.5") == {SESSIONS_PARAMETER: ["b", "c", "d"]}
+    assert reader.asked == [("insights.model_sessions", {"all_nodes": False, "requested_node": "n1", "since": 0.0, "until": 10.0,
+                                                         "requested_models": [OPUS]})]
+    # Both: the sessions both choose.
+    assert _chosen(reader, tools=("claude-code",), model=OPUS) == {SESSIONS_PARAMETER: ["b", "c"]}
+    # No tool chosen: no session, and nothing to ask the store.
+    reader.asked.clear()
+    assert _chosen(reader, tools=(), model=OPUS) == {SESSIONS_PARAMETER: []} and reader.asked == []
+
+
+def test_too_many_sessions_to_pass_makes_the_view_compute_them():
+    scope = {TOOLS_PARAMETER: ["claude-code"], MODELS_PARAMETER: [OPUS]}
+    assert _chosen(_Lists(tools=("a",), models=("a",), full=("insights.tool_sessions",)), tools=("claude-code",), model=OPUS) == scope
+    assert _chosen(_Lists(tools=("a",), models=("a",), full=("insights.model_sessions",)), tools=("claude-code",), model=OPUS) == scope
+
+
+def test_the_session_lists_are_registered_cached_and_a_view_takes_ids_or_computes_them():
+    assert _VIEWS["insights.tool_sessions"] == ("all_nodes requested_node requested_tools", "session_id")
+    assert _VIEWS["insights.model_sessions"] == ("all_nodes requested_node since until requested_models", "session_id")
+    assert all(0 < _CACHE_TTL_S[view] <= 300 for view in ("insights.tool_sessions", "insights.model_sessions"))
+    text = restricted_query(_query("insights.skills"), projects=True, sessions=True)
+    assert text.split(";", 1)[0].endswith(f"{PARAMETER}:dynamic, {SESSIONS_PARAMETER}:dynamic)")
+    assert "let skill_uses_current = skill_uses_current | where ['project'] in (restrict_projects) | where session_id in (scope_sessions);" in text
+    # The ids are given: the view computes none.
+    assert "aictl_scope" not in text
+    with pytest.raises(ValueError, match="not both"):
+        restricted_query(_query("insights.skills"), projects=False, tools=True, sessions=True)
+
+
 def test_project_only_restriction_is_unchanged_by_the_session_scope():
     """The text of a view restricted to projects alone names no session scope (its recordings stay valid)."""
     for path in QUERIES.glob("*.kql"):
@@ -177,4 +232,4 @@ def test_project_only_restriction_is_unchanged_by_the_session_scope():
             text = restricted_query(path.read_text(encoding="utf-8").strip())
         except ValueError:
             continue
-        assert "aictl_scope" not in text and "scope_tools" not in text, path.name
+        assert "aictl_scope" not in text and "scope_tools" not in text and "scope_sessions" not in text, path.name

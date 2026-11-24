@@ -24,7 +24,7 @@ from .client import QUERY_TIMEOUT, query_memory_error, retrying
 from .project_scope import PARAMETER as PROJECT_PARAMETER
 from .project_scope import restricted_query
 from .query_cpu import _cpu_ticks
-from .session_scope import MODELS_PARAMETER, TOOLS_PARAMETER
+from .session_scope import MODELS_PARAMETER, SESSIONS_PARAMETER, TOOLS_PARAMETER
 from .session_scope import PARAMETERS as SCOPE_PARAMETERS
 
 _SCOPE = "all_nodes requested_node requested_project"
@@ -367,6 +367,8 @@ _VIEWS = {
     ),
     "insights.session_names": ("all_nodes requested_node session_keys", "node_id session_id title git_branch project_path"),
     "insights.repo_rank": (_TIME, "row_type repo name rank cost_usd requests sessions repos first_ts last_ts computed_at"),
+    "insights.tool_sessions": ("all_nodes requested_node requested_tools", "session_id"),
+    "insights.model_sessions": (_TIME + " requested_models", "session_id"),
     "insights.repositories": (
         f"{_TIME} restrict_tools requested_tools requested_models step",
         "row_type repo projects nodes sessions scripted person cost_usd priced requests unpriced agent_s timed_sessions calls "
@@ -497,6 +499,7 @@ _PARAMETER_TYPES = {
     PROJECT_PARAMETER: list,
     TOOLS_PARAMETER: list,
     MODELS_PARAMETER: list,
+    SESSIONS_PARAMETER: list,
 }
 _MAX_ROWS = 20_000
 # Each page of these views runs the whole query again, so one large page costs much less
@@ -555,6 +558,9 @@ _CACHE_TTL_S = {
     "insights.model_report": _INSIGHT_TTL_S,
     # One order of repositories for the whole Insights screen: every card's answer reads it, so it is read once.
     "insights.repo_rank": _INSIGHT_TTL_S,
+    # The sessions the coding tool and model filters choose, read once for the cards of a screen (session_scope.py).
+    "insights.tool_sessions": _INSIGHT_TTL_S,
+    "insights.model_sessions": _INSIGHT_TTL_S,
     # The names of the sessions a card answer lists, read once per answer (insights.session_names()).
     "insights.session_names": _INSIGHT_TTL_S,
     "insights.repositories": _INSIGHT_TTL_S,
@@ -650,10 +656,11 @@ def _query(view: str) -> str:
 
 
 @lru_cache
-def _restricted(view: str, scope: tuple[bool, bool, bool] = (True, False, False)) -> str:
-    """The view's text run on the rows it is restricted to. *scope*: by projects, by coding tools, by models."""
-    projects, tools, models = scope
-    return restricted_query(_query(view), projects=projects, tools=tools, models=models)
+def _restricted(view: str, scope: tuple[bool, ...] = (True, False, False, False)) -> str:
+    """The view's text run on the rows it is restricted to. *scope*: by projects, by coding tools, by models (both
+    computed in the query), by sessions passed by id."""
+    projects, tools, models, sessions = scope
+    return restricted_query(_query(view), projects=projects, tools=tools, models=models, sessions=sessions)
 
 
 class KustoReader:
@@ -790,7 +797,7 @@ class KustoReader:
         for key, value in bound.items():
             props.set_parameter(key, value)
 
-        scope = (PROJECT_PARAMETER in bound, TOOLS_PARAMETER in bound, MODELS_PARAMETER in bound)
+        scope = (PROJECT_PARAMETER in bound, TOOLS_PARAMETER in bound, MODELS_PARAMETER in bound, SESSIONS_PARAMETER in bound)
         restricted = scope if any(scope) else False
         ttl = _CACHE_TTL_S.get(view)
         if ttl is None:
@@ -798,7 +805,7 @@ class KustoReader:
         return self._cached_read(view, tuple(sorted(bound.items())), ttl, props, limit, restricted)
 
     def _cached_read(self, view: str, bound: tuple, ttl: float, props, limit: int,
-                     restricted: tuple[bool, bool, bool] | bool = False) -> ReadResult:
+                     restricted: tuple[bool, ...] | bool = False) -> ReadResult:
         key = (view, bound)
 
         def stale(entry: _CachedRead, now: float) -> ReadResult | None:
@@ -859,7 +866,7 @@ class KustoReader:
             queries, _failures, total, *_rest = self._view_timings.get(view) or (0, 0, 0.0)
         return total / queries if queries else 0.0
 
-    def _execute(self, view: str, props, limit: int, restricted: tuple[bool, bool, bool] | bool = False) -> ReadResult:
+    def _execute(self, view: str, props, limit: int, restricted: tuple[bool, ...] | bool = False) -> ReadResult:
         start = time.monotonic()
         error = None
         returned = ticks = 0

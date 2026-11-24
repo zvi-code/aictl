@@ -12,14 +12,14 @@ from collections.abc import Callable
 from typing import Any
 
 from ..data.model_pricing import canonical_model_id
-from ..stores.kusto.session_scope import MODELS_PARAMETER, TOOLS_PARAMETER
+from ..stores.kusto.session_scope import MODELS_PARAMETER, SESSIONS_PARAMETER, TOOLS_PARAMETER
 from ..stores.kusto.session_scope import PARAMETERS as SCOPE_PARAMETERS
 from ..tool_scope import stored_ids_for
 from . import insights_flows, insights_work
 from .board_filters import Filters
 from .panel_kql import query_block
 from .projection_utils import _label
-from .projections.history import HistoryScope
+from .projections.history import HistoryScope, node_scope
 
 ROW_LIMIT = 1000
 CARDS = {
@@ -1430,6 +1430,10 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
 }
 
 
+# The most session ids passed to a card's view (the reader's largest page); past it the view computes them itself.
+SCOPE_SESSIONS = 20_000
+
+
 def session_scope(filters: Filters) -> dict:
     """The sessions the page's coding tool and model filters choose, as the reader takes them: the sessions of the
     chosen tools (none chosen: no session), and the sessions that made a request with the chosen model in the period."""
@@ -1441,6 +1445,34 @@ def session_scope(filters: Filters) -> dict:
     return params
 
 
+def chosen_sessions(history: HistoryScope, params: dict, scope: dict) -> dict:
+    """The reader parameters that narrow a card to the sessions *scope* chooses.
+
+    Their ids, read first by queries of their own (cached, so the cards of one screen share them) and passed to the
+    card's view. When the ids are too many to pass, *scope* itself: the view then computes them, at a higher cost.
+    """
+    if not scope:
+        return {}
+    reader = history.require_reader()
+    node = node_scope(history.node)
+    chosen: set[str] | None = None
+    if TOOLS_PARAMETER in scope:
+        chosen = set()
+        if scope[TOOLS_PARAMETER]:
+            found = reader.read("insights.tool_sessions", {**node, "requested_tools": scope[TOOLS_PARAMETER], "limit": SCOPE_SESSIONS})
+            if found.truncated:
+                return scope
+            chosen = {row["session_id"] for row in found.rows}
+    if MODELS_PARAMETER in scope and chosen != set():
+        found = reader.read("insights.model_sessions", {**node, "since": params["since"], "until": params["until"],
+                                                         "requested_models": scope[MODELS_PARAMETER], "limit": SCOPE_SESSIONS})
+        if found.truncated:
+            return scope
+        by_model = {row["session_id"] for row in found.rows}
+        chosen = by_model if chosen is None else chosen & by_model
+    return {SESSIONS_PARAMETER: sorted(chosen or ())}
+
+
 def insight(card: str, filters: Filters, now: float | None = None, *, history: HistoryScope) -> tuple[int, dict]:
     """One card: its figures for the board's period, the sessions to open, and the KQL that produced them."""
     if card not in CARDS:
@@ -1449,11 +1481,13 @@ def insight(card: str, filters: Filters, now: float | None = None, *, history: H
     # The work cards take the page's coding tool and model filters in their own views; every other card is read for
     # the sessions the two filters choose (stores/kusto/session_scope.py), and its repository order with it.
     own = insights_work.PARAMS.get(card)
-    params = {"since": filters.since, "until": filters.until, **(own(filters) if own else session_scope(filters))}
-    rows = READS[card](history, params)
+    scope = {} if own else session_scope(filters)
+    params = {"since": filters.since, "until": filters.until, **(own(filters) if own else {})}
+    narrowed = {**params, **chosen_sessions(history, params, scope)}
+    rows = READS[card](history, narrowed)
     meta = next(iter(_of(rows, "meta")), {})
     node = {} if history.node is None else {"all_nodes": False, "requested_node": history.node}
-    repos = repo_order(history, params)
+    repos = repo_order(history, narrowed)
     shape = SHAPES[card](rows, repos["repo_order"]) if card in REPO_SPLIT_CARDS else SHAPES[card](rows)
     shape = session_names(history, shape)
     return 200, {
@@ -1464,5 +1498,6 @@ def insight(card: str, filters: Filters, now: float | None = None, *, history: H
         **shape,
         # The cards name a tool as the board does; the board's own labels are not loaded on this screen.
         "tool_labels": {tool: _label(tool) for tool in sorted({str(row.get("tool") or "") for row in rows} - {""})},
-        "query": query_block(history, view, {**params, **node, "limit": ROW_LIMIT}),
+        # The shown text computes the chosen sessions itself: one query that gives the same rows (session_scope.py).
+        "query": query_block(history, view, {**params, **scope, **node, "limit": ROW_LIMIT}),
     }

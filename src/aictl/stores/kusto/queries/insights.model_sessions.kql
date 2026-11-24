@@ -1,0 +1,23 @@
+declare query_parameters(
+    all_nodes:bool = true, requested_node:string = '', since:real, until:real, requested_models:dynamic, row_limit:long
+);
+// The sessions the page's model filter chooses: every session that made a request with one of the given models in
+// the period, by id. An Insights card narrowed by the filter is read for these sessions only (session_scope.py).
+// A model is compared as the Insights views spell it: a Claude model in lower case with '-' for '.'.
+let canon = (m:string) { iff(tolower(trim(' ', m)) startswith 'claude-', replace_string(tolower(trim(' ', m)), '.', '-'), m) };
+// requests_current holds the current row of each key per hour of its time (event_hour); the hours one
+// either side of the range are read, and only the keys with two rows are reduced again (docs/storage-schema.md).
+let requests_current_rows = requests_current
+    | where event_hour >= bin(unixtime_seconds_todatetime(min_of(max_of(since, 0.0), 32503680000.0)), 1h) - 1h
+    | where event_hour <= unixtime_seconds_todatetime(min_of(until, 32503680000.0)) + 1h;
+let requests_crossed = requests_current_rows | summarize copies=count() by dedup_key | where copies > 1 | project dedup_key;
+let requests_secs = union (requests_current_rows | where dedup_key !in (requests_crossed)),
+        (requests_current_rows | where dedup_key in (requests_crossed) | summarize arg_max(_v, *) by ['project'], node_id, dedup_key)
+    | where not(coalesce(_deleted, false))
+    | extend ts = (ts - datetime(1970-01-01)) / 1s, is_error = tolong(is_error);
+requests_secs
+| where all_nodes or node_id == requested_node
+| where ts >= since and ts < until and canon(model) in (requested_models)
+| distinct session_id
+| order by session_id asc
+| take row_limit

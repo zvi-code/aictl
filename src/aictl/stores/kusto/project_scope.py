@@ -25,7 +25,14 @@ from __future__ import annotations
 import re
 
 from .current import current_names
-from .session_scope import MODELS_PARAMETER, SESSION_SCOPED, TOOLS_PARAMETER, chosen_sessions, filter_of
+from .session_scope import (
+    MODELS_PARAMETER,
+    SESSION_SCOPED,
+    SESSIONS_PARAMETER,
+    TOOLS_PARAMETER,
+    chosen_sessions,
+    filter_of,
+)
 
 PARAMETER = "restrict_projects"
 # The parameter holds the exact stored values to keep: an exact match on the key column lets the
@@ -53,11 +60,13 @@ _TEXT = re.compile(r"""@?"(?:\\.|[^"\\])*"|@?'(?:\\.|[^'\\])*'|//[^\n]*""")
 _SESSIONS = "aictl_project_sessions"
 
 
-def restricted_query(text: str, *, projects: bool = True, tools: bool = False, models: bool = False) -> str:
+def restricted_query(text: str, *, projects: bool = True, tools: bool = False, models: bool = False,
+                     sessions: bool = False) -> str:
     """*text*, a view, run on only the rows it is restricted to.
 
-    *projects*: the projects named by the ``restrict_projects`` parameter. *tools*, *models*: the sessions of the
-    coding tools and of the models named by ``scope_tools`` and ``scope_models`` (session_scope.py).
+    *projects*: the projects named by the ``restrict_projects`` parameter. *sessions*: the sessions whose ids
+    ``scope_sessions`` holds. *tools*, *models*: the sessions of the coding tools and of the models named by
+    ``scope_tools`` and ``scope_models``, computed in the query itself (session_scope.py).
     """
     match = _DECLARE.match(text)
     if match is None:
@@ -65,13 +74,16 @@ def restricted_query(text: str, *, projects: bool = True, tools: bool = False, m
     names = match["names"].strip()
     if models and not all(re.search(rf"\b{name}\s*:\s*real\b", names) for name in ("since", "until")):
         raise ValueError("A view restricted to the sessions of a model must declare its period (since, until)")
-    added = [name for name, on in ((PARAMETER, projects), (TOOLS_PARAMETER, tools), (MODELS_PARAMETER, models)) if on]
+    if sessions and (tools or models):
+        raise ValueError("A view takes the chosen sessions by their ids or computes them, not both")
+    scoped = ((PARAMETER, projects), (TOOLS_PARAMETER, tools), (MODELS_PARAMETER, models), (SESSIONS_PARAMETER, sessions))
+    added = [name for name, on in scoped if on]
     # Comments before the declaration move after it: the declaration starts the query.
     declaration = (f"declare query_parameters({names}{', ' if names and added else ''}"
                    f"{', '.join(f'{name}:dynamic' for name in added)});{match['head'].rstrip()}")
     body = text[match.end():].strip().rstrip(";")
     code = _TEXT.sub(" ", body)
-    by_session = tools or models
+    by_session = tools or models or sessions
     named = (*PROJECT_TABLES, *CURRENT_VIEWS, *SESSION_TABLES, *(sorted(SESSION_SCOPED) if by_session else ()))
     used = {table for table in named if re.search(rf"\b{table}\b", code)}
     in_projects = f" | where ['project'] in ({PARAMETER})" if projects else ""
@@ -83,7 +95,7 @@ def restricted_query(text: str, *, projects: bool = True, tools: bool = False, m
             " | extend _gone=column_ifexists('_deleted', false)"
             " | summarize arg_max(_v, _gone) by ['project'], node_id, session_id"
             " | where not(coalesce(_gone, false)) | distinct node_id, session_id;")
-    if by_session:
+    if tools or models:
         lets += chosen_sessions(tools=tools, models=models, projects=in_projects)
     # One statement per table: its project filter, then its session filter.
     for table in dict.fromkeys(named):
@@ -95,7 +107,7 @@ def restricted_query(text: str, *, projects: bool = True, tools: bool = False, m
         elif projects and table in SESSION_TABLES:
             steps += f" | join kind=leftsemi {_SESSIONS} on node_id, session_id"
         if by_session and table in SESSION_SCOPED:
-            steps += filter_of(table)
+            steps += filter_of(table, SESSIONS_PARAMETER) if sessions else filter_of(table)
         if steps:
             lets.append(f"let {table} = {table}{steps};")
     inner = "\n".join(lets)

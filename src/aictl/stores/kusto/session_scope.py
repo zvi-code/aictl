@@ -5,6 +5,14 @@ that made a request with a chosen model in the view's period. A view read for th
 function as the project restriction (project_scope.py), whose first statements shadow each table that has a
 ``session_id`` with only the rows of the chosen sessions.
 
+The chosen sessions reach the view in one of two ways:
+
+- ``scope_sessions``: their ids, read first by a query of their own (the views ``insights.tool_sessions`` and
+  ``insights.model_sessions``) and passed in. This is how the dashboard reads a narrowed card.
+- ``scope_tools`` and ``scope_models``: the view computes the ids itself. One query, the same rows; it is the
+  text shown under "Show KQL" and the fallback when the ids are too many to pass. Measured on 30 days of a fleet
+  it costs up to twice the cluster CPU of the first way on the larger views, so it is not the usual way.
+
 Tombstones: a filter before the reduction of versions must keep a tombstone with its row
 (docs/storage-schema.md). Where a table's tombstone carries ``session_id`` (it is in the key or in the
 tombstone scope) the filter keeps it. Where it does not, every tombstone is kept beside the chosen rows: one
@@ -24,7 +32,8 @@ from .tables import TABLES
 
 TOOLS_PARAMETER = "scope_tools"
 MODELS_PARAMETER = "scope_models"
-PARAMETERS = (TOOLS_PARAMETER, MODELS_PARAMETER)
+SESSIONS_PARAMETER = "scope_sessions"
+PARAMETERS = (TOOLS_PARAMETER, MODELS_PARAMETER, SESSIONS_PARAMETER)
 
 _IDS = "aictl_scope_ids"
 # The most session ids one read is narrowed to (the limit of make_set). A store holds far fewer sessions per filter.
@@ -91,8 +100,9 @@ def chosen_sessions(*, tools: bool, models: bool, projects: str = "") -> list[st
     return lets
 
 
-def filter_of(table: str) -> str:
-    """The filter that keeps the chosen sessions' rows of *table* (and the tombstones its rows need)."""
+def filter_of(table: str, ids: str = _IDS) -> str:
+    """The filter that keeps the chosen sessions' rows of *table* (and the tombstones its rows need).
+    *ids*: the name that holds the chosen ids (the computed value, or the ``scope_sessions`` parameter)."""
     marker = SESSION_SCOPED[table]
-    keep = f"session_id in ({_IDS})"
+    keep = f"session_id in ({ids})"
     return f" | where {keep} or coalesce({marker}, false)" if marker else f" | where {keep}"
