@@ -1,0 +1,43 @@
+/* A percentile strip: per row, marks of one distribution on an axis shared by every row. Tokens only. */
+.figure { display: grid; gap: var(--space-2); margin: 0; min-inline-size: 0; align-content: start; }
+.caption { display: grid; gap: var(--space-1); }
+.title { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.axisText { color: var(--color-muted); font-size: var(--text-xs); }
+.legend { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-5); margin: 0; padding: 0; list-style: none; font-size: var(--text-xs); color: var(--color-muted); }
+.key { display: inline-block; position: relative; inline-size: .75em; block-size: .75em; margin-inline-end: var(--space-2); vertical-align: middle; }
+.rows { display: grid; gap: var(--space-2); margin: 0; padding: 0; list-style: none; }
+.row, .scale {
+  display: grid; grid-template-columns: minmax(7rem, 12rem) minmax(8rem, 1fr) minmax(6rem, max-content); gap: var(--space-1) var(--space-3);
+  align-items: center; font-size: var(--text-xs); min-inline-size: 0;
+}
+.name { overflow-wrap: anywhere; }
+.name small { display: block; color: var(--color-muted); }
+.swatch { display: inline-block; inline-size: .75em; block-size: .75em; border-radius: var(--radius-sm); margin-inline-end: var(--space-2); vertical-align: middle; }
+.lane {
+  position: relative; display: block; block-size: calc(var(--space-5) + var(--space-1)); min-inline-size: 0;
+  border-block-end: var(--border-size) solid var(--color-border-subtle);
+}
+.span { position: absolute; inset-block-start: calc(50% - 1px); block-size: 2px; background: var(--color-chart-1); }
+.mark { position: absolute; inset-block: 0; inline-size: 0; display: flex; align-items: center; justify-content: center; }
+.mark > span { display: flex; }
+.hit {
+  all: unset; box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+  inline-size: var(--space-5); block-size: var(--space-5); cursor: default; border-radius: 50%;
+}
+.hit:hover .dot { outline: var(--border-size) solid var(--color-text); outline-offset: 1px; }
+.hit:focus-visible { outline: var(--focus-size) solid var(--color-focus); outline-offset: 1px; }
+.dot { display: block; inline-size: .75rem; block-size: .75rem; border-radius: 50%; pointer-events: none; }
+.mid .dot, .key.mid { border-radius: 50%; background: var(--color-chart-1); }
+.high .dot, .key.high { border-radius: 50%; background: var(--color-surface); border: 2px solid var(--color-chart-1); box-sizing: border-box; }
+.max .dot, .key.max { inline-size: 3px; block-size: 1rem; border-radius: 1px; background: var(--color-text); }
+.key.max { inline-size: 3px; }
+.row[data-muted] .span { background: var(--color-muted); }
+.row[data-muted] .mid .dot { background: var(--color-muted); }
+.row[data-muted] .high .dot { border-color: var(--color-muted); }
+.text { font-variant-numeric: tabular-nums; color: var(--color-text); overflow-wrap: anywhere; }
+.scale { color: var(--color-muted); }
+.ends { display: flex; justify-content: space-between; font-variant-numeric: tabular-nums; }
+@media (max-width: 40rem) {
+  .row, .scale { grid-template-columns: minmax(0, 1fr) auto; }
+  .lane, .ends { grid-column: 1 / -1; grid-row: 2; }
+}

@@ -1,119 +1,68 @@
-import { Show, untrack } from 'solid-js'
-import { fmtN, fmtNum } from '../../design/format'
-import { Bars, type BarRow } from './Bars'
+import { For, Show, untrack } from 'solid-js'
+import { fmtNum } from '../../design/format'
+import { Bars } from './Bars'
+import { ColourBy, useColourBy, type ColourMode } from './charts/ColourBy'
+import { PercentileStrip } from './charts/PercentileStrip'
 import { InsightCard, numberField, textField, type CardProps } from './InsightCard'
-import { timeHero,
-  hours, millis, modelRest, plural, programHover, programName, reasoningHover, reasoningText, share, timeFinding, timePartHover,
-  toolLabel, type Label, type TimeBody,
-} from './insightsModel'
-import styles from './Insights.module.css'
+import { timeHero, hours, millis, programName, share, toolLabel, type Label, type TimeBody } from './insightsModel'
 import { RepoLegend } from './RepoLegend'
-import { hasOther, repoParts } from './repoSplit'
+import {
+  countedText, KIND_LEGEND, programRows, programStrip, reasoningRows, repoTimeRows, timeLine, timeOther, timeRows, timeSplit,
+} from './timeSplitModel'
+import bars from './Bars.module.css'
+import base from './Insights.module.css'
+import styles from './TimeSplit.module.css'
 
-const NO_THINKING = 'thinking time not recorded by this tool'
-
-function timeRows(body: TimeBody, label: Label): BarRow[] {
-  return body.tools.map(tool => ({
-    key: tool.tool, label: label(tool.tool),
-    sub: `${plural(tool.requests, 'request')} · ${plural(tool.calls, 'call')}${tool.thinking_ms == null ? ` · ${NO_THINKING}` : ''}`,
-    total: hours((tool.model_ms ?? 0) + (tool.tool_ms ?? 0)),
-    parts: [
-      { key: 'thinking', label: 'model, thinking', value: tool.thinking_ms, tone: 3, text: hours(tool.thinking_ms),
-        hover: timePartHover(tool, 'thinking', label) },
-      { key: 'model', label: 'model, rest of the request', value: modelRest(tool), tone: 2, text: hours(modelRest(tool)),
-        hover: timePartHover(tool, 'model', label) },
-      { key: 'tools', label: 'tool calls', value: tool.tool_ms, tone: 1, text: hours(tool.tool_ms), hover: timePartHover(tool, 'tools', label) },
-    ],
-  }))
-}
-
-/** Per tool: its summed time (model + tool calls) in a segment per repository; the split by kind is the bar above. */
-function repoTimeRows(body: TimeBody, label: Label): BarRow[] {
-  return body.tools.filter(tool => tool.repos?.length).map(tool => ({
-    key: tool.tool, label: label(tool.tool), sub: `${plural(tool.requests, 'request')} · ${plural(tool.calls, 'call')}`,
-    total: hours(tool.time_ms ?? null),
-    parts: repoParts(tool.repos, 'time_ms', body.repo_order, value => hours(value), `${label(tool.tool)}, summed time`, 'summed time',
-      `${label(tool.tool)}: model ${hours(tool.model_ms)} + tool calls ${hours(tool.tool_ms)} = ${hours(tool.time_ms ?? null)}.`),
-  }))
-}
-
-/** Per tool that reports them: its reasoning tokens inside the output tokens of the same requests. */
-function reasoningRows(body: TimeBody, label: Label): BarRow[] {
-  return body.tools.filter(tool => (tool.reasoning_requests ?? 0) > 0).map(tool => {
-    const reasoning = tool.reasoning_tokens ?? null, output = tool.reasoning_output_tokens ?? null
-    const rest = reasoning != null && output != null ? Math.max(0, output - reasoning) : null
-    return {
-      key: tool.tool, label: label(tool.tool), sub: tool.thinking_ms == null ? NO_THINKING : undefined, total: reasoningText(tool),
-      parts: [
-        { key: 'reasoning', label: 'reasoning tokens', value: reasoning, tone: 3, text: reasoning == null ? '' : `${fmtN(reasoning)}`,
-          hover: reasoningHover(tool, label) },
-        { key: 'output', label: 'other output tokens', value: rest, tone: 6, text: rest == null ? '' : `${fmtN(rest)}`,
-          hover: reasoningHover(tool, label) },
-      ],
-    }
-  })
-}
-
-function programRows(body: TimeBody): BarRow[] {
-  const total = body.programs.reduce((sum, row) => sum + (row.duration_ms ?? 0), 0)
-  return body.programs.map(row => ({
-    key: `${row.group}:${row.program ?? ''}`, label: programName(row),
-    sub: `${plural(row.calls, 'call')} · ${share(row.failure_share)} failed`,
-    total: `${hours(row.duration_ms)} · median ${millis(row.p50_ms)} · p95 ${millis(row.p95_ms)}`,
-    parts: row.repos?.length
-      ? repoParts(row.repos, 'duration_ms', body.repo_order, value => hours(value), `${programName(row)}, summed time`, 'summed time',
-        `${programHover(row, total)} The median and 95th percentile are of all the row's calls, not split by repository.`)
-      : [{ key: 'time', label: 'summed time', value: row.duration_ms, tone: row.group === 'program' ? 1 : 7, text: hours(row.duration_ms),
-        hover: programHover(row, total) }],
-  }))
+function Visual(props: { body: TimeBody; label: Label; mode: ColourMode; setMode: (mode: ColourMode) => void }) {
+  const split = () => timeSplit(props.body)
+  const repo = () => split() && props.mode === 'repo'
+  return <>
+    <ColourBy parts="Kind of time" value={repo() ? 'repo' : 'parts'} onChange={props.setMode} split={split()} />
+    <Show when={repo()} fallback={<ul class={bars.legend} aria-label="Kinds of time: colours of the bar segments" data-kind-legend>
+      <For each={KIND_LEGEND}>{item => <li><span class={`${bars.swatch} ${bars[`t${item.tone}`]}`} />{item.label}</li>}</For>
+    </ul>}>
+      <RepoLegend split={props.body} other={timeOther(props.body)} />
+    </Show>
+    <div class={styles.grid}>
+      <div class={styles.wide}>
+        <Bars name="time-tools" title="Summed time per tool (hours)" rows={repo() ? repoTimeRows(props.body, props.label) : timeRows(props.body, props.label)}
+          axis={repo() ? 'Length: hours of model requests and tool calls, one linear scale from 0.'
+            : 'Length: hours, one linear scale from 0; thinking is part of the model time.'} />
+      </div>
+      <Bars name="time-programs" title="Programs by summed call time (hours)" rows={programRows(props.body, repo() ? 'repo' : 'parts')}
+        axis={repo() ? 'Length: hours, linear from 0, a segment per repository.' : 'Length: hours, linear from 0; grey rows are groups, not one program.'} />
+      <PercentileStrip chart={programStrip(props.body)} />
+      <Show when={reasoningRows(props.body, props.label).length}>
+        <div class={styles.wide}>
+          <Bars name="time-reasoning" title="Reasoning tokens in their requests' output tokens" scale="whole"
+            legend={[{ label: 'Reasoning tokens', tone: 3 }, { label: 'Other output tokens', tone: 6 }]}
+            axis="Each bar: output tokens of the requests that report reasoning tokens (100%). Tokens, not time."
+            rows={reasoningRows(props.body, props.label)} />
+        </div>
+      </Show>
+    </div>
+    <p class={base.note} data-counted>{countedText(props.body, props.label)}</p>
+  </>
 }
 
 type Row = Record<string, unknown>
 
-const programAxis = (body: TimeBody) => body.programs.some(row => row.repos?.length)
-  ? 'Length: summed hours, linear from 0, a segment per repository; the rows for shell constructs, waiting and no program ' +
-    'recorded are groups, not one program.'
-  : 'Length: summed hours, linear from 0; grey rows are groups, not one program.'
-
 export default function TimeSplit(props: CardProps) {
   const ctx = untrack(() => props.ctx)
   const label: Label = tool => ctx.board('tool_labels')?.[tool] ?? toolLabel(tool)
+  const [mode, setMode] = useColourBy()
   return <InsightCard<TimeBody> {...props} card="time" tab="tools"
     hero={timeHero}
-    finding={body => timeFinding(body, label)}
-    visual={body => <>
-      <RepoLegend split={body} other={hasOther([...body.tools, ...body.programs])} />
-      <Bars name="time-tools" title="Summed time per tool: model requests and tool calls"
-        legend={[{ label: 'Model: thinking', tone: 3 }, { label: 'Model: rest of the request', tone: 2 }, { label: 'Tool calls', tone: 1 }]}
-        axis="Length: summed hours, one linear scale for every tool from 0; thinking is part of the model time."
-        rows={timeRows(body, label)} />
-      <Bars name="time-tools-repos" title="Summed time per tool, by repository"
-        axis="Length: summed hours of model requests and tool calls, one linear scale from 0; a segment per repository."
-        rows={repoTimeRows(body, label)} />
-      <Show when={reasoningRows(body, label).length}>
-        <Bars name="time-reasoning" title="Reasoning tokens in the requests that report them, per tool" scale="whole"
-          legend={[{ label: 'Reasoning tokens', tone: 3 }, { label: 'Other output tokens', tone: 6 }]}
-          axis="Bar: the output tokens of the requests that report reasoning tokens (100%). A token count, not time."
-          rows={reasoningRows(body, label)} />
-      </Show>
-      <Bars name="time-programs" title="Programs run by command calls, by summed time"
-        axis={programAxis(body)}
-        rows={programRows(body)} />
-      <p class={styles.note} data-counted>
-        Without a recorded duration: {fmtNum(body.summary.untimed_requests)} requests and {fmtNum(body.summary.untimed_calls)} calls.
-        <Show when={body.summary.overlong}> Left out as recording errors: {fmtNum(body.summary.overlong)} requests or calls
-          recorded as over 24 hours ({hours(body.summary.overlong_ms)} in all).</Show>
-        <Show when={body.tools.some(tool => tool.thinking_ms == null)}> Thinking time not recorded by: {
-          body.tools.filter(tool => tool.thinking_ms == null).map(tool => label(tool.tool)).join(', ')}.</Show>
-      </p>
-    </>}
+    finding={timeLine}
+    visual={body => <Visual body={body} label={label} mode={mode()} setMode={setMode} />}
     note={'Hours are summed durations of calls, not wall-clock time: parallel calls overlap, so the sums can exceed the time ' +
       'that passed. A request or call with no recorded duration is not counted, nor is one recorded as over 24 hours. A call ' +
       'that starts a subagent is left out; the subagent\'s own requests and calls hold that time. Thinking is the part of a ' +
       'request the source reports as thinking time. Reasoning tokens are a token count some sources report instead; their share ' +
       'is of the output tokens of the requests that report them only. A program is the first word of the command line as stored; ' +
       'shell keywords, builtins and variables in that place are grouped as "Shell construct, program not identified". Top 10 ' +
-      'programs by time.'}
+      'programs by time. The median and 95th percentile of a program are of the duration of one call, over all its timed calls; ' +
+      'they are not split by repository.'}
     table={{
       label: 'Where the time goes by tool and program',
       rows: body => [

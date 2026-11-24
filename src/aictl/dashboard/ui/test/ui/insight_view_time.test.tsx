@@ -3,10 +3,12 @@
 import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import Subagents from '../../src/panels/insights/Subagents'
+import TimeSplit from '../../src/panels/insights/TimeSplit'
 import { readColourBy } from '../../src/panels/insights/charts/ColourBy'
-import type { SubagentBody } from '../../src/panels/insights/insightsModel'
+import type { SubagentBody, TimeBody } from '../../src/panels/insights/insightsModel'
 import { OTHER, type RepoRef, type RepoSegment } from '../../src/panels/insights/repoSplit'
 import { sessionRows, sideRepoRows, sideRows, subagentLine } from '../../src/panels/insights/subagentsModel'
+import { countedText, programStrip, timeLine } from '../../src/panels/insights/timeSplitModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
 import { createBoxes } from '../../src/ui/Box'
 import { installDom, layoutHeaders, mount } from './dom'
@@ -70,6 +72,7 @@ describe('INS-VIEW · Colour by', () => {
 })
 
 // ─── Spend in subagents ──────────────────────────────────────────────────────────────────────────────────────────────
+const H = 3_600_000
 const subagents = {
   ...base, card: 'subagents', view: 'insights.subagents', query: query('insights.subagents'), repo_order: order, repo_others: others,
   tools: [
@@ -158,6 +161,98 @@ describe('INS-VIEW · Spend in subagents', () => {
     expect(box.querySelector('[data-colour-by]')).toBeNull()
     expect(rows(box.querySelector('[data-chart="subagent-cost"]'))).toEqual(['tool-a', 'tool-b'])
     expect(parts(box.querySelector('[data-chart="subagent-sessions"] [data-row="s-one"]')!)).toEqual(['cost'])
+    dispose()
+  })
+})
+
+// ─── Where the time goes ────────────────────────────────────────────────────────────────────────────────────────────
+const timeSeg = (repo: string, model: number, tool: number): [string, Record<string, number>] =>
+  [repo, { time_ms: model + tool, model_ms: model, tool_ms: tool }]
+const time = {
+  ...base, card: 'time', view: 'insights.time_split', query: query('insights.time_split'), repo_order: order, repo_others: others,
+  tools: [
+    { tool: 'tool-a', requests: 900, untimed_requests: 2, overlong_requests: 1, model_ms: 30 * H, thinking_ms: 6 * H, calls: 700,
+      untimed_calls: 5, overlong_calls: 0, overlong_ms: 30 * H, tool_ms: 10 * H, time_ms: 40 * H,
+      repos: split([timeSeg('/w/alpha', 20 * H, 8 * H), timeSeg('/w/beta', 10 * H, 2 * H)]) },
+    { tool: 'tool-b', requests: 400, untimed_requests: 0, overlong_requests: 0, model_ms: 8 * H, thinking_ms: null, calls: 300,
+      untimed_calls: 0, overlong_calls: 0, overlong_ms: 0, tool_ms: 2 * H, time_ms: 10 * H, repos: split([timeSeg('', 8 * H, 2 * H)]),
+      reasoning_requests: 50, reasoning_tokens: 2_000, reasoning_output_tokens: 8_000, reasoning_share: 0.25 },
+  ],
+  programs: [
+    { group: 'program', program: 'make', calls: 120, untimed: 0, overlong: 0, duration_ms: 5 * H, p50_ms: 30_000, p95_ms: 600_000,
+      failure_share: 0.05, repos: split([['/w/alpha', { duration_ms: 4 * H }], ['', { duration_ms: H }]]) },
+    { group: 'waiting', program: null, calls: 40, untimed: 0, overlong: 0, duration_ms: 2 * H, p50_ms: 120_000, p95_ms: 300_000,
+      failure_share: 0 },
+  ],
+  summary: { model_ms: 38 * H, thinking_ms: 6 * H, tool_ms: 12 * H, thinking_reported: ['tool-a'], untimed_requests: 2, untimed_calls: 5,
+    overlong: 1, overlong_ms: 30 * H, top_program: null },
+  sessions: [],
+} as unknown as TimeBody
+
+describe('INS-VIEW · Where the time goes', () => {
+  it('says in one line what is measured, and keeps what was not counted in one muted line', () => {
+    const { host, dispose } = mount(() => <TimeSplit {...props(time)} />)
+    const box = host.querySelector('#insight-time')!
+    expect(box.querySelector('[data-finding]')!.textContent).toBe('Summed durations of model requests and tool calls (hours), per tool ' +
+      'and per program a command call ran.')
+    expect(box.querySelector('[data-counted]')!.textContent).toBe(countedText(time, label))
+    expect(countedText(time, label)).toBe('Not counted: 2 requests and 5 calls without a recorded duration; 1 requests or calls ' +
+      'recorded as over 24 hours (30 h in all). Thinking time not recorded by: tool-b.')
+    expect(timeLine({ ...time, summary: { ...time.summary, model_ms: null, tool_ms: null } })).toBe('No request or tool call with a ' +
+      'recorded duration in this period.')
+    dispose()
+  })
+
+  it('draws one bar per tool by kind on one scale, the programs ranked, and their call durations on a strip', () => {
+    const { host, dispose } = mount(() => <TimeSplit {...props(time)} />)
+    const box = host.querySelector('#insight-time')!
+    const tools = box.querySelector('[data-chart="time-tools"]')
+    expect(rows(tools)).toEqual(['tool-a', 'tool-b'])
+    const a = tools!.querySelector('[data-row="tool-a"]')!
+    expect([parts(a), written(a), a.querySelector('[data-total]')!.textContent]).toEqual([['thinking', 'model', 'tools'], ['6 h', '24 h', '10 h'], '40 h'])
+    expect(parts(tools!.querySelector('[data-row="tool-b"]')!)).toEqual(['model', 'tools'])
+    expect(tip(a, '[data-part="tools"]')).toBe('tool-a, tool calls: 10 h, 25% of its summed 40 h (model 30 h + tool calls 10 h), over ' +
+      '700 calls; 5 without a duration and 0 over 24 hours not counted.')
+    const programs = box.querySelector('[data-chart="time-programs"]')
+    expect(rows(programs)).toEqual(['program:make', 'waiting:'])
+    expect(programs!.querySelector('[data-row="program:make"] [data-total]')!.textContent).toBe('5 h')
+    const strip = programStrip(time)
+    expect([strip.top, strip.end]).toEqual([600_000, '10 min'])
+    const make = box.querySelector('[data-chart="time-program-calls"] [data-row="program:make"]')!
+    expect(make.querySelector<HTMLElement>('[data-mark="p50"]')!.style.insetInlineStart).toBe('5%')
+    expect(make.querySelector<HTMLElement>('[data-mark="p95"]')!.style.insetInlineStart).toBe('100%')
+    expect(make.querySelector('[data-text]')!.textContent).toBe('median 30 s · p95 10 min')
+    expect(tip(make, '[data-mark="p95"]')).toMatch(/^95th percentile call: 10 min \(1 call in 20 took longer\)\. make: 5 h summed over 120 calls/)
+    expect(box.querySelector('[data-chart="time-program-calls"] [data-row="waiting:"]')!.hasAttribute('data-muted')).toBe(true)
+    const reasoning = box.querySelector('[data-chart="time-reasoning"] [data-row="tool-b"]')!
+    expect(written(reasoning)).toEqual(['2.0 k', '6.0 k'])
+    dispose()
+  })
+
+  it('switches the tool and program bars to the repositories, with the repository legend only', () => {
+    const { host, dispose } = mount(() => <TimeSplit {...props(time)} />)
+    const box = host.querySelector('#insight-time')!
+    expect(box.querySelector('[data-kind-legend]')).not.toBeNull()
+    colourBy(box, 'repo')
+    expect(box.querySelector('[data-kind-legend]')).toBeNull()
+    expect(box.querySelectorAll('[data-repo-legend]').length).toBe(1)
+    const a = box.querySelector('[data-chart="time-tools"] [data-row="tool-a"]')!
+    expect([...a.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1'])
+    expect(written(a)).toEqual(['28 h', '12 h'])
+    const make = box.querySelector('[data-chart="time-programs"] [data-row="program:make"]')!
+    expect([...make.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', String(OTHER)])
+    // A row the answer did not split stays one grey part.
+    expect(parts(box.querySelector('[data-chart="time-programs"] [data-row="waiting:"]')!)).toEqual(['time'])
+    dispose()
+  })
+
+  it('draws without repos: no switch, the bars by kind', () => {
+    history.replaceState(null, '', '/?screen=insights&view=time&by=repo')
+    const { host, dispose } = mount(() => <TimeSplit {...props(unsplit(time))} />)
+    const box = host.querySelector('#insight-time')!
+    expect(box.querySelector('[data-colour-by]')).toBeNull()
+    expect(parts(box.querySelector('[data-chart="time-tools"] [data-row="tool-a"]')!)).toEqual(['thinking', 'model', 'tools'])
+    expect(rows(box.querySelector('[data-chart="time-program-calls"]'))).toEqual(['program:make', 'waiting:'])
     dispose()
   })
 })

@@ -145,14 +145,19 @@ describe('INS-RS · Bars split by repository, one colour per repository for the 
     dispose()
   })
 
-  it('draws Where the time goes with the split by kind kept and a second bar per tool split by repository', () => {
+  it('draws Where the time goes once per tool, by kind or, with by=repo, by repository', () => {
+    const byKind = mount(() => <TimeSplit {...props(context({ data: time, status: 'ready', error: null }))} />)
+    // By kind: the bar by kind, the kind legend, no repository legend.
+    expect([...byKind.host.querySelectorAll('#insight-time [data-chart="time-tools"] [data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['thinking', 'model', 'tools'])
+    expect(byKind.host.querySelector('#insight-time [data-repo-legend]')).toBeNull()
+    byKind.dispose()
+    history.replaceState(null, '', '/?screen=insights&view=time&by=repo')
     const { host, dispose } = mount(() => <TimeSplit {...props(context({ data: time, status: 'ready', error: null }))} />)
     const box = host.querySelector('#insight-time')!
     expect([...box.querySelectorAll('[data-repo-legend] li')].map(item => item.textContent)).toEqual(['app', 'docs', OTHER_REPOS])
-    // The bar by kind stays as it was.
-    expect([...box.querySelectorAll('[data-chart="time-tools"] [data-part]')].map(part => part.getAttribute('data-part')))
-      .toEqual(['thinking', 'model', 'tools'])
-    const repos = box.querySelector('[data-chart="time-tools-repos"] [data-row="claude-code"]')!
+    expect(box.querySelector('[data-kind-legend]')).toBeNull()
+    const repos = box.querySelector('[data-chart="time-tools"] [data-row="claude-code"]')!
     expect(repos.querySelector('[data-total]')!.textContent).toBe('10 h')
     expect([...repos.querySelectorAll('[data-part]')].map(part => part.getAttribute('data-repo'))).toEqual(['0', '1', String(OTHER)])
     expect([...repos.querySelectorAll('[data-part] button')].map(part => part.textContent)).toEqual(['7 h', '2 h', ''])

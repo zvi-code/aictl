@@ -419,12 +419,16 @@ describe('INS-05 · Where the time goes', () => {
     expect([...programs.querySelectorAll('[data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['shell:', 'program:cargo', 'waiting:'])
     expect(programs.textContent).toContain('Shell construct, program not identified')
     expect(programs.textContent).toContain('Waiting or polling (sleep, until, while, wait)')
-    expect(programs.querySelector('[data-row="program:cargo"] [data-total]')!.textContent).toBe('63.4 h · median 8.4 s · p95 2 min 56 s')
+    expect(programs.querySelector('[data-row="program:cargo"] [data-total]')!.textContent).toBe('63.4 h')
+    // The median and 95th percentile of one call: marks on a strip beside the ranking.
+    const calls = box.querySelector('[data-chart="time-program-calls"] [data-row="program:cargo"]')!
+    expect(calls.querySelector('[data-text]')!.textContent).toBe('median 8.4 s · p95 2 min 56 s')
+    expect([...calls.querySelectorAll('[data-mark]')].map(mark => mark.getAttribute('data-mark'))).toEqual(['p50', 'p95'])
     expect(programs.querySelector('[data-row="program:cargo"] [role="tooltip"]')!.textContent).toBe('cargo: 63.4 h summed over 5,812 ' +
       'calls (30% of the 208 h of the programs listed); median 8.4 s, 95th percentile 2 min 56 s; 1% failed; 0 without a duration ' +
       'and 0 over 24 hours not counted.')
     const counted = box.querySelector('[data-counted]')!.textContent!
-    expect(counted).toContain('Without a recorded duration: 3 requests and 4 calls.')
+    expect(counted).toContain('Not counted: 3 requests and 4 calls without a recorded duration')
     expect(counted).toContain('3 requests or calls recorded as over 24 hours (815 h in all)')
     expect(counted).toContain('Thinking time not recorded by: copilot-cli.')
     dispose()
