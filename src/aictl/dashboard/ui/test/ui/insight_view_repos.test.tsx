@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
-// The views of the group "repos": Work by repository (one grid of every measure). Invented rows only.
+// The views of the group "repos": Work by repository (one grid of every measure) and the Model report (a grid per tool
+// with a switch between token kinds and repositories, and a scatter of cost against failure share). Invented rows only.
+import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
+import ModelReport from '../../src/panels/insights/ModelReport'
+import {
+  modelGridRows, MODELS_LINE, modelsSplit, scatterHover, type ModelBody, type ModelFigures, type ModelRow,
+} from '../../src/panels/insights/modelReportModel'
+import type { RepoSegment } from '../../src/panels/insights/repoSplit'
 import Repositories from '../../src/panels/insights/Repositories'
 import { PLAIN_FILL, repoColumns, repoGridFoot, repoGridRows, REPOS_LINE } from '../../src/panels/insights/reposModel'
 import type { Repo, RepoBody } from '../../src/panels/insights/workModel'
@@ -139,6 +146,145 @@ describe('Work by repository · one grid, a row per repository in its colour of 
     const { host, dispose } = mount(() => <Repositories {...props(context(ready(many)))} />)
     expect(host.querySelectorAll('[data-grid="repos"] [role="row"][data-row]:not([data-row="all"])').length).toBe(15)
     expect(host.querySelector('[data-more-repos]')?.textContent).toBe('2 more in the data table.')
+    dispose()
+  })
+})
+
+// ─── Model report ────────────────────────────────────────────────────────────────────────────────────────────────
+const figures = (values: Partial<ModelFigures>): ModelFigures => ({
+  requests: 1000, sessions: 20, priced: 1000, cost_usd: 100, cost_per_request: 0.1, cache_reported: 1000, cache_write_reported: 1000,
+  input_per_request: 100, cache_write_per_request: 1000, cache_read_per_request: 8000, output_per_request: 900,
+  unsplit_prompt_per_request: null, thinking_reported: 1000, p50_thinking_ms: 3000, reasoning_reported: 0, reasoning_per_request: null,
+  first_ts: SINCE, last_ts: SINCE + 86400, calls: 2000, failures: 60, refused: 0, exit_unknown: 0, call_sessions: 20,
+  failure_share: 0.03, at_least: false, ...values,
+})
+/** The segments of a model split 3 to 1 between alpha and every other repository: each measure's parts add up to the bar. */
+const halves = (row: ModelFigures) => [['/w/alpha', 'alpha', 0.75], ['', null, 0.25]].map(([repo, name, part]) => ({
+  repo, name, share: { requests: part, cost_per_request: part, failure_share: part }, of_repo: { requests: repo ? 0.4 : null },
+  ...Object.fromEntries((['requests', 'cost_per_request', 'failure_share', 'input_per_request', 'cache_write_per_request',
+    'cache_read_per_request', 'unsplit_prompt_per_request', 'output_per_request'] as const)
+    .map(key => [key, row[key] == null ? null : (row[key] as number) * (part as number)])),
+})) as unknown as RepoSegment[]
+const modelRow = (name: string, values: Partial<ModelFigures>, split = true): ModelRow => {
+  const row = figures(values)
+  return { tool: 'tool-a', model: name, recorded_sessions: 20, helper: false, failing: [], efforts: [], ...row,
+    ...(split ? { repos: halves(row) } : {}) }
+}
+const large = modelRow('model-large', { cost_per_request: 0.4, failure_share: 0.02 })
+const small = modelRow('model-small', { requests: 500, cost_per_request: 0.05, failure_share: 0.08, at_least: true })
+const modelBody = {
+  ...base, card: 'models', view: 'insights.model_report',
+  repo_order: [{ repo: '/w/alpha', name: 'alpha', cost_usd: 300 }], repo_others: { repos: 2, cost_usd: 50, requests: 300, sessions: 9 },
+  tools: [{ tool: 'tool-a', requests: 1500, sessions: 40, models: [large, small] }],
+  summary: { lead: null, not_reported: { cost: [], token_split: [], cache_write: [], thinking: [], reasoning: [], effort: [], model: [], calls: [] } },
+  sessions: [], tool_labels: { 'tool-a': 'Tool A' },
+} as unknown as ModelBody
+
+const segmentsOf = (host: Element, row: string, col: string) =>
+  [...host.querySelectorAll(`[data-row="${row}"] [data-col="${col}"] [data-part]`)].map(part => part.getAttribute('data-part'))
+const pick = (host: Element, label: string) =>
+  [...host.querySelectorAll<HTMLButtonElement>('[role="radio"]')].find(button => button.textContent === label)!
+
+describe('Model report · a grid per tool, one switch between token kinds and repositories, and a scatter', () => {
+  it('says what is measured in one line under the title, with no headline', () => {
+    const { host, dispose } = mount(() => <ModelReport {...props(context(ready(modelBody)))} />)
+    expect(host.querySelector('[data-finding]')?.textContent).toBe(MODELS_LINE)
+    expect(MODELS_LINE.split(/\s+/).length).toBeLessThanOrEqual(30)
+    expect(host.querySelector('[data-hero]')).toBeNull()
+    dispose()
+  })
+
+  it('draws a row per model with every measure written, bars by token kind first', () => {
+    const { host, dispose } = mount(() => <ModelReport {...props(context(ready(modelBody)))} />)
+    const grid = host.querySelector('[data-grid="models-tool-a"]')!
+    expect([...grid.querySelectorAll('[role="row"][data-row]')].map(row => row.getAttribute('data-row'))).toEqual(['model-large', 'model-small'])
+    expect([...grid.querySelectorAll('[data-row="model-small"] [data-value]')].map(value => value.textContent))
+      .toEqual(['500 requests · 20 sessions', '$0.05', 'at least 8.0% of 2,000 calls', '10 k', 'thinking 3 s'])
+    expect(host.querySelector('[data-colour-by]')?.getAttribute('data-colour-by')).toBe('own')
+    expect(host.querySelector('[data-token-legend]')).not.toBeNull()
+    expect(host.querySelector('[data-repo-legend]')).toBeNull()
+    expect(segmentsOf(host, 'model-large', 'tokens')).toEqual(['input', 'write', 'read', 'output'])
+    expect(segmentsOf(host, 'model-large', 'cost')).toEqual(['cost'])
+    // A failure share that is a floor is striped; the thinking column has no bar.
+    expect((grid.querySelector('[data-row="model-small"] [data-col="rate"] [data-part]') as HTMLElement).style.background)
+      .toContain('repeating-linear-gradient')
+    expect(grid.querySelector('[data-row="model-large"] [data-col="thought"] [data-part]')).toBeNull()
+    dispose()
+  })
+
+  it('switches every split bar to repository segments with one legend, and keeps the choice in the address', () => {
+    const navigated: Record<string, unknown>[] = []
+    const { host, dispose } = mount(() => <ModelReport {...props(context(ready(modelBody), navigated))} />)
+    pick(host, 'Repository').click()
+    flush()
+    expect(navigated).toEqual([{ by: 'repo' }])
+    expect(host.querySelector('[data-colour-by]')?.getAttribute('data-colour-by')).toBe('repo')
+    expect(host.querySelector('[data-token-legend]')).toBeNull()
+    expect([...host.querySelectorAll('[data-repo-legend] li')].map(item => item.textContent)).toEqual(['alpha', 'Other repositories'])
+    for (const col of ['requests', 'cost', 'rate', 'tokens']) expect(segmentsOf(host, 'model-large', col)).toEqual(['repo:/w/alpha', 'repo:'])
+    const parts = [...host.querySelectorAll('[data-row="model-large"] [data-col="cost"] [data-part]')] as HTMLElement[]
+    expect(parts.map(part => part.getAttribute('data-repo'))).toEqual(['0', '-1'])
+    expect(parts[0].style.background).toContain('var(--color-chart-1)')
+    expect(parts.map(part => part.style.flexGrow)).toEqual(['75', '25'])
+    pick(host, 'Token kind').click()
+    flush()
+    expect(navigated.at(-1)).toEqual({ by: null })
+    expect(segmentsOf(host, 'model-large', 'tokens')).toEqual(['input', 'write', 'read', 'output'])
+    dispose()
+  })
+
+  it('opens coloured by repository when the address says by=repo', () => {
+    history.replaceState(null, '', '/?screen=insights&view=models&by=repo')
+    const { host, dispose } = mount(() => <ModelReport {...props(context(ready(modelBody)))} />)
+    expect(host.querySelector('[data-colour-by]')?.getAttribute('data-colour-by')).toBe('repo')
+    expect(segmentsOf(host, 'model-small', 'requests')).toEqual(['repo:/w/alpha', 'repo:'])
+    dispose()
+  })
+
+  it('gives each kind of repository segment a hover that says how the segments add up to the bar', () => {
+    history.replaceState(null, '', '/?screen=insights&view=models&by=repo')
+    const { host, dispose } = mount(() => <ModelReport {...props(context(ready(modelBody)))} />)
+    const hover = (col: string, part: string) => tip(host, `[data-row="model-large"] [data-col="${col}"] [data-part="${part}"]`)
+    expect(hover('requests', 'repo:/w/alpha')).toBe('model-large in Tool A, requests — alpha (/w/alpha): 750 · 75% of this bar · ' +
+      '40% of alpha own requests. Whole: 1,000 requests · 20 sessions.')
+    expect(hover('cost', 'repo:/w/alpha')).toBe('model-large in Tool A, cost per priced request — alpha (/w/alpha): $0.3 · 75% of this ' +
+      'bar. A segment is the repository\'s list-price cost divided by all 1,000 priced requests of model-large, so the segments add ' +
+      'up to the bar ($0.4).')
+    expect(hover('rate', 'repo:')).toBe('model-large in Tool A, failure share — Other repositories (every repository outside the 8 ' +
+      'with the highest cost, summed): 0.5% · 25% of this bar. A segment is the repository\'s failed calls divided by all 2,000 ' +
+      'calls of model-large, so the segments add up to the bar (2.0%).')
+    expect(hover('tokens', 'repo:/w/alpha')).toBe('model-large in Tool A, tokens per request — alpha (/w/alpha): 7.5 k tokens per ' +
+      'request · 75% of this bar. input not from cache 75 · cache write 750 · cache read 6.0 k · output 675. Each token kind of a ' +
+      'segment is the repository\'s tokens divided by all requests of model-large that report that kind, so the segments add up to ' +
+      'the bar (10 k).')
+    dispose()
+  })
+
+  it('draws the scatter of cost per priced request against failure share, a floor as a hollow dot', () => {
+    const { host, dispose } = mount(() => <ModelReport {...props(context(ready(modelBody)))} />)
+    const scatter = host.querySelector('[data-scatter="models-tool-a"]')!
+    expect([...scatter.querySelectorAll('[data-point]')].map(point => point.getAttribute('data-point'))).toEqual(['model-large', 'model-small'])
+    expect(scatter.querySelector('[data-tick="x1"]')?.textContent).toBe('$0.4')
+    expect(scatter.querySelector('[data-tick="y1"]')?.textContent).toBe('8.0%')
+    expect(scatter.querySelector('[data-point="model-small"] circle title')?.textContent).toBe(scatterHover(small, 'Tool A'))
+    expect(scatterHover(small, 'Tool A')).toBe('model-small in Tool A: $0.05 per priced request at list price over 1,000 priced ' +
+      'requests; at least 8.0% of 2,000 tool calls marked failed (a floor: hollow dot). A dot is the model\'s whole, not split by repository.')
+    expect(scatter.querySelector('[data-point="model-small"] circle')?.getAttribute('class'))
+      .not.toBe(scatter.querySelector('[data-point="model-large"] circle')?.getAttribute('class'))
+    dispose()
+  })
+
+  it('draws without repo_order or segments: no switch, bars by token kind, no scatter for one model', () => {
+    const plain = { ...modelBody, repo_order: undefined, repo_others: undefined,
+      tools: [{ tool: 'tool-a', requests: 1000, sessions: 20, models: [modelRow('model-large', {}, false)] }] } as unknown as ModelBody
+    expect(modelsSplit(plain)).toBe(false)
+    history.replaceState(null, '', '/?screen=insights&view=models&by=repo')
+    const { host, dispose } = mount(() => <ModelReport {...props(context(ready(plain)))} />)
+    expect(host.querySelector('[data-colour-by]')).toBeNull()
+    expect(host.querySelector('[data-token-legend]')).not.toBeNull()
+    expect(segmentsOf(host, 'model-large', 'tokens')).toEqual(['input', 'write', 'read', 'output'])
+    expect(host.querySelector('[data-scatter]')).toBeNull()
+    expect(modelGridRows(plain.tools[0], 'Tool A', 'repo', undefined)[0].cells.cost!.parts.map(part => part.key)).toEqual(['cost'])
     dispose()
   })
 })

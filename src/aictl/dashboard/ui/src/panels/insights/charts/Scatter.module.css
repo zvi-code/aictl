@@ -1,0 +1,12 @@
+/* A scatter of two measures: dots on linear axes from 0, coloured through tokens only. */
+.figure { display: grid; gap: var(--space-2); margin: 0; min-inline-size: 0; }
+.title { font-size: var(--text-sm); font-weight: var(--weight-medium); }
+.chart { display: block; inline-size: 100%; block-size: auto; overflow: visible; }
+.chart text { font-family: var(--font-ui); font-size: var(--text-xs); fill: var(--color-text); }
+.chart .tick, .chart .axisLabel { fill: var(--color-muted); }
+.axis { stroke: var(--color-border); stroke-width: 1; }
+.grid { stroke: var(--color-border-subtle); stroke-width: 1; stroke-dasharray: 3 3; }
+.dot { fill: var(--color-accent); stroke: var(--color-surface); stroke-width: 1.5; }
+.hollow { fill: var(--color-surface); stroke: var(--color-accent); stroke-width: 2; }
+.dot:hover, .hollow:hover { stroke: var(--color-text); }
+.note { margin: 0; color: var(--color-muted); font-size: var(--text-xs); }

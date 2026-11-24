@@ -3,7 +3,7 @@ import { flush } from 'solid-js'
 import { beforeEach, describe, expect, it } from 'vitest'
 import ModelReport from '../../src/panels/insights/ModelReport'
 import {
-  barWidth, costHover, costText, effortCost, modelFinding, modelHero, rateHover, rateText, tokenHover, tokenParts, tokenText, volumeHover,
+  barWidth, costHover, costText, effortCost, modelFinding, modelHero, MODELS_LINE, rateHover, rateText, tokenHover, tokenParts, tokenText, volumeHover,
   type ModelBody, type ModelFigures, type ModelRow, type ModelTool,
 } from '../../src/panels/insights/modelReportModel'
 import type { DetailState, PanelContext } from '../../src/panels/types'
@@ -167,48 +167,54 @@ describe('MOD-01 · The finding states the measured costs and failure shares and
   })
 })
 
-describe('MOD-02 · The card draws, per tool, one chart per measure across its models', () => {
+describe('MOD-02 · The view draws, per tool, one grid of its models\' measures', () => {
   it('writes each model\'s cost, failure share, requests and tokens, with a hover on every bar', () => {
     const { host, dispose } = mount(() => <ModelReport {...props(context({ data: body, status: 'ready', error: null }))} />)
     const box = host.querySelector('#insight-models')!
-    expect(box.querySelector('[data-hero] strong')?.textContent).toBe('4.4×')
-    expect(box.querySelector('[data-finding]')?.textContent).toContain('not the models.')
+    // No headline and no comparison sentence: the line says what is measured.
+    expect(box.querySelector('[data-hero]')).toBeNull()
+    expect(box.querySelector('[data-finding]')?.textContent).toBe(MODELS_LINE)
     const cli = box.querySelector('[data-tool="copilot-cli"]')!
-    expect([...cli.querySelectorAll('[data-measure] figcaption')].map(caption => caption.textContent)).toEqual([
-      'Cost per priced request, $ at list pricelinear, $0 to $0.327',
-      'Failure share of tool calls, % of calls marked failed by the toollinear, 0% to 2.9%',
-      'Requests and sessions per model (the evidence behind the figures above)linear, 0 to 556 requests',
-      'Tokens per request, averagelinear, 0 to 42 k tokens'])
-    const cost = cli.querySelector('[data-cost-model="gpt-6-astra"]')!
-    expect(cost.querySelector('[data-cost]')?.textContent).toBe('$0.327 · priced 130 of 556')
-    expect((cost.querySelector('[role="tooltip"]')!.closest('[style]') as HTMLElement).style.inlineSize).toBe('100.00%')
-    expect(cost.querySelector('[role="tooltip"]')?.textContent).toBe(costHover(astra, 'Copilot CLI'))
-    expect((cli.querySelector('[data-cost-model="gemini-4-argon"] [role="tooltip"]')!.closest('[style]') as HTMLElement).style.inlineSize)
+    expect([...cli.querySelectorAll('[data-head] [role="columnheader"]')].map(head => head.textContent)).toEqual(['Model',
+      'Requests0 to 556; sessions after the value', 'Cost per priced request$ at list price, 0 to $0.327',
+      'Tool calls marked failedshare of calls, 0% to 2.9%; striped: a floor', 'Tokens per requestaverage, 0 to 42 k',
+      'Thinking, by effortmedian per request; not split by repository'])
+    const astraRow = cli.querySelector('[data-row="gpt-6-astra"]')!
+    const cell = (row: Element, col: string) => row.querySelector(`[data-col="${col}"]`)!
+    expect(cell(astraRow, 'cost').querySelector('[data-value]')?.textContent).toBe('$0.327 · priced 130 of 556')
+    expect((cell(astraRow, 'cost').querySelector('[style*="inline-size"]') as HTMLElement).style.inlineSize).toBe('100.00%')
+    expect(cell(astraRow, 'cost').querySelector('[role="tooltip"]')?.textContent).toBe(costHover(astra, 'Copilot CLI'))
+    expect((cli.querySelector('[data-row="gemini-4-argon"] [data-col="cost"] [style*="inline-size"]') as HTMLElement).style.inlineSize)
       .toBe('22.94%')
-    // Two efforts with 20 requests or more make a strip; the effort with 5 requests is left out of it.
-    expect(Array.from(cost.querySelectorAll('[data-efforts] li')).map(li => li.textContent))
+    // Two efforts with 20 requests or more are listed; the effort with 5 requests is left out.
+    expect([...cell(astraRow, 'thought').querySelectorAll('[data-lines] span')].map(line => line.textContent))
       .toEqual(['high $0.076 · 300 reasoning tokens', 'medium $0.078 · 120 reasoning tokens'])
-    const rate = cli.querySelector('[data-rate-model="gpt-6-astra"]')!
-    expect(rate.querySelector('[data-rate]')?.textContent).toBe('2.9% of 4,000 calls failedmost failed: bash 70 · view 46')
-    expect(rate.querySelector('[role="tooltip"]')?.textContent).toBe(rateHover(astra, 'Copilot CLI'))
-    const volume = cli.querySelector('[data-volume-model="gpt-6-astra"]')!
-    expect(volume.querySelector('[data-volume]')?.textContent).toBe('556 requests · 10 sessionsNov 14–Nov 20')
-    expect(volume.querySelector('[role="tooltip"]')?.textContent).toBe(volumeHover(astra, body.tools[0] as ModelTool, 'Copilot CLI'))
-    const tokens = cli.querySelector('[data-token-model="gpt-6-astra"]')!
-    expect([...tokens.querySelectorAll('[data-token]')].map(part => part.getAttribute('data-token'))).toEqual(['input', 'write', 'read', 'output'])
-    expect(tokens.querySelector('[data-token="read"] [role="tooltip"]')?.textContent).toBe(tokenHover(astra, tokenParts(astra)[2], 'Copilot CLI'))
-    expect(tokens.querySelector('[data-tokens]')?.textContent).toBe(tokenText(astra))
+    expect(cell(astraRow, 'thought').querySelector('[data-value]')?.textContent).toBe('250 reasoning tokens')
+    expect(cell(astraRow, 'rate').querySelector('[data-value]')?.textContent).toBe('2.9% of 4,000 calls')
+    expect(cell(astraRow, 'rate').querySelector('[role="tooltip"]')?.textContent).toBe(rateHover(astra, 'Copilot CLI'))
+    expect(rateHover(astra, 'Copilot CLI')).toContain('Most failed: bash 70, view 46.')
+    expect(cell(astraRow, 'requests').querySelector('[data-value]')?.textContent).toBe('556 requests · 10 sessions')
+    expect(astraRow.querySelector('[role="rowheader"] small')?.textContent).toBe('Nov 14–Nov 20')
+    expect(cell(astraRow, 'requests').querySelector('[role="tooltip"]')?.textContent)
+      .toBe(volumeHover(astra, body.tools[0] as ModelTool, 'Copilot CLI'))
+    expect([...cell(astraRow, 'tokens').querySelectorAll('[data-part]')].map(part => part.getAttribute('data-part')))
+      .toEqual(['input', 'write', 'read', 'output'])
+    expect(cell(astraRow, 'tokens').querySelector('[data-part="read"] [role="tooltip"]')?.textContent)
+      .toBe(tokenHover(astra, tokenParts(astra)[2], 'Copilot CLI'))
+    expect(cell(astraRow, 'tokens').querySelector('[data-value]')?.textContent).toBe('42 k')
+    expect(tokenText(astra)).toBe('50 input not from cache · 900 cache write · 40 k cache read · 600 output')
     // Models seen in fewer than 10 sessions are not drawn or compared: they are named in one line.
-    expect(box.querySelector('[data-cost-model="claude-sonnet-5"]')).toBeNull()
-    expect(box.querySelector('[data-tool="copilot-cli"] [data-rate-model="claude-opus-4-8"]')).toBeNull()
+    expect(box.querySelector('[data-row="claude-sonnet-5"]')).toBeNull()
+    expect(box.querySelector('[data-tool="copilot-cli"] [data-row="claude-opus-4-8"]')).toBeNull()
     expect(box.querySelector('[data-few]')?.textContent).toBe('claude-opus-4-8 (Copilot CLI): 4 sessions, too few to compare; ' +
       'claude-sonnet-5 (Copilot CLI): 6 sessions, too few to compare.')
     const vscode = box.querySelector('[data-tool="copilot-vscode"]')!
-    expect(vscode.querySelector('[data-rate-model="claude-opus-4-8"] [data-rate]')?.textContent).toContain('at least 8.9%')
-    expect(vscode.querySelector('[data-rate-model="claude-opus-4-8"] button')?.getAttribute('aria-label')).toBe('at least 8.9%')
-    expect(vscode.querySelector('[data-cost-model="gpt-5.5"] [data-cost]')?.textContent).toBe('not priced')
-    expect(vscode.querySelector('[data-cost-model="gpt-5.5"] [data-helper]')).not.toBeNull()
-    expect(vscode.querySelector('[data-cost-model="gpt-5.5"] [role="tooltip"]')).toBeNull()
+    expect(vscode.querySelector('[data-row="claude-opus-4-8"] [data-col="rate"] [data-value]')?.textContent).toContain('at least 8.9%')
+    expect(vscode.querySelector('[data-row="claude-opus-4-8"] [data-col="rate"] button')?.getAttribute('aria-label'))
+      .toBe('claude-opus-4-8, Tool calls marked failed, rate: at least 8.9% of 900 calls')
+    expect(vscode.querySelector('[data-row="gpt-5.5"] [data-col="cost"] [data-value]')?.textContent).toBe('not priced')
+    expect(vscode.querySelector('[data-row="gpt-5.5"] [data-tag]')?.textContent).toBe('helper')
+    expect(vscode.querySelector('[data-row="gpt-5.5"] [data-col="cost"] [role="tooltip"]')).toBeNull()
     expect(cli.querySelector('[data-footer]')?.textContent).toBe('3 requests with no model · 250 calls in ' +
       '42 sessions read from the session store: shell commands only, not attributed')
     expect(box.querySelector('[data-tool="codex-cli"]')).toBeNull()
