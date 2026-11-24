@@ -43,7 +43,8 @@ def _request(store, key, ts, *, session="s1", agent="", tool="claude-code", cost
 
 def test_every_insight_view_is_registered_cached_and_bounded():
     for view in insights.CARDS.values():
-        assert _VIEWS[view][0].split() == ["all_nodes", "requested_node", "since", "until"]
+        # The work cards (insights_work.py) also take the page's tool and model filters.
+        assert _VIEWS[view][0].split()[:4] == ["all_nodes", "requested_node", "since", "until"]
         assert 0 < _CACHE_TTL_S[view] <= 300
 
 

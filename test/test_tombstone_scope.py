@@ -370,6 +370,8 @@ UNPRUNED: dict[tuple[str, str], tuple[str, str]] = {
     ("insights.fixed_context", "skill_uses"): ("ALL_HOURS", ALL_HOURS),
     ("insights.model_report", "requests"): ("ALL_HOURS", ALL_HOURS),
     ("insights.model_report", "tool_invocations"): ("ALL_HOURS", ALL_HOURS),
+    ("insights.repositories", "session_turns"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
+    ("insights.repositories", "sessions"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),
     ("insights.orientation", "requests"): ("ALL_HOURS", ALL_HOURS),
     ("insights.orientation", "tool_invocations"): ("ALL_HOURS", ALL_HOURS),
     ("insights.problem_sessions", "context_events"): ("NO_CURRENT_VIEW", NO_CURRENT_VIEW),

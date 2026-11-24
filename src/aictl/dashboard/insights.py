@@ -12,6 +12,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+from . import insights_work
 from .board_filters import Filters
 from .panel_kql import query_block
 from .projection_utils import _label
@@ -32,6 +33,7 @@ CARDS = {
     "autonomy": "insights.work_per_instruction",
     "verified": "insights.verified_commits",
     "models": "insights.model_report",
+    **insights_work.CARDS,
 }
 # The findings summary: one ranked list built from the answers of these cards (no view of its own).
 SUMMARY_CARDS = ("problems", "orientation", "context", "pause", "subagents", "verified", "rereads", "failures")
@@ -900,6 +902,7 @@ SHAPES: dict[str, Callable[[list[dict]], dict]] = {
     "autonomy": work_per_instruction,
     "verified": verified_commits,
     "models": model_report,
+    **insights_work.SHAPES,
 }
 # Each view is named literally where it is read, so the history paging guard can check that it is bounded.
 READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
@@ -916,6 +919,7 @@ READS: dict[str, Callable[[HistoryScope, dict], list[dict]]] = {
     "autonomy": lambda history, params: history.read("insights.work_per_instruction", limit=ROW_LIMIT, **params),
     "verified": lambda history, params: history.read("insights.verified_commits", limit=ROW_LIMIT, **params),
     "models": lambda history, params: history.read("insights.model_report", limit=ROW_LIMIT, **params),
+    **insights_work.READS,
 }
 
 
@@ -1030,7 +1034,7 @@ def insight(card: str, filters: Filters, now: float | None = None, *, history: H
     if card not in CARDS:
         return 404, {"error": "No such insight"}
     view = CARDS[card]
-    params = {"since": filters.since, "until": filters.until}
+    params = {"since": filters.since, "until": filters.until, **insights_work.PARAMS.get(card, lambda _: {})(filters)}
     rows = READS[card](history, params)
     meta = next(iter(_of(rows, "meta")), {})
     node = {} if history.node is None else {"all_nodes": False, "requested_node": history.node}

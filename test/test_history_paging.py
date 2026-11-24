@@ -287,6 +287,7 @@ BOUNDED = {
                                      "months), 10 sessions and one meta row",
     "insights.verified_commits": "one row per tool, 10 sessions and one meta row",
     "insights.model_report": "per tool, model and effort, 3 failing tool names per model, 3 sessions per tool and one meta row",
+    "insights.repositories": "per repository: one row, a row per model, 3 sessions and at most 9 time bins; one meta row",
     "prompts.detail": "one prompt",
     "prompts.files": "one row per node, prompt file and project",
     "prompts.titles": "one row per agent of the board's sessions",

@@ -50,6 +50,8 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
   note: string
   table: { label: string; fields: Field<Record<string, unknown>>[]; rows: (body: T) => Record<string, unknown>[] }
   sessionFields: Field<InsightSession>[]
+  /** The card's view takes the page's tool and model filters (the work cards). */
+  filtered?: boolean
 }) {
   const { ctx } = untrack(() => props)
   const [seen, setSeen] = createSignal(typeof IntersectionObserver === 'undefined')
@@ -64,8 +66,11 @@ export function InsightCard<T extends InsightBody>(props: CardProps & {
   })
   const path = createMemo(() => {
     if (!seen()) return undefined
-    return detailPath(ctx, `/api/board/insights/${props.card}`,
-      new URLSearchParams({ since: String(props.since), until: String(props.until) }))
+    const query = new URLSearchParams({ since: String(props.since), until: String(props.until) })
+    const tools = props.filtered ? ctx.tools() : null
+    if (tools) query.set('tool', tools.length ? tools.join(',') : '-')
+    if (props.filtered && ctx.filters().model !== 'all') query.set('model', ctx.filters().model)
+    return detailPath(ctx, `/api/board/insights/${props.card}`, query)
   })
   const read = untrack(() => ctx.detail<T>(path))
   const data = () => {
