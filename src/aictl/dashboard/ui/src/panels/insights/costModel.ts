@@ -15,7 +15,7 @@ import {
   NOT_REPORTED, NOT_SPLIT, type FixedBody,
 } from './insightsModel'
 import { notSplitNote, repoParts, type RepoSegment } from './repoSplit'
-import type { ColourBy } from './charts/ColourBy'
+import type { ColourMode } from './charts/ColourBy'
 
 const ratio = (part: number | null, whole: number | null) => part != null && whole != null && whole > 0 ? part / whole : null
 const sum = (values: readonly (number | null | undefined)[]) => values.some(value => value != null)
